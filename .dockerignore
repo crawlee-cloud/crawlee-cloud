@@ -1,0 +1,42 @@
+# Docker files to ignore
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Dependencies
+node_modules
+**/node_modules
+
+# Build artifacts
+dist
+**/dist
+*.tsbuildinfo
+
+# Test and coverage
+coverage
+**/coverage
+**/*.test.ts
+**/*.spec.ts
+**/__tests__
+
+# Git
+.git
+.gitignore
+
+# IDE and editor
+.idea
+.vscode
+*.swp
+*.swo
+
+# Environment files (should be injected)
+.env
+.env.local
+.env.*.local
+
+# Misc
+*.md
+!README.md
+LICENSE
+.turbo
+.husky
