@@ -1,0 +1,172 @@
+services:
+  # ===========================================
+  # CORE SERVICES
+  # ===========================================
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    ports:
+      - '3000:3000'
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/crawlee_cloud
+      - REDIS_URL=redis://redis:6379
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=minioadmin
+      - S3_SECRET_KEY=minioadmin
+      - S3_BUCKET=crawlee-cloud
+      - S3_FORCE_PATH_STYLE=true
+      - JWT_SECRET=your-super-secret-jwt-key-change-in-production
+      - RATE_LIMIT_MAX=1000
+      - LOG_LEVEL=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - crawlee-network
+    restart: unless-stopped
+
+  runner:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.runner
+    environment:
+      - NODE_ENV=production
+      - API_BASE_URL=http://api:3000
+      - API_TOKEN=runner-token
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/crawlee_cloud
+      - REDIS_URL=redis://redis:6379
+      - DOCKER_SOCKET=/var/run/docker.sock
+      - DOCKER_NETWORK=crawlee-platfrom_crawlee-network
+      - MAX_CONCURRENT_RUNS=10
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - api
+      - redis
+      - postgres
+    networks:
+      - crawlee-network
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dashboard
+    ports:
+      - '3001:3001'
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - NEXT_PUBLIC_API_URL=http://localhost:3000
+    depends_on:
+      - api
+    networks:
+      - crawlee-network
+    restart: unless-stopped
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    command: ['node', 'dist/scheduler.js']
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/crawlee_cloud
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - api
+      - redis
+    networks:
+      - crawlee-network
+    restart: unless-stopped
+
+  # ===========================================
+  # DATA STORES (Replaceable with cloud services)
+  # ===========================================
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: crawlee_cloud
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - crawlee-network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - crawlee-network
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - '9000:9000' # S3 API
+      - '9001:9001' # Console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9000/minio/health/live']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - crawlee-network
+    restart: unless-stopped
+
+  # Create default bucket on startup
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      mc mb myminio/crawlee-cloud --ignore-existing;
+      exit 0;
+      "
+    networks:
+      - crawlee-network
+
+networks:
+  crawlee-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:

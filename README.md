@@ -2,13 +2,19 @@
 
 > Self-hosted Apify-compatible platform for Crawlee scrapers.
 
-⚠️ **Work in Progress** - This project is under active development.
+## Quick Start
 
-## Goals
+```bash
+docker compose up -d
+```
 
-- Run Apify Actors on your own infrastructure
-- Zero code changes - just change one environment variable
-- Full API compatibility with Apify platform
+## Progress
+
+- [x] Docker infrastructure (PostgreSQL, Redis, MinIO)
+- [ ] API server
+- [ ] Actor runner
+- [ ] Dashboard
+- [ ] CLI
 
 ## License
 
