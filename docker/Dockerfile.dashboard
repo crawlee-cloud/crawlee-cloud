@@ -1,0 +1,36 @@
+# Dashboard Dockerfile
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Copy root package files for workspaces
+COPY package*.json ./
+COPY packages/dashboard/package*.json ./packages/dashboard/
+
+# Install dependencies
+RUN npm ci --workspace=@crawlee-cloud/dashboard --ignore-scripts
+
+# Copy source
+COPY tsconfig.base.json ./
+COPY packages/dashboard ./packages/dashboard
+
+# Build Next.js app
+RUN npm run build --workspace=@crawlee-cloud/dashboard
+
+# Production stage
+FROM node:20-alpine AS production
+
+WORKDIR /app
+
+# Copy built app
+COPY --from=builder /app/packages/dashboard/.next/standalone ./
+COPY --from=builder /app/packages/dashboard/.next/static ./packages/dashboard/.next/static
+COPY --from=builder /app/packages/dashboard/public ./packages/dashboard/public
+
+ENV NODE_ENV=production
+ENV PORT=3001
+
+EXPOSE 3001
+
+# Start the server
+CMD ["node", "packages/dashboard/server.js"]

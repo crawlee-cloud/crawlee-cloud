@@ -1,0 +1,43 @@
+# Multi-stage build for Runner service
+FROM node:20-slim AS builder
+
+WORKDIR /app
+
+# Copy workspace files
+COPY package*.json ./
+COPY packages/runner/package*.json ./packages/runner/
+COPY tsconfig.base.json ./
+
+# Install dependencies (ignore husky)
+RUN npm install --ignore-scripts
+
+# Copy source
+COPY packages/runner ./packages/runner
+
+# Build
+RUN npm run build --workspace=@crawlee-cloud/runner
+
+# Production stage
+FROM node:20-slim
+
+# Install Docker CLI for container management
+RUN apt-get update && apt-get install -y \
+  docker.io \
+  --no-install-recommends \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy built files and lock file
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/packages/runner/dist ./dist
+COPY --from=builder /app/packages/runner/package*.json ./packages/runner/
+
+# Install production dependencies only
+RUN npm install --omit=dev --ignore-scripts
+
+# Labels
+LABEL org.opencontainers.image.title="Crawlee Platform Runner"
+LABEL org.opencontainers.image.description="Docker container runner for Actor execution"
+
+CMD ["node", "dist/index.js"]
