@@ -1,0 +1,29 @@
+{
+  "name": "@crawlee-cloud/runner",
+  "version": "0.1.0",
+  "description": "Docker container runner for executing Actors",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": ["crawlee", "runner", "docker"],
+  "license": "MIT",
+  "dependencies": {
+    "dockerode": "^4.0.4",
+    "ioredis": "^5.4.1",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/dockerode": "^3.3.34",
+    "@types/node": "^20.10.0",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.7.0",
+    "typescript": "^5.7.2"
+  }
+}
