@@ -2,14 +2,14 @@
 
 **Self-hosted Apify-compatible platform for Crawlee scrapers.**
 
+Reduce costs by running scrapers on your own infrastructure.
+
 ## How It Works
 
 ```bash
 APIFY_API_BASE_URL=https://your-server.com/v2
 APIFY_TOKEN=your-token
 ```
-
-Zero code changes required in your Actors!
 
 ## Quick Start
 
@@ -20,21 +20,28 @@ npm run db:migrate
 npm run dev
 ```
 
-## API Endpoints
+## Architecture
 
-| Endpoint | Purpose |
-|----------|---------|
-| `POST /v2/datasets/{id}/items` | Push data |
-| `GET /v2/datasets/{id}/items` | Get data |
-| `PUT /v2/key-value-stores/{id}/records/{key}` | Store values |
-| `POST /v2/request-queues/{id}/requests` | Add URLs |
-| `POST /v2/acts/{id}/runs` | Start Actor |
+```
+┌─────────────────────────────────────────┐
+│           YOUR ACTOR CODE               │
+│  import { Actor } from 'apify';         │
+└────────────────┬────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────┐
+│        CRAWLEE PLATFORM API             │
+└─────────────────────────────────────────┘
+       │           │           │
+       ▼           ▼           ▼
+  PostgreSQL    Redis      S3/MinIO
+```
 
 ## Progress
 
 - [x] Docker infrastructure
-- [x] API server with endpoints
-- [ ] Actor runner
+- [x] API server
+- [x] Actor runner
 - [ ] Dashboard
 - [ ] CLI
 
