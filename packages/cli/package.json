@@ -1,0 +1,39 @@
+{
+  "name": "@crawlee-cloud/cli",
+  "version": "0.1.0",
+  "description": "CLI for Crawlee Cloud - run and deploy Actors",
+  "type": "module",
+  "bin": {
+    "crawlee-cloud": "./dist/bin.js",
+    "cc": "./dist/bin.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/bin.ts",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "crawlee",
+    "cli",
+    "apify",
+    "scraper"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^12.1.0",
+    "chalk": "^5.3.0",
+    "ora": "^8.1.1",
+    "inquirer": "^12.1.0",
+    "fs-extra": "^11.2.0",
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "@types/fs-extra": "^11.0.4",
+    "@types/node": "^20.10.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.7.2"
+  }
+}
