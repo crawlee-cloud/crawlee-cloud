@@ -1,6 +1,6 @@
 # CLI Guide
 
-The Crawlee Cloud CLI helps you manage Actors from the command line.
+The Crawlee Cloud CLI provides command-line tools for managing Actors.
 
 ## Installation
 
@@ -8,65 +8,136 @@ The Crawlee Cloud CLI helps you manage Actors from the command line.
 npm install -g @crawlee-cloud/cli
 ```
 
+Or use directly with npx:
+
+```bash
+npx @crawlee-cloud/cli <command>
+```
+
+---
+
 ## Commands
 
-### Login
+### `login`
 
-Authenticate with your Crawlee Cloud server:
+Authenticate with your Crawlee Cloud server.
 
 ```bash
 crawlee-cloud login --server https://your-server.com
 ```
 
-You'll be prompted for your API token.
+You'll be prompted to enter your API token. Credentials are stored in `~/.crawlee-cloud/config.json`.
 
-### Push
+---
 
-Push an Actor to the registry:
+### `push`
+
+Build and push an Actor to the registry.
 
 ```bash
-crawlee-cloud push my-actor
+crawlee-cloud push [actor-name]
 ```
 
-This builds your Actor and uploads it to the server.
+**Options:**
 
-### Run
+| Flag | Description |
+|------|-------------|
+| `--version, -v` | Version tag for the build |
+| `--no-build` | Skip local build step |
 
-Execute an Actor:
+**Example:**
 
 ```bash
-crawlee-cloud run my-actor --input '{"url": "https://example.com"}'
+cd my-actor
+crawlee-cloud push my-scraper --version 1.0.0
 ```
 
-Options:
-- `--input` - JSON input for the Actor
-- `--wait` - Wait for the run to complete
-- `--timeout` - Maximum wait time in seconds
+---
 
-### Logs
+### `run`
 
-Stream logs from a run:
+Execute an Actor on the server.
 
 ```bash
-crawlee-cloud logs <run-id>
+crawlee-cloud run <actor-name> [options]
 ```
 
-Options:
-- `--follow` - Keep streaming new logs
-- `--tail` - Number of lines to show
+**Options:**
 
-### Call
+| Flag | Description |
+|------|-------------|
+| `--input, -i` | JSON input for the Actor |
+| `--input-file` | Path to JSON input file |
+| `--wait, -w` | Wait for completion |
+| `--timeout` | Max wait time (seconds) |
 
-Make direct API calls:
+**Examples:**
 
 ```bash
+# Run with inline input
+crawlee-cloud run my-scraper --input '{"url": "https://example.com"}'
+
+# Run with input file
+crawlee-cloud run my-scraper --input-file ./input.json
+
+# Run and wait for completion
+crawlee-cloud run my-scraper --wait --timeout 300
+```
+
+---
+
+### `logs`
+
+Stream logs from a run.
+
+```bash
+crawlee-cloud logs <run-id> [options]
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--follow, -f` | Continuously stream new logs |
+| `--tail, -n` | Number of lines to show |
+
+**Example:**
+
+```bash
+crawlee-cloud logs abc123 --follow
+```
+
+---
+
+### `call`
+
+Make direct API requests.
+
+```bash
+crawlee-cloud call <method> <path> [options]
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--data, -d` | Request body (JSON) |
+
+**Examples:**
+
+```bash
+# List datasets
 crawlee-cloud call GET /v2/datasets
-crawlee-cloud call POST /v2/datasets --data '{"name": "my-dataset"}'
+
+# Create a dataset
+crawlee-cloud call POST /v2/datasets --data '{"name": "my-data"}'
 ```
+
+---
 
 ## Configuration
 
-The CLI stores configuration in `~/.crawlee-cloud/config.json`:
+Configuration is stored in `~/.crawlee-cloud/config.json`:
 
 ```json
 {
@@ -75,16 +146,9 @@ The CLI stores configuration in `~/.crawlee-cloud/config.json`:
 }
 ```
 
-## Examples
+### Environment Variables
 
-```bash
-# Login to server
-crawlee-cloud login --server https://api.crawlee.cloud
-
-# Push and run an Actor
-crawlee-cloud push my-scraper
-crawlee-cloud run my-scraper --input '{"startUrls": ["https://example.com"]}'
-
-# Check run status
-crawlee-cloud call GET /v2/actor-runs/<run-id>
-```
+| Variable | Description |
+|----------|-------------|
+| `CRAWLEE_CLOUD_SERVER` | Override server URL |
+| `CRAWLEE_CLOUD_TOKEN` | Override API token |

@@ -1,42 +1,32 @@
-# Crawlee Cloud Documentation
+# Documentation
 
 Welcome to the Crawlee Cloud documentation.
 
-## What is Crawlee Cloud?
+## Overview
 
-Crawlee Cloud is a self-hosted, open-source platform for running Apify Actors on your own infrastructure. It's fully compatible with the Apify SDK, so your existing Actors work with zero code changes.
+Crawlee Cloud is a self-hosted platform that provides Apify-compatible APIs for running web scrapers. It enables you to execute Apify Actors on your own infrastructure while maintaining full SDK compatibility.
 
-## Getting Started
+## Guides
 
-1. [Deployment Guide](./deployment.md) - Set up your server
-2. [API Reference](./api.md) - REST API documentation
-3. [CLI Guide](./cli.md) - Command-line interface
-4. [Dashboard](./dashboard.md) - Web interface
+### Getting Started
 
-## Components
+- [Deployment Guide](./deployment.md) — Install and configure your server
+- [SDK Compatibility](./apify-sdk-environment.md) — Using the Apify SDK with Crawlee Cloud
 
-- **API Server** - Apify-compatible REST API
-- **Runner** - Docker-based Actor execution
-- **Dashboard** - Web UI for management
-- **CLI** - Command-line tools
+### Reference
 
-## Documentation
-
-| Document | Description |
-|----------|-------------|
-| [API Reference](./api.md) | REST API endpoints and usage |
-| [CLI Guide](./cli.md) | Command-line interface |
-| [Dashboard](./dashboard.md) | Web interface overview |
-| [Deployment](./deployment.md) | Server setup guide |
-| [Runner](./runner.md) | Actor execution engine |
-| [Apify SDK](./apify-sdk-environment.md) | SDK compatibility guide |
+- [API Reference](./api.md) — REST API endpoints
+- [CLI Guide](./cli.md) — Command-line interface
+- [Dashboard](./dashboard.md) — Web interface
+- [Runner](./runner.md) — Container execution engine
 
 ## Quick Links
 
-- [GitHub Repository](https://github.com/your-org/crawlee-cloud)
-- [Issue Tracker](https://github.com/your-org/crawlee-cloud/issues)
+- [Main README](../README.md)
 - [Changelog](../CHANGELOG.md)
+- [GitHub Repository](https://github.com/crawlee-cloud/crawlee-cloud)
 
-## License
+## Support
 
-MIT License - see [LICENSE](../LICENSE) for details.
+- [GitHub Issues](https://github.com/crawlee-cloud/crawlee-cloud/issues) — Bug reports and feature requests
+- [Discussions](https://github.com/crawlee-cloud/crawlee-cloud/discussions) — Questions and community support

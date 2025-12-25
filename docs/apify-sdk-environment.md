@@ -1,32 +1,24 @@
-# Apify SDK Environment
+# Apify SDK Compatibility
 
-Crawlee Cloud is fully compatible with the Apify SDK. Your existing Actors work with minimal configuration.
-
-## How It Works
-
-The Apify SDK reads the `APIFY_API_BASE_URL` environment variable to determine where to send API requests. By pointing this to your Crawlee Cloud server, all SDK calls are routed to your infrastructure.
+Crawlee Cloud is fully compatible with the official [Apify SDK](https://docs.apify.com/sdk/js). Your existing Actors work without code changes.
 
 ## Configuration
 
-### For Actor Development
-
-Set these environment variables:
+Set these environment variables to point the SDK to your server:
 
 ```bash
 export APIFY_API_BASE_URL=https://your-server.com/v2
 export APIFY_TOKEN=your-api-token
 ```
 
-### In Your Actor Code
-
-No code changes needed! The SDK uses environment variables automatically:
+That's it. Your Actor code works unchanged:
 
 ```typescript
 import { Actor } from 'apify';
 
 await Actor.init();
 
-// All these work with Crawlee Cloud:
+// All SDK methods work with Crawlee Cloud
 await Actor.pushData({ title: 'Example' });
 const input = await Actor.getInput();
 await Actor.setValue('OUTPUT', results);
@@ -34,7 +26,9 @@ await Actor.setValue('OUTPUT', results);
 await Actor.exit();
 ```
 
-## Supported SDK Features
+---
+
+## Supported Features
 
 | Feature | Status |
 |---------|--------|
@@ -45,12 +39,14 @@ await Actor.exit();
 | `Actor.openDataset()` | ✅ |
 | `Actor.openKeyValueStore()` | ✅ |
 | `Actor.openRequestQueue()` | ✅ |
-| Request Queue deduplication | ✅ |
+| Request deduplication | ✅ |
 | Distributed locking | ✅ |
 
-## Running Locally
+---
 
-Test your Actor against Crawlee Cloud:
+## Local Testing
+
+Test your Actor against your Crawlee Cloud instance:
 
 ```bash
 APIFY_API_BASE_URL=http://localhost:3000/v2 \
@@ -58,19 +54,26 @@ APIFY_TOKEN=your-token \
 npm start
 ```
 
-## Pushing to Crawlee Cloud
+---
+
+## Pushing Actors
 
 ```bash
-# Login first
+# Login to your server
 crawlee-cloud login --server https://your-server.com
 
 # Push your Actor
 crawlee-cloud push my-actor
 ```
 
+---
+
 ## Differences from Apify Platform
 
-- Self-hosted: You control the infrastructure
-- No usage limits: Run as many Actors as your hardware allows
-- Private: Data never leaves your servers
-- Open source: Customize as needed
+| Aspect | Apify Platform | Crawlee Cloud |
+|--------|----------------|---------------|
+| Hosting | Apify's cloud | Your infrastructure |
+| Pricing | Per compute unit | Your server costs |
+| Data | Apify's servers | Your servers (private) |
+| Limits | Plan-based | No artificial limits |
+| Source | Proprietary | Open source |

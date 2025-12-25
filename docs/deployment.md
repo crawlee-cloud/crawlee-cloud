@@ -4,70 +4,94 @@ Deploy Crawlee Cloud to your own infrastructure.
 
 ## Requirements
 
-- Docker and Docker Compose
-- Node.js 18+
-- PostgreSQL 14+
-- Redis 6+
-- S3-compatible storage (MinIO, AWS S3, etc.)
+- **Node.js** 18+
+- **Docker** & Docker Compose
+- **PostgreSQL** 14+
+- **Redis** 6+
+- **S3-compatible storage** (MinIO, AWS S3, etc.)
 
-## Quick Start
+---
 
-### 1. Clone the Repository
+## Quick Start (Development)
 
 ```bash
-git clone https://github.com/your-org/crawlee-cloud.git
+# Clone repository
+git clone https://github.com/crawlee-cloud/crawlee-cloud.git
 cd crawlee-cloud
-```
 
-### 2. Configure Environment
+# Start infrastructure
+docker compose -f docker-compose.dev.yml up -d
 
-```bash
-cp .env.example .env
-# Edit .env with your settings
-```
-
-### 3. Start Infrastructure
-
-```bash
-docker compose up -d
-```
-
-### 4. Build and Run
-
-```bash
+# Install and build
 npm install
 npm run build
+
+# Run migrations
 npm run db:migrate
+
+# Start server
 npm run dev
 ```
+
+---
 
 ## Production Deployment
 
 ### Using Docker Compose
 
 ```bash
-docker compose -f docker-compose.yml up -d
+docker compose up -d
 ```
+
+This starts:
+- API Server (port 3000)
+- Runner
+- PostgreSQL
+- Redis
+- MinIO
 
 ### Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `PORT` | API server port | `3000` |
-| `DATABASE_URL` | PostgreSQL connection string | - |
-| `REDIS_URL` | Redis connection string | - |
-| `S3_ENDPOINT` | S3-compatible endpoint | - |
-| `S3_ACCESS_KEY` | S3 access key | - |
-| `S3_SECRET_KEY` | S3 secret key | - |
-| `S3_BUCKET` | S3 bucket name | - |
-| `API_SECRET` | JWT signing secret | - |
+Create a `.env` file with your production settings:
 
-### Scaling
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `PORT` | API server port | No (default: 3000) |
+| `DATABASE_URL` | PostgreSQL connection string | Yes |
+| `REDIS_URL` | Redis connection string | Yes |
+| `S3_ENDPOINT` | S3-compatible endpoint URL | Yes |
+| `S3_ACCESS_KEY` | S3 access key | Yes |
+| `S3_SECRET_KEY` | S3 secret key | Yes |
+| `S3_BUCKET` | S3 bucket name | Yes |
+| `S3_REGION` | S3 region | No (default: us-east-1) |
+| `API_SECRET` | JWT signing secret | Yes |
 
-- **API Server**: Stateless, scale horizontally
-- **Runner**: Scale based on workload
-- **PostgreSQL**: Use managed service for HA
-- **Redis**: Use Redis Cluster for scale
+### Example `.env`
+
+```bash
+PORT=3000
+DATABASE_URL=postgresql://user:pass@db:5432/crawlee
+REDIS_URL=redis://redis:6379
+S3_ENDPOINT=https://s3.amazonaws.com
+S3_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE
+S3_SECRET_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+S3_BUCKET=crawlee-cloud-storage
+API_SECRET=your-secure-random-string
+```
+
+---
+
+## Scaling
+
+| Component | Scaling Strategy |
+|-----------|------------------|
+| API Server | Horizontal (stateless) |
+| Runner | Horizontal (multiple instances) |
+| PostgreSQL | Managed service recommended |
+| Redis | Redis Cluster for high availability |
+| S3 | Managed service recommended |
+
+---
 
 ## Health Checks
 
@@ -75,8 +99,15 @@ docker compose -f docker-compose.yml up -d
 curl http://localhost:3000/health
 ```
 
+Returns:
+```json
+{"status": "ok", "version": "0.1.0"}
+```
+
+---
+
 ## Backups
 
-- PostgreSQL: Use `pg_dump` for regular backups
-- S3: Enable versioning on your bucket
-- Redis: Enable RDB persistence
+- **PostgreSQL**: Use `pg_dump` or managed backups
+- **S3**: Enable bucket versioning
+- **Redis**: Enable RDB/AOF persistence
