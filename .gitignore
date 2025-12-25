@@ -26,6 +26,7 @@ coverage/
 # OS
 .DS_Store
 Thumbs.db
+tools/
 
 # Logs
 *.log
@@ -34,4 +35,3 @@ pnpm-debug.log*
 
 # Docker
 docker-compose.override.yml
-rebuild_history.sh
