@@ -1,0 +1,32 @@
+<svg width="450" height="100" viewBox="0 0 450 100" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="crawleeOrange" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0.00095" stop-color="#FFB200"/>
+      <stop offset="0.08148" stop-color="#FFB100"/>
+      <stop offset="0.15601" stop-color="#FFAF02"/>
+      <stop offset="0.22546" stop-color="#FEAB04"/>
+      <stop offset="0.29076" stop-color="#FDA606"/>
+      <stop offset="0.35284" stop-color="#FCA00A"/>
+      <stop offset="0.41261" stop-color="#FB980E"/>
+      <stop offset="0.47099" stop-color="#FA9013"/>
+      <stop offset="0.52891" stop-color="#F98618"/>
+      <stop offset="0.58730" stop-color="#F77B1E"/>
+      <stop offset="0.64706" stop-color="#F56F24"/>
+      <stop offset="0.70914" stop-color="#F3632B"/>
+      <stop offset="0.77444" stop-color="#F25532"/>
+      <stop offset="0.84390" stop-color="#EF473A"/>
+      <stop offset="0.91843" stop-color="#ED3842"/>
+      <stop offset="0.99895" stop-color="#EB284B"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Cloud Icon - Added padding/margin by increasing translate X/Y -->
+  <g transform="translate(20, 20) scale(1.2)">
+      <path d="M38.5,40 H13.5 C6.044,40, 0,33.956, 0,26.5 C0,19.336, 5.618,13.435, 12.712,13.023 C14.686,5.571, 21.492,0, 29.5,0 C38.56,0, 46.075,6.075, 47.784,14.502 C48.34,14.435, 48.913,14.4, 49.5,14.4 C57.508,14.4, 64,20.892, 64,28.9 C64,36.908, 57.508,43.4, 49.5,43.4 C48.65,43.4, 47.818,43.332, 47,43.2 V40 H38.5 Z" fill="url(#crawleeOrange)"/>
+  </g>
+  
+  <!-- Text - Shifted right to accommodate larger margin -->
+  <text x="110" y="65" font-family="'Inter', -apple-system, sans-serif" font-size="44" font-weight="700" fill="#F3F4FA" letter-spacing="-1">
+    Crawlee <tspan fill="url(#crawleeOrange)">Cloud</tspan>
+  </text>
+</svg>
