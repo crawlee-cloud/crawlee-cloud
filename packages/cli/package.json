@@ -1,11 +1,11 @@
 {
   "name": "@crawlee-cloud/cli",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "description": "CLI for Crawlee Cloud - run and deploy Actors",
   "type": "module",
   "bin": {
-    "crawlee-cloud": "./dist/bin.js",
-    "cc": "./dist/bin.js"
+    "crawlee-cloud": "dist/bin.js",
+    "crc": "dist/bin.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -35,5 +35,20 @@
     "@types/node": "^20.10.0",
     "tsx": "^4.7.0",
     "typescript": "^5.7.2"
-  }
+  },
+  "files": [
+    "dist"
+  ],
+  "preferGlobal": true,
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/crawlee-cloud/crawlee-cloud.git"
+  },
+  "bugs": {
+    "url": "https://github.com/crawlee-cloud/crawlee-cloud/issues"
+  },
+  "homepage": "https://crawlee.cloud"
 }
