@@ -97,21 +97,21 @@ The API server starts at `http://localhost:3000`.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Your Actors                               │
-│            (using official Apify SDK, no changes)                │
+│                        Your Actors                              │
+│            (using official Apify SDK, no changes)               │
 └────────────────────────────┬────────────────────────────────────┘
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Crawlee Cloud API                            │
-│              (Apify-compatible REST endpoints)                   │
+│                     Crawlee Cloud API                           │
+│              (Apify-compatible REST endpoints)                  │
 └─────────────────────────────────────────────────────────────────┘
         │                    │                    │
         ▼                    ▼                    ▼
-   ┌─────────┐         ┌─────────┐         ┌─────────┐
+   ┌──────────┐         ┌─────────┐         ┌─────────┐
    │PostgreSQL│         │  Redis  │         │ S3/MinIO│
    │ metadata │         │ queues  │         │  blobs  │
-   └─────────┘         └─────────┘         └─────────┘
+   └──────────┘         └─────────┘         └─────────┘
 ```
 
 ### Components
