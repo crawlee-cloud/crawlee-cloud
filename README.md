@@ -8,7 +8,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green)](https://nodejs.org/)
 
-[Documentation](./docs) · [Quick Start](#quick-start) · [Contributing](#contributing)
+[Documentation](https://crawlee.cloud/docs) · [Quick Start](#quick-start) · [Contributing](#contributing)
 
 </div>
 
@@ -129,12 +129,12 @@ The API server starts at `http://localhost:3000`.
 
 | Guide | Description |
 |-------|-------------|
-| [API Reference](./docs/api.md) | REST API endpoints and usage |
-| [CLI Guide](./docs/cli.md) | Command-line interface |
-| [Dashboard](./docs/dashboard.md) | Web interface overview |
-| [Deployment](./docs/deployment.md) | Production deployment guide |
-| [Runner](./docs/runner.md) | Actor execution engine |
-| [SDK Compatibility](./docs/apify-sdk-environment.md) | Apify SDK integration |
+| [API Reference](https://crawlee.cloud/docs/api) | REST API endpoints and usage |
+| [CLI Guide](https://crawlee.cloud/docs/cli) | Command-line interface |
+| [Dashboard](https://crawlee.cloud/docs/dashboard) | Web interface overview |
+| [Deployment](https://crawlee.cloud/docs/deployment) | Production deployment guide |
+| [Runner](https://crawlee.cloud/docs/runner) | Actor execution engine |
+| [SDK Compatibility](https://crawlee.cloud/docs/apify-sdk-environment) | Apify SDK integration |
 
 ---
 
