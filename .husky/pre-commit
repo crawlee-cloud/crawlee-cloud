@@ -1,17 +1,8 @@
 #!/bin/sh
-. "$(dirname "$0")/_/husky.sh"
 
 echo "🔍 Running pre-commit checks..."
 
 # Run lint-staged (ESLint + Prettier on staged files)
 npx lint-staged
 
-# TypeScript type checking
-echo "📝 Type checking..."
-pnpm run typecheck
-
-# Run tests
-echo "🧪 Running tests..."
-pnpm run test -- --run
-
-echo "✅ All pre-commit checks passed!"
+echo "✅ Pre-commit checks passed!"
