@@ -12,6 +12,8 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green)](https://nodejs.org/)
 
+<a href="https://www.producthunt.com/products/crawlee-cloud?utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-crawlee-cloud" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1054817&theme=light" alt="Crawlee Cloud - Self-hosted platform for running web scrapers | Product Hunt" width="250" height="54" /></a>
+
 [Documentation](https://crawlee.cloud/docs) · [Quick Start](#quick-start) · [Contributing](#contributing)
 
 </div>
@@ -120,37 +122,37 @@ The API server starts at `http://localhost:3000`.
 
 ### Components
 
-| Component | Description |
-|-----------|-------------|
+| Component      | Description                                                 |
+| -------------- | ----------------------------------------------------------- |
 | **API Server** | Fastify-based REST API compatible with Apify's v2 endpoints |
-| **Runner** | Polls job queue and executes Actors in Docker containers |
-| **Dashboard** | Next.js web UI for monitoring and management |
-| **CLI** | Command-line tool for pushing and running Actors |
+| **Runner**     | Polls job queue and executes Actors in Docker containers    |
+| **Dashboard**  | Next.js web UI for monitoring and management                |
+| **CLI**        | Command-line tool for pushing and running Actors            |
 
 ---
 
 ## Documentation
 
-| Guide | Description |
-|-------|-------------|
-| [API Reference](https://crawlee.cloud/docs/api) | REST API endpoints and usage |
-| [CLI Guide](https://crawlee.cloud/docs/cli) | Command-line interface |
-| [Dashboard](https://crawlee.cloud/docs/dashboard) | Web interface overview |
-| [Deployment](https://crawlee.cloud/docs/deployment) | Production deployment guide |
-| [Runner](https://crawlee.cloud/docs/runner) | Actor execution engine |
-| [SDK Compatibility](https://crawlee.cloud/docs/apify-sdk-environment) | Apify SDK integration |
+| Guide                                                                 | Description                  |
+| --------------------------------------------------------------------- | ---------------------------- |
+| [API Reference](https://crawlee.cloud/docs/api)                       | REST API endpoints and usage |
+| [CLI Guide](https://crawlee.cloud/docs/cli)                           | Command-line interface       |
+| [Dashboard](https://crawlee.cloud/docs/dashboard)                     | Web interface overview       |
+| [Deployment](https://crawlee.cloud/docs/deployment)                   | Production deployment guide  |
+| [Runner](https://crawlee.cloud/docs/runner)                           | Actor execution engine       |
+| [SDK Compatibility](https://crawlee.cloud/docs/apify-sdk-environment) | Apify SDK integration        |
 
 ---
 
 ## Supported Apify SDK Features
 
-| Feature | Status |
-|---------|--------|
-| Datasets (`Actor.pushData`) | ✅ Supported |
+| Feature                                      | Status       |
+| -------------------------------------------- | ------------ |
+| Datasets (`Actor.pushData`)                  | ✅ Supported |
 | Key-Value Stores (`Actor.getValue/setValue`) | ✅ Supported |
-| Request Queues | ✅ Supported |
-| Request deduplication | ✅ Supported |
-| Distributed locking | ✅ Supported |
+| Request Queues                               | ✅ Supported |
+| Request deduplication                        | ✅ Supported |
+| Distributed locking                          | ✅ Supported |
 
 ---
 
