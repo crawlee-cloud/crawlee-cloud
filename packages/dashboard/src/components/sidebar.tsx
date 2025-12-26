@@ -1,30 +1,22 @@
-"use client";
+'use client';
 
-import Link from "next/link";
-import Image from "next/image";
-import { usePathname } from "next/navigation";
-import { 
-  LayoutDashboard, 
-  Play, 
-  Drama, 
-  Database, 
-  Settings, 
-  BookOpen,
-  LogOut
-} from "lucide-react";
-import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
+import Link from 'next/link';
+import Image from 'next/image';
+import { usePathname } from 'next/navigation';
+import { LayoutDashboard, Play, Drama, Database, Settings, BookOpen, LogOut } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
 
 const navItems = [
-  { href: "/", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/runs", label: "Runs", icon: Play },
-  { href: "/actors", label: "Actors", icon: Drama },
-  { href: "/datasets", label: "Datasets", icon: Database },
+  { href: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/runs', label: 'Runs', icon: Play },
+  { href: '/actors', label: 'Actors', icon: Drama },
+  { href: '/datasets', label: 'Datasets', icon: Database },
 ];
 
 const secondaryItems = [
-  { href: "/settings", label: "Settings", icon: Settings },
-  { href: "/docs", label: "Documentation", icon: BookOpen },
+  { href: '/settings', label: 'Settings', icon: Settings },
+  { href: '/docs', label: 'Documentation', icon: BookOpen },
 ];
 
 export function Sidebar() {
@@ -33,34 +25,32 @@ export function Sidebar() {
   return (
     <aside className="w-64 flex flex-col h-screen sticky top-0 border-r border-white/5 bg-black/40 backdrop-blur-xl">
       <div className="p-6 flex items-center gap-3">
-        <Image
-          src="/logo-dark.svg"
-          alt="Crawlee Cloud"
-          width={180}
-          height={40}
-          priority
-        />
+        <Image src="/logo-dark.svg" alt="Crawlee Cloud" width={180} height={40} priority />
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-4 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
         <nav className="space-y-1">
           {navItems.map((item) => {
-            const isActive = pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href));
+            const isActive =
+              pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href));
             return (
               <Link
                 key={item.href}
                 href={item.href}
                 className={cn(
-                  "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group relative overflow-hidden",
-                  isActive 
-                    ? "text-white" 
-                    : "text-muted-foreground hover:text-white"
+                  'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group relative overflow-hidden',
+                  isActive ? 'text-white' : 'text-muted-foreground hover:text-white'
                 )}
               >
                 {isActive && (
                   <div className="absolute inset-0 bg-white/5 border border-white/5 rounded-lg" />
                 )}
-                <item.icon className={cn("h-4 w-4 transition-colors relative z-10", isActive ? "text-indigo-400" : "text-muted-foreground group-hover:text-white")} />
+                <item.icon
+                  className={cn(
+                    'h-4 w-4 transition-colors relative z-10',
+                    isActive ? 'text-indigo-400' : 'text-muted-foreground group-hover:text-white'
+                  )}
+                />
                 <span className="relative z-10">{item.label}</span>
                 {isActive && (
                   <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-4 bg-indigo-500 rounded-full shadow-[0_0_8px_rgba(99,102,241,0.5)]" />
@@ -82,13 +72,18 @@ export function Sidebar() {
                   key={item.href}
                   href={item.href}
                   className={cn(
-                    "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group relative",
-                    isActive 
-                      ? "text-white bg-white/5" 
-                      : "text-muted-foreground hover:text-white hover:bg-white/5"
+                    'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 group relative',
+                    isActive
+                      ? 'text-white bg-white/5'
+                      : 'text-muted-foreground hover:text-white hover:bg-white/5'
                   )}
                 >
-                  <item.icon className={cn("h-4 w-4 transition-colors", isActive ? "text-indigo-400" : "text-muted-foreground group-hover:text-white")} />
+                  <item.icon
+                    className={cn(
+                      'h-4 w-4 transition-colors',
+                      isActive ? 'text-indigo-400' : 'text-muted-foreground group-hover:text-white'
+                    )}
+                  />
                   {item.label}
                 </Link>
               );
@@ -103,10 +98,10 @@ export function Sidebar() {
             ME
           </div>
           <div className="flex-1 overflow-hidden">
-            <p className="text-sm font-medium text-white/80 truncate">User Workspace</p>
+            <p className="text-sm font-medium text-white/80 truncate">Admin</p>
             <p className="text-[10px] text-emerald-400 truncate flex items-center gap-1">
               <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              Pro Plan
+              Self-Hosted
             </p>
           </div>
         </div>
