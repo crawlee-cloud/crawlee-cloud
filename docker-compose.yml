@@ -22,6 +22,8 @@ services:
       - JWT_SECRET=your-super-secret-jwt-key-change-in-production
       - RATE_LIMIT_MAX=1000
       - LOG_LEVEL=info
+      - ADMIN_EMAIL=admin@crawlee.cloud
+      - ADMIN_PASSWORD=crawlee.cloud
     depends_on:
       postgres:
         condition: service_healthy

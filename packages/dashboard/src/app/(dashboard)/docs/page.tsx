@@ -2,7 +2,7 @@ import { Book, ExternalLink, Code, Terminal, Webhook, Database, ArrowUpRight } f
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import Link from "next/link";
 
-const GITHUB_REPO = "https://github.com/your-org/crawlee-cloud";
+const GITHUB_REPO = "https://github.com/crawlee-cloud/crawlee-cloud";
 const CRAWLEE_DOCS = "https://crawlee.dev/docs";
 const APIFY_DOCS = "https://docs.apify.com";
 

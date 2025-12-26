@@ -10,6 +10,8 @@ export interface Config {
   s3Region: string;
   s3ForcePathStyle: boolean;
   apiSecret: string;
+  adminEmail?: string;
+  adminPassword?: string;
 }
 
 function env(key: string, defaultValue?: string): string {
@@ -17,6 +19,10 @@ function env(key: string, defaultValue?: string): string {
   if (value !== undefined) return value;
   if (defaultValue !== undefined) return defaultValue;
   throw new Error(`Missing: ${key}`);
+}
+
+function envOptional(key: string): string | undefined {
+  return process.env[key];
 }
 
 function envInt(key: string, defaultValue: number): number {
@@ -42,4 +48,6 @@ export const config: Config = {
   s3Region: env('S3_REGION', 'us-east-1'),
   s3ForcePathStyle: envBool('S3_FORCE_PATH_STYLE', true),
   apiSecret: env('API_SECRET', 'dev-secret-change-in-production'),
+  adminEmail: envOptional('ADMIN_EMAIL'),
+  adminPassword: envOptional('ADMIN_PASSWORD'),
 };

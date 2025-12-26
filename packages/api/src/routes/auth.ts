@@ -38,40 +38,8 @@ const apiKeySchema = z.object({
 });
 
 export async function authRoutes(app: FastifyInstance) {
-  /**
-   * Register a new user.
-   */
-  app.post('/v2/auth/register', async (request, reply) => {
-    const body = registerSchema.parse(request.body);
-    
-    // Check if email exists
-    const existing = await pool.query(
-      'SELECT id FROM users WHERE email = $1',
-      [body.email]
-    );
-    
-    if (existing.rows.length > 0) {
-      return reply.status(400).send({ error: { message: 'Email already registered' } });
-    }
-    
-    const userId = nanoid();
-    const passwordHash = await hashPassword(body.password);
-    
-    await pool.query(
-      `INSERT INTO users (id, email, password_hash, name, created_at) 
-       VALUES ($1, $2, $3, $4, NOW())`,
-      [userId, body.email, passwordHash, body.name || null]
-    );
-    
-    const token = createToken({ userId, email: body.email, role: 'user' });
-    
-    return reply.status(201).send({
-      data: {
-        user: { id: userId, email: body.email, name: body.name },
-        token,
-      },
-    });
-  });
+  // Registration is disabled - admin user is created from env vars on startup
+  // Users can be invited by admin (future feature)
   
   /**
    * Login and get JWT token.

@@ -2,17 +2,16 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
-import { UserPlus, AlertCircle } from "lucide-react";
+import Image from "next/image";
+import { LogIn, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
-export default function RegisterPage() {
+export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -23,26 +22,29 @@ export default function RegisterPage() {
 
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000";
-      const res = await fetch(`${apiUrl}/v2/auth/register`, {
+      const res = await fetch(`${apiUrl}/v2/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, name }),
+        body: JSON.stringify({ email, password }),
       });
 
       const data = await res.json();
 
       if (!res.ok) {
-        throw new Error(data.error?.message || "Registration failed");
+        throw new Error(data.error?.message || "Login failed");
       }
 
-      // Store token in localStorage
+      // Store token in localStorage and cookie
       localStorage.setItem("token", data.data.token);
       localStorage.setItem("user", JSON.stringify(data.data.user));
+      
+      // Set cookie for middleware auth (7 days expiry)
+      document.cookie = `token=${data.data.token}; path=/; max-age=${7 * 24 * 60 * 60}`;
 
       // Redirect to dashboard
       router.push("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Registration failed");
+      setError(err instanceof Error ? err.message : "Login failed");
     } finally {
       setLoading(false);
     }
@@ -53,13 +55,17 @@ export default function RegisterPage() {
       <Card className="w-full max-w-md">
         <CardHeader className="space-y-1 text-center">
           <div className="flex justify-center mb-4">
-            <div className="w-12 h-12 bg-linear-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center">
-              <span className="text-white font-bold text-xl">CP</span>
-            </div>
+            <Image
+              src="/logo-dark.svg"
+              alt="Crawlee Cloud"
+              width={200}
+              height={45}
+              priority
+            />
           </div>
-          <CardTitle className="text-2xl font-bold">Create an account</CardTitle>
+          <CardTitle className="text-2xl font-bold">Welcome back</CardTitle>
           <CardDescription>
-            Get started with Crawlee Platform
+            Sign in to your Crawlee Cloud account
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -70,16 +76,6 @@ export default function RegisterPage() {
                 {error}
               </div>
             )}
-            
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Name</label>
-              <Input
-                type="text"
-                placeholder="Your name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-              />
-            </div>
             
             <div className="space-y-2">
               <label className="text-sm font-medium">Email</label>
@@ -100,29 +96,20 @@ export default function RegisterPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
-                minLength={8}
               />
-              <p className="text-xs text-muted-foreground">Minimum 8 characters</p>
             </div>
             
             <Button type="submit" className="w-full" disabled={loading}>
               {loading ? (
-                "Creating account..."
+                "Signing in..."
               ) : (
                 <>
-                  <UserPlus className="mr-2 h-4 w-4" />
-                  Create Account
+                  <LogIn className="mr-2 h-4 w-4" />
+                  Sign In
                 </>
               )}
             </Button>
           </form>
-          
-          <div className="mt-6 text-center text-sm text-muted-foreground">
-            Already have an account?{" "}
-            <Link href="/login" className="text-primary hover:underline">
-              Sign in
-            </Link>
-          </div>
         </CardContent>
       </Card>
     </div>
