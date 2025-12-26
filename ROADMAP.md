@@ -1,71 +1,71 @@
 # Crawlee Cloud Roadmap
 
-This document outlines planned features and improvements for Crawlee Cloud.
+A CLI-first platform for running large-scale scrapers on your own infrastructure.
 
 ## Current Version: v0.1.0 ✅
 
 - Apify-compatible REST API
 - Docker-based Actor execution
-- Dashboard for monitoring
-- CLI for deployment
+- CLI for deployment (`cc push`, `cc run`, `cc logs`)
 - Datasets, Key-Value Stores, Request Queues
+- Basic web dashboard
 
 ---
 
-## v0.2.0 - User Management & Security
+## v0.2.0 - CLI & Developer Experience
 
-- [ ] **Invite-only user registration** - Admin invites users via email
-- [ ] **Role-based access control** - Admin, Developer, Viewer roles
-- [ ] **API key scopes** - Fine-grained permissions per key
-- [ ] **Audit logging** - Track user actions
-- [ ] **Password reset flow**
+Priority: Make the CLI the best way to work with Crawlee Cloud.
 
-## v0.3.0 - Scheduling & Webhooks
+- [ ] **Improved CLI output** - Better formatting, colors, progress bars
+- [ ] **`cc init`** - Scaffold new Actor projects from templates
+- [ ] **`cc dev`** - Local development mode with hot reload
+- [ ] **`cc status`** - Check run status and resource usage
+- [ ] **Input schema validation** - Validate inputs before running
+- [ ] **Better error messages** - Actionable hints for common issues
 
-- [ ] **Cron scheduling** - Schedule Actor runs with cron expressions
+## v0.3.0 - Production Scraping at Scale
+
+Priority: Run large scraping jobs reliably.
+
+- [ ] **Cron scheduling** - Schedule runs with cron expressions
+- [ ] **Retry policies** - Automatic retries with configurable backoff
+- [ ] **Run timeouts** - Kill stuck runs automatically
 - [ ] **Webhooks** - HTTP callbacks on run completion
-- [ ] **Retry policies** - Automatic retries with backoff
-- [ ] **Run timeout configuration**
-- [ ] **Email notifications**
+- [ ] **Multi-worker runners** - Scale horizontally for parallel execution
+- [ ] **Resource limits** - Memory/CPU caps per run
 
-## v0.4.0 - Scaling & Performance
+## v0.4.0 - Reliability & Operations
 
-- [ ] **Multi-worker support** - Horizontal scaling of runners
-- [ ] **Resource quotas** - Limit CPU/memory per user
-- [ ] **Priority queues** - High-priority Actor runs
-- [ ] **Run history retention policies**
-- [ ] **Metrics & monitoring** - Prometheus/Grafana integration
+Priority: Production-grade stability.
 
-## v0.5.0 - Developer Experience
+- [ ] **Metrics & monitoring** - Prometheus endpoints
+- [ ] **Health checks** - API and runner health monitoring
+- [ ] **Graceful shutdown** - Complete in-flight runs before stopping
+- [ ] **Run history retention** - Auto-cleanup old runs and data
+- [ ] **Backup & restore** - Database backup utilities
 
-- [ ] **Actor templates** - Quick-start boilerplate code
-- [ ] **Web IDE** - Edit Actors directly in dashboard
-- [ ] **Live log streaming** - WebSocket-based real-time logs
-- [ ] **Input schema validation** - JSON Schema for Actor inputs
-- [ ] **Actor versioning** - Deploy specific versions
+## v0.5.0 - Polish
 
-## v1.0.0 - Production Ready
-
-- [ ] **High availability** - Multi-region deployment support
-- [ ] **Backup & restore** - Automated database backups
-- [ ] **SSL/TLS** - Built-in certificate management
-- [ ] **Helm chart** - Easy Kubernetes deployment
-- [ ] **Documentation site** - Comprehensive docs portal
+- [ ] **Actor versioning** - Deploy and rollback specific versions
+- [ ] **API key scopes** - Read-only vs full access keys
+- [ ] **Improved dashboard** - Better UX for those who prefer UI
+- [ ] **Documentation improvements**
 
 ---
 
-## Future Ideas 💡
+## Non-Goals (for now)
 
-- **Proxy management** - Built-in proxy rotation
-- **Fingerprint browser actors** - Anti-detection support
-- **Actor marketplace** - Share and discover community Actors
-- **Plugin system** - Extend platform functionality
-- **GraphQL API** - Alternative to REST endpoints
+To keep focus, these are explicitly **not** on the roadmap:
+
+- ❌ Web IDE for editing Actors
+- ❌ Multi-tenant workspaces
+- ❌ Complex RBAC/permissions
+- ❌ Built-in proxy rotation (use your own)
 
 ---
 
 ## Contributing
 
-Have ideas? Open an issue or discussion on GitHub!
+Have ideas? Open an issue on GitHub!
 
-We prioritize features based on community feedback.
+The best contributions are CLI improvements, bug fixes, and documentation.
