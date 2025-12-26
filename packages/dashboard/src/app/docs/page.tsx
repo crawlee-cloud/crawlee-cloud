@@ -63,8 +63,8 @@ const docCards: DocCard[] = [
     external: true,
   },
   {
-    title: "Migration Guide",
-    description: "Migrate from Apify Cloud",
+    title: "Bring Your Code",
+    description: "Works with your existing Actors",
     icon: ExternalLink,
     iconColor: "pink",
     items: ["Zero-code migration", "Environment variables", "API compatibility", "Data export/import"],

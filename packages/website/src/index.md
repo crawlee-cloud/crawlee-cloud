@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: 'Crawlee Cloud'
-  text: 'The Pro Platform for Web Scraping'
-  tagline: 'Deploy, monitor, and scale your Crawlee scrapers with an Apify-compatible API. Open source, self-hosted, and uncompromising.'
+  text: 'Your Scrapers, Your Cloud'
+  tagline: 'Run Crawlee and Apify Actors on your own infrastructure. Open source, self-hosted, and built with love for developers.'
   image:
     src: /logo.svg
     alt: Crawlee Cloud
@@ -23,8 +23,8 @@ features:
     link: /docs/deployment
     linkText: Deploy Now
   - icon: <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-zap"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
-    title: Apify Compatible API
-    details: Seamlessly migrate existing Apify Actors to your own cloud. A drop-in replacement for the Apify platform API.
+    title: SDK Compatible
+    details: Already using the Apify SDK? Great! Your existing code works here too. No rewrites needed, just point and run.
     link: /docs/apify-sdk-environment
     linkText: Learn More
   - icon: <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-globe"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
@@ -50,7 +50,7 @@ features:
 ---
 
 <div class="trusted-by-strip">
-  <p>POWERING THE NEXT GENERATION OF DATA EXTRACTION</p>
+  <p>BUILT BY DEVELOPERS, FOR DEVELOPERS ✨</p>
 </div>
 
 <div class="custom-section">

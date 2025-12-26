@@ -16,15 +16,15 @@
 
 ## Why Crawlee Cloud?
 
-Running web scrapers at scale can get expensive. Crawlee Cloud lets you run your existing Apify Actors on your own servers with **zero code changes** — just point your SDK to your server instead of Apify's.
+Love the Crawlee/Apify ecosystem but want the freedom to run things your way? Crawlee Cloud brings the same great developer experience to your own infrastructure. Keep using the tools you love — just host them wherever you want.
 
 ### Key Benefits
 
-- **💰 Reduce costs** — No per-compute-unit pricing, just your infrastructure costs
-- **🔒 Data privacy** — Your scraped data never leaves your servers
-- **⚡ Full compatibility** — Works with the official Apify SDK out of the box
+- **� Your infrastructure** — Deploy on your own servers, cloud, or anywhere you like
+- **🔒 Complete privacy** — Your data stays exactly where you want it
+- **⚡ SDK compatible** — Works seamlessly with the Apify SDK you already know
 - **🐳 Container-based** — Each Actor runs in an isolated Docker container
-- **📊 Built-in dashboard** — Monitor runs, browse datasets, manage Actors
+- **📊 Beautiful dashboard** — Monitor runs, explore datasets, manage everything visually
 
 ---
 

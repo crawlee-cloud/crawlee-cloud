@@ -68,12 +68,12 @@ crawlee-cloud push my-actor
 
 ---
 
-## Differences from Apify Platform
+## Choose Your Setup
 
-| Aspect | Apify Platform | Crawlee Cloud |
-|--------|----------------|---------------|
-| Hosting | Apify's cloud | Your infrastructure |
-| Pricing | Per compute unit | Your server costs |
-| Data | Apify's servers | Your servers (private) |
-| Limits | Plan-based | No artificial limits |
-| Source | Proprietary | Open source |
+| Aspect  | Hosted (Apify)  | Self-Hosted (Crawlee Cloud) |
+|---------|-----------------|-----------------------------|
+| Hosting | Managed for you | Your own servers            |
+| Billing | Usage-based     | Your infrastructure         |
+| Data    | Cloud storage   | Self-managed storage         |
+| Scale   | Plan tiers      | Configure as needed          |
+| Source  | Commercial      | Open source                  |
