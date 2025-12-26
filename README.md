@@ -1,6 +1,10 @@
 <div align="center">
 
-# Crawlee Cloud
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="./logo-light.svg">
+    <img src="./logo-dark.svg" width="450" alt="Crawlee Cloud Logo" />
+  </picture>
 
 **Self-hosted, open-source platform for running Apify Actors on your own infrastructure.**
 
