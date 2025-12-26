@@ -27,9 +27,7 @@
     "clean": "turbo run clean && rm -rf node_modules",
     "db:migrate": "npm run db:migrate --workspace=@crawlee-cloud/api",
     "docker:dev": "docker compose -f docker-compose.dev.yml up -d",
-    "docker:down": "docker compose down",
-    "website:dev": "npm run dev --workspace=@crawlee-cloud/website",
-    "website:build": "npm run build --workspace=@crawlee-cloud/website"
+    "docker:down": "docker compose down"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
