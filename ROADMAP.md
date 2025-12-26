@@ -6,7 +6,7 @@ A CLI-first platform for running large-scale scrapers on your own infrastructure
 
 - Apify-compatible REST API
 - Docker-based Actor execution
-- CLI for deployment (`cc push`, `cc run`, `cc logs`)
+- CLI for deployment (`crc push`, `crc run`, `crc logs`)
 - Datasets, Key-Value Stores, Request Queues
 - Basic web dashboard
 
@@ -17,9 +17,9 @@ A CLI-first platform for running large-scale scrapers on your own infrastructure
 Priority: Make the CLI the best way to work with Crawlee Cloud.
 
 - [ ] **Improved CLI output** - Better formatting, colors, progress bars
-- [ ] **`cc init`** - Scaffold new Actor projects from templates
-- [ ] **`cc dev`** - Local development mode with hot reload
-- [ ] **`cc status`** - Check run status and resource usage
+- [ ] **`crc init`** - Scaffold new Actor projects from templates
+- [ ] **`crc dev`** - Local development mode with hot reload
+- [ ] **`crc status`** - Check run status and resource usage
 - [ ] **Input schema validation** - Validate inputs before running
 - [ ] **Better error messages** - Actionable hints for common issues
 
