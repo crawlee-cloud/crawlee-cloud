@@ -1,0 +1,64 @@
+name: Publish CLI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'packages/cli/**'
+      - '!packages/cli/package.json' # Avoid infinite loop from version bump
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: packages/cli
+
+      - name: Build
+        run: npm run build
+        working-directory: packages/cli
+
+      - name: Bump version
+        id: version
+        run: |
+          cd packages/cli
+          # Get current version
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          echo "Current version: $CURRENT_VERSION"
+
+          # Bump patch version
+          npm version patch --no-git-tag-version
+
+          # Get new version
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          echo "New version: $NEW_VERSION"
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Commit version bump
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add packages/cli/package.json
+          git commit -m "chore(cli): bump version to ${{ steps.version.outputs.new_version }}" || echo "No changes to commit"
+          git push
+
+      - name: Publish to npm (trusted publishing)
+        run: npm publish --provenance --access public
+        working-directory: packages/cli
