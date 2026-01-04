@@ -1,6 +1,6 @@
 {
   "name": "@crawlee-cloud/cli",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "CLI for Crawlee Cloud - run and deploy Actors",
   "type": "module",
   "bin": {
@@ -23,14 +23,18 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "commander": "^12.1.0",
+    "adm-zip": "^0.5.16",
     "chalk": "^5.3.0",
-    "ora": "^8.1.1",
-    "inquirer": "^12.1.0",
+    "chokidar": "^5.0.0",
+    "commander": "^12.1.0",
+    "dotenv": "^16.4.7",
     "fs-extra": "^11.2.0",
-    "dotenv": "^16.4.7"
+    "inquirer": "^12.1.0",
+    "ora": "^8.1.1",
+    "table": "^6.9.0"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
     "@types/fs-extra": "^11.0.4",
     "@types/node": "^20.10.0",
     "tsx": "^4.7.0",

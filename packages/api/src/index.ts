@@ -1,7 +1,10 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import compress from '@fastify/compress';
 import { config } from './config.js';
 import { initDatabase } from './db/index.js';
+import { initS3 } from './storage/s3.js';
+import { initRedis } from './storage/redis.js';
 import { authRoutes } from './routes/auth.js';
 import { actorsRoutes } from './routes/actors.js';
 import { runsRoutes } from './routes/runs.js';
@@ -12,9 +15,37 @@ import { logsRoutes } from './routes/logs.js';
 import { registryRoutes } from './routes/registry.js';
 import { setupAdminUser } from './setup.js';
 
-const app = Fastify({ logger: { level: config.logLevel } });
+const app = Fastify({
+  logger: { level: config.logLevel },
+  // Increase body limit for batch requests (10MB)
+  bodyLimit: 10 * 1024 * 1024,
+});
 
 await app.register(cors, { origin: true });
+
+// Enable compression/decompression (handles gzip request bodies from SDK)
+await app.register(compress, { global: true });
+
+// Add content type parsers for Apify SDK compatibility
+// The SDK sends form-urlencoded for some endpoints
+app.addContentTypeParser(
+  'application/x-www-form-urlencoded',
+  { parseAs: 'string' },
+  (_req, body, done) => {
+    // For form-urlencoded, we just pass through - query params are used instead
+    done(null, body || {});
+  }
+);
+
+// Also handle text/plain for some SDK calls
+app.addContentTypeParser('text/plain', { parseAs: 'buffer' }, (_req, body, done) => {
+  done(null, body);
+});
+
+// Handle octet-stream for binary data
+app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (_req, body, done) => {
+  done(null, body);
+});
 
 // Register routes
 await authRoutes(app);
@@ -37,6 +68,12 @@ app.get('/health', () => ({
 async function start() {
   // Initialize database connection first
   await initDatabase();
+
+  // Initialize S3 storage
+  await initS3();
+
+  // Initialize Redis
+  await initRedis();
 
   // Setup admin user from env vars
   await setupAdminUser();
