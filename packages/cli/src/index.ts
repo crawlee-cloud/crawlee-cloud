@@ -40,3 +40,5 @@ program.addCommand(statusCommand);
 program.addCommand(loginCommand);
 
 export { program as cli };
+
+// v0.2.1 trigger
