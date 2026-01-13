@@ -1,0 +1,39 @@
+# CODEOWNERS file for Crawlee Cloud
+# This file defines individuals or teams responsible for code in the repository.
+# More info: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owners for everything in the repo
+# These owners will be requested for review when someone opens a PR
+* @crawlee-cloud/maintainers
+
+# GitHub configuration and workflows
+/.github/ @crawlee-cloud/maintainers
+
+# Docker configuration
+/docker/ @crawlee-cloud/maintainers
+
+# API package
+/packages/api/ @crawlee-cloud/api-maintainers
+
+# Runner package
+/packages/runner/ @crawlee-cloud/runner-maintainers
+
+# Dashboard package
+/packages/dashboard/ @crawlee-cloud/dashboard-maintainers
+
+# CLI package
+/packages/cli/ @crawlee-cloud/cli-maintainers
+
+# Documentation
+/*.md @crawlee-cloud/maintainers
+/packages/**/README.md @crawlee-cloud/maintainers
+
+# Configuration files
+/package.json @crawlee-cloud/maintainers
+/tsconfig*.json @crawlee-cloud/maintainers
+/turbo.json @crawlee-cloud/maintainers
+/.prettierrc @crawlee-cloud/maintainers
+/eslint.config.mjs @crawlee-cloud/maintainers
+
+# Docker Compose files
+/docker-compose*.yml @crawlee-cloud/maintainers
