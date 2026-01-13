@@ -1,0 +1,75 @@
+name: Question
+description: Ask a question about Crawlee Cloud
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for your question! Please fill out the form below. For general discussions, consider using [GitHub Discussions](https://github.com/crawlee-cloud/crawlee-cloud/discussions) instead.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What would you like to know?
+      placeholder: How do I...?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: topic
+    attributes:
+      label: Topic
+      description: What topic does your question relate to?
+      options:
+        - Installation and Setup
+        - Configuration
+        - API Usage
+        - CLI Usage
+        - Dashboard
+        - Actor Development
+        - Deployment
+        - Storage (Datasets, KV Stores, Queues)
+        - Authentication and Security
+        - Performance and Scaling
+        - Troubleshooting
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Provide any relevant context about your question.
+      placeholder: I'm trying to... but I'm not sure how to...
+    validations:
+      required: false
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What Have You Tried?
+      description: What have you already tried or researched?
+      placeholder: I've looked at the documentation and tried...
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Information
+      description: Any additional information that might help us answer your question.
+      placeholder: Additional details...
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      description: Please confirm the following
+      options:
+        - label: I have checked the documentation
+          required: true
+        - label: I have searched existing issues and discussions
+          required: true

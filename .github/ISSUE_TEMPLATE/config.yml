@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: GitHub Discussions
+    url: https://github.com/crawlee-cloud/crawlee-cloud/discussions
+    about: Ask questions and discuss ideas with the community
+  - name: Documentation
+    url: https://github.com/crawlee-cloud/crawlee-cloud#readme
+    about: Read the documentation to learn more about Crawlee Cloud
