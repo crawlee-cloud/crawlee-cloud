@@ -1,39 +1,43 @@
 # CODEOWNERS file for Crawlee Cloud
 # This file defines individuals or teams responsible for code in the repository.
 # More info: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# NOTE: Update the usernames/teams below with actual maintainers once they are set up.
+# Teams must be created in the organization and have write access to the repository.
+# Format: @username or @org/team-name
 
 # Default owners for everything in the repo
-# These owners will be requested for review when someone opens a PR
-* @crawlee-cloud/maintainers
+# Uncomment and update with actual maintainers:
+# * @username1 @username2
 
 # GitHub configuration and workflows
-/.github/ @crawlee-cloud/maintainers
+# /.github/ @username1
 
 # Docker configuration
-/docker/ @crawlee-cloud/maintainers
+# /docker/ @username1
 
 # API package
-/packages/api/ @crawlee-cloud/api-maintainers
+# /packages/api/ @api-maintainer
 
 # Runner package
-/packages/runner/ @crawlee-cloud/runner-maintainers
+# /packages/runner/ @runner-maintainer
 
 # Dashboard package
-/packages/dashboard/ @crawlee-cloud/dashboard-maintainers
+# /packages/dashboard/ @dashboard-maintainer
 
 # CLI package
-/packages/cli/ @crawlee-cloud/cli-maintainers
+# /packages/cli/ @cli-maintainer
 
 # Documentation
-/*.md @crawlee-cloud/maintainers
-/packages/**/README.md @crawlee-cloud/maintainers
+# /*.md @docs-maintainer
+# /packages/**/README.md @docs-maintainer
 
 # Configuration files
-/package.json @crawlee-cloud/maintainers
-/tsconfig*.json @crawlee-cloud/maintainers
-/turbo.json @crawlee-cloud/maintainers
-/.prettierrc @crawlee-cloud/maintainers
-/eslint.config.mjs @crawlee-cloud/maintainers
+# /package.json @username1
+# /tsconfig*.json @username1
+# /turbo.json @username1
+# /.prettierrc @username1
+# /eslint.config.mjs @username1
 
 # Docker Compose files
-/docker-compose*.yml @crawlee-cloud/maintainers
+# /docker-compose*.yml @username1
