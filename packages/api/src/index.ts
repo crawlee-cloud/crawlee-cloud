@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import compress from '@fastify/compress';
+import websocket from '@fastify/websocket';
 import { config } from './config.js';
 import { initDatabase } from './db/index.js';
 import { initS3 } from './storage/s3.js';
@@ -25,6 +26,9 @@ await app.register(cors, { origin: true });
 
 // Enable compression/decompression (handles gzip request bodies from SDK)
 await app.register(compress, { global: true });
+
+// Register websocket plugin
+await app.register(websocket);
 
 // Add content type parsers for Apify SDK compatibility
 // The SDK sends form-urlencoded for some endpoints

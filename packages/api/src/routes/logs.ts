@@ -55,9 +55,36 @@ export const logsRoutes: FastifyPluginAsync = async (fastify) => {
     };
   });
 
-  // TODO: WebSocket streaming route requires @fastify/websocket plugin registration
-  // Uncomment and configure when websocket support is needed
-  // fastify.get('/actor-runs/:runId/logs/stream', { websocket: true }, ...)
+  /**
+   * GET /v2/actor-runs/:runId/logs/stream - Stream logs via WebSocket
+   */
+  fastify.get<{
+    Params: { runId: string };
+  }>('/actor-runs/:runId/logs/stream', { websocket: true }, (connection, req) => {
+    const { runId } = req.params;
+    const subscriber = redis.duplicate();
+    const channel = `logs:${runId}`;
+
+    subscriber.subscribe(channel, (err) => {
+      if (err) {
+        req.log.error(`Failed to subscribe to Redis channel ${channel}`, err);
+        connection.socket.send(JSON.stringify({ error: 'Failed to subscribe to log stream' }));
+        connection.socket.close();
+        return;
+      }
+      req.log.info(`Client subscribed to Redis channel ${channel}`);
+    });
+
+    subscriber.on('message', (_channel, message) => {
+      connection.socket.send(message);
+    });
+
+    connection.socket.on('close', () => {
+      req.log.info(`Client unsubscribed from Redis channel ${channel}`);
+      subscriber.unsubscribe(channel);
+      subscriber.quit();
+    });
+  });
 };
 
 /**
