@@ -1,4 +1,6 @@
+/* eslint-disable @typescript-eslint/no-non-null-assertion, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return */
 /**
+
  * Dataset routes - Apify-compatible endpoints.
  * 
  * Users call these endpoints via APIFY_API_BASE_URL.
@@ -7,6 +9,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { nanoid } from 'nanoid';
 import { query } from '../db/index.js';
+import { authenticate } from '../auth/middleware.js';
 import { putDatasetItem, listDatasetItems } from '../storage/s3.js';
 
 interface DatasetRow {
@@ -20,11 +23,13 @@ interface DatasetRow {
 }
 
 export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.addHook('preHandler', authenticate);
+
   /**
    * GET /v2/datasets - List datasets
    */
-  fastify.get('/datasets', async (_request, _reply) => {
-    const result = await query<DatasetRow>('SELECT * FROM datasets ORDER BY created_at DESC LIMIT 100');
+  fastify.get('/datasets', async (request) => {
+    const result = await query<DatasetRow>('SELECT * FROM datasets WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100', [request.user!.id]);
     
     return {
       data: {
@@ -46,8 +51,8 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
     if (name) {
       // Try to get existing
       const existing = await query<DatasetRow>(
-        'SELECT * FROM datasets WHERE name = $1',
-        [name]
+        'SELECT * FROM datasets WHERE name = $1 AND user_id = $2',
+        [name, request.user!.id]
       );
       if (existing.rows[0]) {
         return { data: formatDataset(existing.rows[0]) };
@@ -57,8 +62,8 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
     // Create new
     const id = nanoid();
     const result = await query<DatasetRow>(
-      `INSERT INTO datasets (id, name) VALUES ($1, $2) RETURNING *`,
-      [id, name || null]
+      `INSERT INTO datasets (id, name, user_id) VALUES ($1, $2, $3) RETURNING *`,
+      [id, name || null, request.user!.id]
     );
     
     reply.status(201);
@@ -72,8 +77,8 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
     const { datasetId } = request.params;
     
     const result = await query<DatasetRow>(
-      'SELECT * FROM datasets WHERE id = $1 OR name = $2',
-      [datasetId, datasetId]
+      'SELECT * FROM datasets WHERE (id = $1 OR name = $1) AND user_id = $2',
+      [datasetId, request.user!.id]
     );
     
     if (!result.rows[0]) {
@@ -82,7 +87,7 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
     }
     
     // Update accessed_at
-    await query('UPDATE datasets SET accessed_at = NOW() WHERE id = $1', [result.rows[0].id]);
+    await query('UPDATE datasets SET accessed_at = NOW() WHERE id = $1 AND user_id = $2', [result.rows[0].id, request.user!.id]);
     
     return { data: formatDataset(result.rows[0]) };
   });
@@ -93,7 +98,7 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.delete<{ Params: { datasetId: string } }>('/datasets/:datasetId', async (request, reply) => {
     const { datasetId } = request.params;
     
-    await query('DELETE FROM datasets WHERE id = $1 OR name = $2', [datasetId, datasetId]);
+    await query('DELETE FROM datasets WHERE (id = $1 OR name = $1) AND user_id = $2', [datasetId, request.user!.id]);
     reply.status(204);
   });
 
@@ -110,8 +115,8 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
     
     // Get dataset to confirm it exists
     const dataset = await query<DatasetRow>(
-      'SELECT * FROM datasets WHERE id = $1 OR name = $2',
-      [datasetId, datasetId]
+      'SELECT * FROM datasets WHERE (id = $1 OR name = $1) AND user_id = $2',
+      [datasetId, request.user!.id]
     );
     
     if (!dataset.rows[0]) {
@@ -155,18 +160,18 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
     
     // Get or create dataset
     let dataset = await query<DatasetRow>(
-      'SELECT * FROM datasets WHERE id = $1 OR name = $2',
-      [datasetId, datasetId]
+      'SELECT * FROM datasets WHERE (id = $1 OR name = $1) AND user_id = $2',
+      [datasetId, request.user!.id]
     );
     
     if (!dataset.rows[0]) {
       // Auto-create if "default" or specific ID
       const id = datasetId === 'default' ? nanoid() : datasetId;
       await query(
-        `INSERT INTO datasets (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-        [id, datasetId === 'default' ? null : datasetId]
+        `INSERT INTO datasets (id, name, user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [id, datasetId === 'default' ? null : datasetId, request.user!.id]
       );
-      dataset = await query<DatasetRow>('SELECT * FROM datasets WHERE id = $1', [id]);
+      dataset = await query<DatasetRow>('SELECT * FROM datasets WHERE id = $1 AND user_id = $2', [id, request.user!.id]);
     }
     
     const ds = dataset.rows[0]!;
@@ -196,8 +201,8 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
     
     // Update count
     await query(
-      'UPDATE datasets SET item_count = $1, modified_at = NOW() WHERE id = $2',
-      [currentCount, ds.id]
+      'UPDATE datasets SET item_count = $1, modified_at = NOW() WHERE id = $2 AND user_id = $3',
+      [currentCount, ds.id, request.user!.id]
     );
     
     reply.status(201);

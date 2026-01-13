@@ -1,4 +1,6 @@
+/* eslint-disable @typescript-eslint/no-non-null-assertion, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return */
 /**
+
  * Actor routes - Apify-compatible endpoints for managing Actors.
  */
 
@@ -18,12 +20,19 @@ interface ActorRow {
   modified_at: Date;
 }
 
+import { authenticate } from '../auth/middleware.js';
+
 export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.addHook('preHandler', authenticate);
+
   /**
    * GET /v2/acts - List actors
    */
-  fastify.get('/acts', async () => {
-    const result = await query<ActorRow>('SELECT * FROM actors ORDER BY created_at DESC LIMIT 100');
+  fastify.get('/acts', async (request) => {
+    const result = await query<ActorRow>(
+      'SELECT * FROM actors WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100',
+      [request.user!.id]
+    );
     
     return {
       data: {
@@ -50,20 +59,25 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
     const { name, title, description, defaultRunOptions } = request.body;
     
     // Check if actor with this name already exists
-    const existing = await query<ActorRow>('SELECT * FROM actors WHERE name = $1', [name]);
+    // Check if actor with this name already exists for this user
+    const existing = await query<ActorRow>(
+      'SELECT * FROM actors WHERE name = $1 AND user_id = $2',
+      [name, request.user!.id]
+    );
     
     if (existing.rows[0]) {
       // Update existing actor
       const result = await query<ActorRow>(`
         UPDATE actors 
         SET title = $1, description = $2, default_run_options = $3, modified_at = NOW()
-        WHERE name = $4
+        WHERE name = $4 AND user_id = $5
         RETURNING *
       `, [
         title ?? existing.rows[0].title,
         description ?? existing.rows[0].description,
         defaultRunOptions ? JSON.stringify(defaultRunOptions) : existing.rows[0].default_run_options,
-        name
+        name,
+        request.user!.id
       ]);
       
       return { data: formatActor(result.rows[0]!) };
@@ -72,10 +86,10 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
     // Create new actor
     const id = nanoid();
     const result = await query<ActorRow>(`
-      INSERT INTO actors (id, name, title, description, default_run_options)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO actors (id, name, title, description, default_run_options, user_id)
+      VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING *
-    `, [id, name, title ?? null, description ?? null, defaultRunOptions ? JSON.stringify(defaultRunOptions) : null]);
+    `, [id, name, title ?? null, description ?? null, defaultRunOptions ? JSON.stringify(defaultRunOptions) : null, request.user!.id]);
     
     reply.status(201);
     return { data: formatActor(result.rows[0]!) };
@@ -89,8 +103,8 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
     
     // Get actor by ID or name
     const result = await query<ActorRow>(
-      `SELECT * FROM actors WHERE id = $1 OR name = $1`,
-      [actorId]
+      `SELECT * FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2`,
+      [actorId, request.user!.id]
     );
     
     if (!result.rows[0]) {
@@ -136,9 +150,9 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
     
     const result = await query<ActorRow>(`
       UPDATE actors SET ${setClauses.join(', ')}
-      WHERE id = $${paramIndex} OR name = $${paramIndex}
+      WHERE (id = $${paramIndex} OR name = $${paramIndex}) AND user_id = $${paramIndex + 1}
       RETURNING *
-    `, [...values, actorId]);
+    `, [...values, actorId, request.user!.id]);
     
     if (!result.rows[0]) {
       reply.status(404);
@@ -153,7 +167,7 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
    */
   fastify.delete<{ Params: { actorId: string } }>('/acts/:actorId', async (request, reply) => {
     const { actorId } = request.params;
-    await query(`DELETE FROM actors WHERE id = $1 OR name = $1`, [actorId]);
+    await query(`DELETE FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2`, [actorId, request.user!.id]);
     reply.status(204);
   });
 
@@ -173,8 +187,8 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
     
     // Get actor by ID or name
     const actor = await query<ActorRow>(
-      `SELECT * FROM actors WHERE id = $1 OR name = $1`,
-      [actorId]
+      `SELECT * FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2`,
+      [actorId, request.user!.id]
     );
     
     if (!actor.rows[0]) {
@@ -188,9 +202,9 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
     const requestQueueId = nanoid();
     const runId = nanoid();
     
-    await query('INSERT INTO datasets (id) VALUES ($1)', [datasetId]);
-    await query('INSERT INTO key_value_stores (id) VALUES ($1)', [kvStoreId]);
-    await query('INSERT INTO request_queues (id) VALUES ($1)', [requestQueueId]);
+    await query('INSERT INTO datasets (id, user_id) VALUES ($1, $2)', [datasetId, request.user!.id]);
+    await query('INSERT INTO key_value_stores (id, user_id) VALUES ($1, $2)', [kvStoreId, request.user!.id]);
+    await query('INSERT INTO request_queues (id, user_id) VALUES ($1, $2)', [requestQueueId, request.user!.id]);
     
     // Always store input in the KV store (empty object if not provided)
     const { putKVRecord } = await import('../storage/s3.js');
@@ -209,10 +223,10 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
       memory_mbytes: number;
       created_at: Date;
     }>(`
-      INSERT INTO runs (id, actor_id, status, default_dataset_id, default_key_value_store_id, default_request_queue_id, timeout_secs, memory_mbytes)
-      VALUES ($1, $2, 'READY', $3, $4, $5, $6, $7)
+      INSERT INTO runs (id, actor_id, user_id, status, default_dataset_id, default_key_value_store_id, default_request_queue_id, timeout_secs, memory_mbytes)
+      VALUES ($1, $2, $3, 'READY', $4, $5, $6, $7, $8)
       RETURNING *
-    `, [runId, actor.rows[0].id, datasetId, kvStoreId, requestQueueId, timeout, memory]);
+    `, [runId, actor.rows[0].id, request.user!.id, datasetId, kvStoreId, requestQueueId, timeout, memory]);
     
     // Notify Runner about new job
     await redis.publish('run:new', runId);

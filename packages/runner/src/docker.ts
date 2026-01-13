@@ -23,6 +23,7 @@ export interface RunOptions {
   // Resource limits
   memoryMb?: number;
   timeoutSecs?: number;
+  cpu?: number;
 }
 
 export interface RunResult {
@@ -112,6 +113,7 @@ export async function executeRun(options: RunOptions): Promise<RunResult> {
     env,
     memoryMb = config.defaultMemoryMb,
     timeoutSecs = config.defaultTimeoutSecs,
+    cpu = 1.0, 
   } = options;
   
   console.log(`[${runId}] Starting container for Actor ${actorId}`);
@@ -152,9 +154,15 @@ export async function executeRun(options: RunOptions): Promise<RunResult> {
     HostConfig: {
       Memory: memoryMb * 1024 * 1024,
       MemorySwap: memoryMb * 1024 * 1024 * 2,
+      NanoCpus: cpu * 1000000000, // Convert to nanoCPUs
+      PidsLimit: 100, // Limit number of processes
       NetworkMode: config.dockerNetwork,
       AutoRemove: false, // We'll remove after collecting logs
+      CapDrop: ['ALL'], // Drop all capabilities (critical for security)
+      SecurityOpt: ['no-new-privileges'], // Prevent privilege escalation
     },
+    // Enforce non-root user (standard Apify images use 1000)
+    User: '1000:1000',
     Labels: {
       'crawlee-cloud.run-id': runId,
       'crawlee-cloud.actor-id': actorId,

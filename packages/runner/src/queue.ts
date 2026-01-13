@@ -8,6 +8,8 @@ import pg from 'pg';
 import { Redis } from 'ioredis';
 import { config } from './config.js';
 import { executeRun, buildActorEnv } from './docker.js';
+import dns from 'dns/promises';
+import { URL } from 'url';
 
 const { Pool } = pg;
 
@@ -231,6 +233,11 @@ async function triggerWebhooks(runId: string, status: string): Promise<void> {
       
       console.log(`Triggering webhook ${webhook.id} to ${webhook.request_url}`);
       
+      if (!(await validateWebhookUrl(webhook.request_url))) {
+        console.error(`Blocked SSRF attempt to ${webhook.request_url}`);
+        continue;
+      }
+
       await fetch(webhook.request_url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -251,4 +258,57 @@ export async function notifyNewRun(runId: string): Promise<void> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Validate webhook URL to prevent SSRF.
+ * Blocks local and private IP ranges.
+ */
+async function validateWebhookUrl(urlString: string): Promise<boolean> {
+  try {
+    const url = new URL(urlString);
+    
+    // Allow only http/https
+    if (!['http:', 'https:'].includes(url.protocol)) {
+      return false;
+    }
+    
+    // Resolve hostname
+    const family = 4;
+    let ip = url.hostname;
+    
+    // If it's not an IP literal, resolve it
+    if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip) && !/^\[[0-9a-fA-F:]+\]$/.test(ip)) {
+      try {
+        const result = await dns.lookup(url.hostname, { family });
+        ip = result.address;
+      } catch {
+        return false; // Cannot resolve
+      }
+    }
+    
+    // Prepare parts for check
+    if (!ip.includes('.')) return false; // Basic check ensuring it looks like IPv4
+    const parts = ip.split('.').map(part => parseInt(part, 10));
+    if (parts.length !== 4) return false;
+    
+    // Check IPv4 private ranges
+    // 127.0.0.0/8 (Loopback)
+    if (parts[0] === 127) return false;
+    // 10.0.0.0/8 (Private)
+    if (parts[0] === 10) return false;
+    // 172.16.0.0/12 (Private)
+    if (parts[0] === 172 && parts[1]! >= 16 && parts[1]! <= 31) return false;
+    // 192.168.0.0/16 (Private)
+    if (parts[0] === 192 && parts[1] === 168) return false;
+    // 169.254.0.0/16 (Link local)
+    if (parts[0] === 169 && parts[1] === 254) return false;
+    
+    // 0.0.0.0/8
+    if (parts[0] === 0) return false;
+    
+    return true;
+  } catch {
+    return false;
+  }
 }

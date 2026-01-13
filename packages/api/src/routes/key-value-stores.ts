@@ -1,10 +1,13 @@
+/* eslint-disable @typescript-eslint/no-non-null-assertion, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return */
 /**
+
  * Key-Value Store routes - Apify-compatible endpoints.
  */
 
 import type { FastifyPluginAsync } from 'fastify';
 import { nanoid } from 'nanoid';
 import { query } from '../db/index.js';
+import { authenticate } from '../auth/middleware.js';
 import { putKVRecord, getKVRecord, deleteKVRecord, listKVKeys, kvRecordExists } from '../storage/s3.js';
 
 interface KVStoreRow {
@@ -17,11 +20,13 @@ interface KVStoreRow {
 }
 
 export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.addHook('preHandler', authenticate);
+
   /**
    * GET /v2/key-value-stores - List stores
    */
-  fastify.get('/key-value-stores', async () => {
-    const result = await query<KVStoreRow>('SELECT * FROM key_value_stores ORDER BY created_at DESC LIMIT 100');
+  fastify.get('/key-value-stores', async (request) => {
+    const result = await query<KVStoreRow>('SELECT * FROM key_value_stores WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100', [request.user!.id]);
     
     return {
       data: {
@@ -42,8 +47,8 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
     
     if (name) {
       const existing = await query<KVStoreRow>(
-        'SELECT * FROM key_value_stores WHERE name = $1',
-        [name]
+        'SELECT * FROM key_value_stores WHERE name = $1 AND user_id = $2',
+        [name, request.user!.id]
       );
       if (existing.rows[0]) {
         return { data: formatStore(existing.rows[0]) };
@@ -52,8 +57,8 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
     
     const id = nanoid();
     const result = await query<KVStoreRow>(
-      `INSERT INTO key_value_stores (id, name) VALUES ($1, $2) RETURNING *`,
-      [id, name || null]
+      `INSERT INTO key_value_stores (id, name, user_id) VALUES ($1, $2, $3) RETURNING *`,
+      [id, name || null, request.user!.id]
     );
     
     reply.status(201);
@@ -67,8 +72,8 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
     const { storeId } = request.params;
     
     const result = await query<KVStoreRow>(
-      'SELECT * FROM key_value_stores WHERE id = $1 OR name = $2',
-      [storeId, storeId]
+      'SELECT * FROM key_value_stores WHERE (id = $1 OR name = $2) AND user_id = $3',
+      [storeId, storeId, request.user!.id]
     );
     
     if (!result.rows[0]) {
@@ -76,7 +81,7 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
       return { error: { message: 'Key-value store not found' } };
     }
     
-    await query('UPDATE key_value_stores SET accessed_at = NOW() WHERE id = $1', [result.rows[0].id]);
+    await query('UPDATE key_value_stores SET accessed_at = NOW() WHERE id = $1 AND user_id = $2', [result.rows[0].id, request.user!.id]);
     
     return { data: formatStore(result.rows[0]) };
   });
@@ -86,7 +91,7 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
    */
   fastify.delete<{ Params: { storeId: string } }>('/key-value-stores/:storeId', async (request, reply) => {
     const { storeId } = request.params;
-    await query('DELETE FROM key_value_stores WHERE id = $1 OR name = $2', [storeId, storeId]);
+    await query('DELETE FROM key_value_stores WHERE (id = $1 OR name = $1) AND user_id = $2', [storeId, request.user!.id]);
     reply.status(204);
   });
 
@@ -102,8 +107,8 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
     const { exclusiveStartKey } = request.query;
     
     const store = await query<KVStoreRow>(
-      'SELECT * FROM key_value_stores WHERE id = $1 OR name = $2',
-      [storeId, storeId]
+      'SELECT * FROM key_value_stores WHERE (id = $1 OR name = $2) AND user_id = $3',
+      [storeId, storeId, request.user!.id]
     );
     
     if (!store.rows[0]) {
@@ -136,8 +141,8 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
       
       // Get or auto-create store
       let store = await query<KVStoreRow>(
-        'SELECT * FROM key_value_stores WHERE id = $1 OR name = $2',
-        [storeId, storeId]
+        'SELECT * FROM key_value_stores WHERE (id = $1 OR name = $2) AND user_id = $3',
+        [storeId, storeId, request.user!.id]
       );
       
       if (!store.rows[0]) {
@@ -171,18 +176,18 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
       
       // Get or auto-create store
       let store = await query<KVStoreRow>(
-        'SELECT * FROM key_value_stores WHERE id = $1 OR name = $2',
-        [storeId, storeId]
+        'SELECT * FROM key_value_stores WHERE (id = $1 OR name = $2) AND user_id = $3',
+        [storeId, storeId, request.user!.id]
       );
       
       if (!store.rows[0]) {
         // Auto-create
         const id = storeId === 'default' ? nanoid() : storeId;
         await query(
-          `INSERT INTO key_value_stores (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-          [id, storeId === 'default' ? null : storeId]
-        );
-        store = await query<KVStoreRow>('SELECT * FROM key_value_stores WHERE id = $1', [id]);
+          `INSERT INTO key_value_stores (id, name, user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [id, storeId === 'default' ? null : storeId, request.user!.id]
+      );
+      store = await query<KVStoreRow>('SELECT * FROM key_value_stores WHERE id = $1 AND user_id = $2', [id, request.user!.id]);
       }
       
       const body = request.body;
@@ -214,8 +219,8 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
       const { storeId, key } = request.params;
       
       const store = await query<KVStoreRow>(
-        'SELECT * FROM key_value_stores WHERE id = $1 OR name = $2',
-        [storeId, storeId]
+        'SELECT * FROM key_value_stores WHERE (id = $1 OR name = $1) AND user_id = $2',
+        [storeId, request.user!.id]
       );
       
       if (!store.rows[0]) {

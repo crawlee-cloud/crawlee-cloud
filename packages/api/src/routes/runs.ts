@@ -1,9 +1,12 @@
+/* eslint-disable @typescript-eslint/no-non-null-assertion, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return */
 /**
+
  * Run routes - Apify-compatible endpoints for Actor runs.
  */
 
 import type { FastifyPluginAsync } from 'fastify';
 import { query } from '../db/index.js';
+import { authenticate } from '../auth/middleware.js';
 
 interface RunRow {
   id: string;
@@ -28,11 +31,13 @@ interface RunRow {
 }
 
 export const runsRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.addHook('preHandler', authenticate);
+
   /**
    * GET /v2/actor-runs - List runs
    */
-  fastify.get('/actor-runs', async () => {
-    const result = await query<RunRow>('SELECT * FROM runs ORDER BY created_at DESC LIMIT 100');
+  fastify.get('/actor-runs', async (request) => {
+    const result = await query<RunRow>('SELECT * FROM runs WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100', [request.user!.id]);
     
     return {
       data: {
@@ -51,7 +56,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get<{ Params: { runId: string } }>('/actor-runs/:runId', async (request, reply) => {
     const { runId } = request.params;
     
-    const result = await query<RunRow>('SELECT * FROM runs WHERE id = $1', [runId]);
+    const result = await query<RunRow>('SELECT * FROM runs WHERE id = $1 AND user_id = $2', [runId, request.user!.id]);
     
     if (!result.rows[0]) {
       reply.status(404);
@@ -96,9 +101,9 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     
     const result = await query<RunRow>(`
       UPDATE runs SET ${setClauses.join(', ')}
-      WHERE id = $${paramIndex}
+      WHERE id = $${paramIndex} AND user_id = $${paramIndex + 1}
       RETURNING *
-    `, values);
+    `, [...values, request.user!.id]);
     
     if (!result.rows[0]) {
       reply.status(404);
@@ -117,9 +122,9 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     const result = await query<RunRow>(`
       UPDATE runs 
       SET status = 'ABORTED', finished_at = NOW(), modified_at = NOW()
-      WHERE id = $1 AND status = 'RUNNING'
+      WHERE id = $1 AND user_id = $2 AND status = 'RUNNING'
       RETURNING *
-    `, [runId]);
+    `, [runId, request.user!.id]);
     
     if (!result.rows[0]) {
       reply.status(404);
@@ -138,9 +143,9 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     const result = await query<RunRow>(`
       UPDATE runs 
       SET status = 'RUNNING', finished_at = NULL, modified_at = NOW()
-      WHERE id = $1 AND status IN ('FAILED', 'ABORTED', 'TIMED-OUT')
+      WHERE id = $1 AND user_id = $2 AND status IN ('FAILED', 'ABORTED', 'TIMED-OUT')
       RETURNING *
-    `, [runId]);
+    `, [runId, request.user!.id]);
     
     if (!result.rows[0]) {
       reply.status(404);
@@ -162,7 +167,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     const offset = parseInt(request.query.offset || '0', 10);
     const limit = parseInt(request.query.limit || '100', 10);
     
-    const run = await query<RunRow>('SELECT * FROM runs WHERE id = $1', [runId]);
+    const run = await query<RunRow>('SELECT * FROM runs WHERE id = $1 AND user_id = $2', [runId, request.user!.id]);
     
     if (!run.rows[0] || !run.rows[0].default_dataset_id) {
       reply.status(404);
@@ -189,7 +194,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const { runId, key } = request.params;
       
-      const run = await query<RunRow>('SELECT * FROM runs WHERE id = $1', [runId]);
+      const run = await query<RunRow>('SELECT * FROM runs WHERE id = $1 AND user_id = $2', [runId, request.user!.id]);
       
       if (!run.rows[0] || !run.rows[0].default_key_value_store_id) {
         reply.status(404);

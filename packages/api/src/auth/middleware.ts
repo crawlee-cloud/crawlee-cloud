@@ -5,6 +5,7 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { pool } from '../db/index.js';
 import { extractToken, verifyToken, verifyApiKey } from './index.js';
+import { redis } from '../storage/redis.js';
 
 export interface AuthenticatedUser {
   id: string;
@@ -118,7 +119,24 @@ export async function requireAdmin(
 /**
  * Validate an API key against the database.
  */
+/**
+ * Validate an API key against the database or cache.
+ * Uses Redis to cache valid keys to avoid O(N) database scan + bcrypt.
+ */
 async function validateApiKey(key: string): Promise<{ id: string; user_id: string } | null> {
+  // 1. Try Redis cache
+  const cacheKey = `apikey:${key}`;
+  const cached = await redis.get(cacheKey);
+  
+  if (cached) {
+    try {
+      return JSON.parse(cached);
+    } catch {
+      // Invalid cache, ignore
+    }
+  }
+
+  // 2. Slow DB validation (linear scan)
   // Get all API keys and check against hash
   const result = await pool.query<{ id: string; key_hash: string; user_id: string }>(
     'SELECT id, key_hash, user_id FROM api_keys WHERE is_active = true'
@@ -127,7 +145,12 @@ async function validateApiKey(key: string): Promise<{ id: string; user_id: strin
   for (const row of result.rows) {
     const isValid = await verifyApiKey(key, row.key_hash);
     if (isValid) {
-      return { id: row.id, user_id: row.user_id };
+      const userData = { id: row.id, user_id: row.user_id };
+      
+      // Cache valid key for 1 hour
+      await redis.set(cacheKey, JSON.stringify(userData), 'EX', 3600);
+      
+      return userData;
     }
   }
   

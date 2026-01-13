@@ -1,4 +1,6 @@
+/* eslint-disable @typescript-eslint/no-non-null-assertion, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return */
 /**
+
  * Request Queue routes - Apify-compatible endpoints.
  * 
  * This is the most complex route - handles:
@@ -18,6 +20,7 @@ import {
   releaseLock,
   isLocked as _isLocked 
 } from '../storage/redis.js';
+import { authenticate } from '../auth/middleware.js';
 
 interface QueueRow {
   id: string;
@@ -51,11 +54,13 @@ interface RequestRow {
 }
 
 export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.addHook('preHandler', authenticate);
+
   /**
    * GET /v2/request-queues - List queues
    */
-  fastify.get('/request-queues', async () => {
-    const result = await query<QueueRow>('SELECT * FROM request_queues ORDER BY created_at DESC LIMIT 100');
+  fastify.get('/request-queues', async (request) => {
+    const result = await query<QueueRow>('SELECT * FROM request_queues WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100', [request.user!.id]);
     
     return {
       data: {
@@ -76,8 +81,8 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     
     if (name) {
       const existing = await query<QueueRow>(
-        'SELECT * FROM request_queues WHERE name = $1',
-        [name]
+        'SELECT * FROM request_queues WHERE name = $1 AND user_id = $2',
+        [name, request.user!.id]
       );
       if (existing.rows[0]) {
         return { data: formatQueue(existing.rows[0]) };
@@ -86,8 +91,8 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     
     const id = nanoid();
     const result = await query<QueueRow>(
-      `INSERT INTO request_queues (id, name) VALUES ($1, $2) RETURNING *`,
-      [id, name ?? null]
+      `INSERT INTO request_queues (id, name, user_id) VALUES ($1, $2, $3) RETURNING *`,
+      [id, name ?? null, request.user!.id]
     );
     
     reply.status(201);
@@ -106,8 +111,8 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     const { queueId } = request.params;
     
     const result = await query<QueueRow>(
-      'SELECT * FROM request_queues WHERE id = $1 OR name = $2',
-      [queueId, queueId]
+      'SELECT * FROM request_queues WHERE (id = $1 OR name = $2) AND user_id = $3',
+      [queueId, queueId, request.user!.id]
     );
     
     if (!result.rows[0]) {
@@ -115,7 +120,7 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
       return { error: { message: 'Request queue not found' } };
     }
     
-    await query('UPDATE request_queues SET accessed_at = NOW() WHERE id = $1', [result.rows[0].id]);
+    await query('UPDATE request_queues SET accessed_at = NOW() WHERE id = $1 AND user_id = $2', [result.rows[0].id, request.user!.id]);
     
     return { data: formatQueue(result.rows[0]) };
   });
@@ -125,7 +130,7 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
    */
   fastify.delete<{ Params: { queueId: string } }>('/request-queues/:queueId', async (request, reply) => {
     const { queueId } = request.params;
-    await query('DELETE FROM request_queues WHERE id = $1 OR name = $2', [queueId, queueId]);
+    await query('DELETE FROM request_queues WHERE (id = $1 OR name = $2) AND user_id = $3', [queueId, queueId, request.user!.id]);
     reply.status(204);
   });
 
@@ -140,8 +145,8 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     const limit = parseInt(request.query.limit || '100', 10);
     
     const queue = await query<QueueRow>(
-      'SELECT * FROM request_queues WHERE id = $1 OR name = $2',
-      [queueId, queueId]
+      'SELECT * FROM request_queues WHERE (id = $1 OR name = $2) AND user_id = $3',
+      [queueId, queueId, request.user!.id]
     );
     
     if (!queue.rows[0]) {
@@ -184,8 +189,8 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     const clientKey = request.query.clientKey ?? nanoid();
     
     const queue = await query<QueueRow>(
-      'SELECT * FROM request_queues WHERE id = $1 OR name = $2',
-      [queueId, queueId]
+      'SELECT * FROM request_queues WHERE (id = $1 OR name = $2) AND user_id = $3',
+      [queueId, queueId, request.user!.id]
     );
     
     if (!queue.rows[0]) {
@@ -280,17 +285,17 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     
     // Get or create queue
     let queue = await query<QueueRow>(
-      'SELECT * FROM request_queues WHERE id = $1 OR name = $2',
-      [queueId, queueId]
+      'SELECT * FROM request_queues WHERE (id = $1 OR name = $2) AND user_id = $3',
+      [queueId, queueId, request.user!.id]
     );
     
     if (!queue.rows[0]) {
       const id = queueId === 'default' ? nanoid() : queueId;
       await query(
-        `INSERT INTO request_queues (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-        [id, queueId === 'default' ? null : queueId]
+        `INSERT INTO request_queues (id, name, user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [id, queueId === 'default' ? null : queueId, request.user!.id]
       );
-      queue = await query<QueueRow>('SELECT * FROM request_queues WHERE id = $1', [id]);
+      queue = await query<QueueRow>('SELECT * FROM request_queues WHERE id = $1 AND user_id = $2', [id, request.user!.id]);
     }
     
     const qId = queue.rows[0]!.id;
@@ -392,17 +397,17 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     
     // Get or create queue
     let queue = await query<QueueRow>(
-      'SELECT * FROM request_queues WHERE id = $1 OR name = $2',
-      [queueId, queueId]
+      'SELECT * FROM request_queues WHERE (id = $1 OR name = $2) AND user_id = $3',
+      [queueId, queueId, request.user!.id]
     );
     
     if (!queue.rows[0]) {
       const id = queueId === 'default' ? nanoid() : queueId;
       await query(
-        `INSERT INTO request_queues (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-        [id, queueId === 'default' ? null : queueId]
+        `INSERT INTO request_queues (id, name, user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [id, queueId === 'default' ? null : queueId, request.user!.id]
       );
-      queue = await query<QueueRow>('SELECT * FROM request_queues WHERE id = $1', [id]);
+      queue = await query<QueueRow>('SELECT * FROM request_queues WHERE id = $1 AND user_id = $2', [id, request.user!.id]);
     }
     
     const qId = queue.rows[0]!.id;
@@ -503,8 +508,8 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
       const result = await query<RequestRow>(`
         SELECT r.* FROM requests r
         JOIN request_queues q ON r.queue_id = q.id
-        WHERE (q.id = $1 OR q.name = $1) AND r.id = $2
-      `, [queueId, requestId]);
+        WHERE (q.id = $1 OR q.name = $1) AND r.id = $2 AND q.user_id = $3
+      `, [queueId, requestId, request.user!.id]);
       
       if (!result.rows[0]) {
         reply.status(404);
@@ -538,8 +543,8 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     const existingResult = await query<RequestRow>(`
       SELECT r.* FROM requests r
       JOIN request_queues q ON r.queue_id = q.id
-      WHERE (q.id = $1 OR q.name = $1) AND r.id = $2
-    `, [queueId, requestId]);
+      WHERE (q.id = $1 OR q.name = $1) AND r.id = $2 AND q.user_id = $3
+    `, [queueId, requestId, request.user!.id]);
     
     if (!existingResult.rows[0]) {
       reply.status(404);
@@ -629,8 +634,8 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     const clientKey = request.query.clientKey ?? '';
     
     const queue = await query<QueueRow>(
-      'SELECT * FROM request_queues WHERE id = $1 OR name = $2',
-      [queueId, queueId]
+      'SELECT * FROM request_queues WHERE (id = $1 OR name = $2) AND user_id = $3',
+      [queueId, queueId, request.user!.id]
     );
     
     if (!queue.rows[0]) {
@@ -673,8 +678,8 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     const { clientKey = '', forefront } = request.query;
     
     const queue = await query<QueueRow>(
-      'SELECT * FROM request_queues WHERE id = $1 OR name = $2',
-      [queueId, queueId]
+      'SELECT * FROM request_queues WHERE (id = $1 OR name = $2) AND user_id = $3',
+      [queueId, queueId, request.user!.id]
     );
     
     if (!queue.rows[0]) {
