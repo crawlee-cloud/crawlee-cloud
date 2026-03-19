@@ -14,7 +14,10 @@ RUN npm ci --workspace=@crawlee-cloud/dashboard --ignore-scripts
 COPY tsconfig.base.json ./
 COPY packages/dashboard ./packages/dashboard
 
-# Build Next.js app
+# Build Next.js app (DO App Platform passes env vars as Docker ARGs)
+ARG NEXT_PUBLIC_ASSET_PREFIX
+ARG NEXT_PUBLIC_ROUTE_PREFIX
+ARG NEXT_PUBLIC_API_URL
 RUN npm run build --workspace=@crawlee-cloud/dashboard
 
 # Production stage

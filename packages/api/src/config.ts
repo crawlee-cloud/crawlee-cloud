@@ -56,7 +56,7 @@ function envBool(key: string, defaultValue: boolean): boolean {
 
 export const config: Config = {
   port: envInt('PORT', 3000),
-  logLevel: env('LOG_LEVEL', 'info'),
+  logLevel: process.env.LOG_LEVEL ?? 'info',
   nodeEnv: env('NODE_ENV', 'development'),
 
   // Database - no default password in production

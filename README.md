@@ -103,12 +103,12 @@ The API server starts at `http://localhost:3000`.
 
 Deploy your own instance in minutes:
 
-| Method                                                                                                                                                      | Description                                  |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/crawlee-cloud)                                                          | One-click deploy with managed databases      |
-| [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/crawlee-cloud/crawlee-cloud) | Free tier available                          |
-| [![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/crawlee-cloud/crawlee-cloud)  | DigitalOcean App Platform                    |
-| [VPS Deploy Script](deploy/)                                                                                                                                | Full stack on any Ubuntu VPS with auto-HTTPS |
+| Method                                                                                                                                                                               | Description                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- |
+| [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/crawlee-cloud/crawlee-cloud&referralCode=crawlee)                | One-click deploy with managed databases      |
+| [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/crawlee-cloud/crawlee-cloud)                          | Free tier available                          |
+| [![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/crawlee-cloud/crawlee-cloud/tree/main&refcode=crawlee) | DigitalOcean App Platform                    |
+| [VPS Deploy Script](deploy/)                                                                                                                                                         | Full stack on any Ubuntu VPS with auto-HTTPS |
 
 See [deploy/](deploy/) for detailed instructions.
 

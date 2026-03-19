@@ -1,0 +1,86 @@
+# Render Blueprint - Crawlee Cloud
+# Deploy: https://render.com/deploy?repo=https://github.com/crawlee-cloud/crawlee-cloud
+
+databases:
+  - name: crawlee-db
+    plan: starter
+    databaseName: crawlee_cloud
+    user: crawlee
+
+services:
+  - type: web
+    name: crawlee-api
+    runtime: docker
+    dockerfilePath: docker/Dockerfile.api
+    dockerContext: .
+    plan: starter
+    healthCheckPath: /v2/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: '3000'
+      - key: DATABASE_URL
+        fromDatabase:
+          name: crawlee-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: crawlee-redis
+          type: redis
+          property: connectionString
+      - key: S3_ENDPOINT
+        value: http://crawlee-minio:9000
+      - key: S3_ACCESS_KEY
+        value: minioadmin
+      - key: S3_SECRET_KEY
+        generateValue: true
+      - key: S3_BUCKET
+        value: crawlee-cloud
+      - key: S3_REGION
+        value: us-east-1
+      - key: S3_FORCE_PATH_STYLE
+        value: 'true'
+      - key: API_SECRET
+        generateValue: true
+      - key: ADMIN_EMAIL
+        value: admin@crawlee.cloud
+      - key: ADMIN_PASSWORD
+        generateValue: true
+      - key: CORS_ORIGINS
+        sync: false
+
+  - type: web
+    name: crawlee-dashboard
+    runtime: docker
+    dockerfilePath: docker/Dockerfile.dashboard
+    dockerContext: .
+    plan: starter
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: '3001'
+      - key: NEXT_PUBLIC_API_URL
+        fromService:
+          name: crawlee-api
+          type: web
+          envVarKey: RENDER_EXTERNAL_URL
+
+  - type: pserv
+    name: crawlee-minio
+    runtime: docker
+    repo: https://hub.docker.com/r/minio/minio
+    plan: starter
+    disk:
+      name: minio-data
+      mountPath: /data
+      sizeGB: 10
+    envVars:
+      - key: MINIO_ROOT_USER
+        value: minioadmin
+      - key: MINIO_ROOT_PASSWORD
+        fromService:
+          name: crawlee-api
+          type: web
+          envVarKey: S3_SECRET_KEY

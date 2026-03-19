@@ -1,10 +1,10 @@
-"use client";
+'use client';
 
-import { ArrowLeft, Terminal, Copy, Check, Folder, Package, Upload, Sparkles } from "lucide-react";
-import Link from "next/link";
-import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ArrowLeft, Terminal, Copy, Check, Folder, Package, Sparkles } from 'lucide-react';
+import { AppLink } from '@/components/app-link';
+import { useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -17,7 +17,7 @@ function CopyButton({ text }: { text: string }) {
 
   return (
     <button
-      onClick={handleCopy}
+      onClick={() => void handleCopy()}
       className="absolute right-3 top-3 p-1.5 rounded-md hover:bg-white/10 transition-colors text-muted-foreground hover:text-white"
       title="Copy to clipboard"
     >
@@ -28,7 +28,7 @@ function CopyButton({ text }: { text: string }) {
 
 function CodeBlock({ children, copyText }: { children: React.ReactNode; copyText?: string }) {
   const textToCopy = copyText ?? (typeof children === 'string' ? children : '');
-  
+
   return (
     <div className="relative">
       <pre className="p-4 pr-12 bg-black/60 border border-white/10 rounded-lg overflow-x-auto text-sm font-mono text-zinc-300">
@@ -44,9 +44,9 @@ export default function NewActorPage() {
     <div className="space-y-8 max-w-4xl">
       <div className="flex items-center gap-4">
         <Button variant="ghost" size="icon" asChild>
-          <Link href="/actors">
+          <AppLink href="/actors">
             <ArrowLeft className="h-4 w-4" />
-          </Link>
+          </AppLink>
         </Button>
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Create New Actor</h1>
@@ -71,21 +71,27 @@ export default function NewActorPage() {
           {/* Step 1 */}
           <div className="space-y-3">
             <div className="flex items-center gap-2">
-              <span className="flex items-center justify-center w-6 h-6 rounded-full bg-indigo-500/20 text-indigo-400 text-xs font-bold">1</span>
+              <span className="flex items-center justify-center w-6 h-6 rounded-full bg-indigo-500/20 text-indigo-400 text-xs font-bold">
+                1
+              </span>
               <h4 className="font-medium text-white/90">Create a new actor from template</h4>
             </div>
             <CodeBlock copyText="npx apify-cli create my-actor">
-              <span className="text-zinc-500">$</span> npx apify-cli create <span className="text-amber-400">my-actor</span>
+              <span className="text-zinc-500">$</span> npx apify-cli create{' '}
+              <span className="text-amber-400">my-actor</span>
             </CodeBlock>
             <p className="text-xs text-muted-foreground ml-8">
-              Uses the official Apify CLI to scaffold from templates (Cheerio, Playwright, Puppeteer, etc.)
+              Uses the official Apify CLI to scaffold from templates (Cheerio, Playwright,
+              Puppeteer, etc.)
             </p>
           </div>
 
           {/* Step 2 */}
           <div className="space-y-3">
             <div className="flex items-center gap-2">
-              <span className="flex items-center justify-center w-6 h-6 rounded-full bg-indigo-500/20 text-indigo-400 text-xs font-bold">2</span>
+              <span className="flex items-center justify-center w-6 h-6 rounded-full bg-indigo-500/20 text-indigo-400 text-xs font-bold">
+                2
+              </span>
               <h4 className="font-medium text-white/90">Write your scraper code</h4>
             </div>
             <CodeBlock copyText="cd my-actor && code .">
@@ -96,14 +102,20 @@ export default function NewActorPage() {
           {/* Step 3 */}
           <div className="space-y-3">
             <div className="flex items-center gap-2">
-              <span className="flex items-center justify-center w-6 h-6 rounded-full bg-indigo-500/20 text-indigo-400 text-xs font-bold">3</span>
+              <span className="flex items-center justify-center w-6 h-6 rounded-full bg-indigo-500/20 text-indigo-400 text-xs font-bold">
+                3
+              </span>
               <h4 className="font-medium text-white/90">Push to the platform</h4>
             </div>
             <CodeBlock copyText="npx crawlee-cloud push">
               <span className="text-zinc-500">$</span> npx crawlee-cloud push
             </CodeBlock>
             <p className="text-xs text-muted-foreground ml-8">
-              Builds Docker image, registers actor automatically (reads from <code className="px-1 py-0.5 bg-white/5 rounded text-zinc-400">.actor/actor.json</code>), and pushes to the platform
+              Builds Docker image, registers actor automatically (reads from{' '}
+              <code className="px-1 py-0.5 bg-white/5 rounded text-zinc-400">
+                .actor/actor.json
+              </code>
+              ), and pushes to the platform
             </p>
           </div>
         </CardContent>
@@ -118,12 +130,15 @@ export default function NewActorPage() {
             </div>
             <div>
               <CardTitle>Actor Configuration</CardTitle>
-              <CardDescription>The <code className="text-xs">.actor/actor.json</code> file contains all metadata</CardDescription>
+              <CardDescription>
+                The <code className="text-xs">.actor/actor.json</code> file contains all metadata
+              </CardDescription>
             </div>
           </div>
         </CardHeader>
         <CardContent>
-          <CodeBlock copyText={`{
+          <CodeBlock
+            copyText={`{
   "actorSpecification": 1,
   "name": "my-actor",
   "title": "My Actor",
@@ -134,20 +149,44 @@ export default function NewActorPage() {
     "memory": 1024,
     "timeout": 3600
   }
-}`}>
-            <span className="text-zinc-500">.actor/actor.json</span>{"\n"}
-            {"{"}{"\n"}
-            {"  "}<span className="text-cyan-400">"actorSpecification"</span>: <span className="text-amber-400">1</span>,{"\n"}
-            {"  "}<span className="text-cyan-400">"name"</span>: <span className="text-green-400">"my-actor"</span>,{"\n"}
-            {"  "}<span className="text-cyan-400">"title"</span>: <span className="text-green-400">"My Actor"</span>,{"\n"}
-            {"  "}<span className="text-cyan-400">"description"</span>: <span className="text-green-400">"Scrapes data from example.com"</span>,{"\n"}
-            {"  "}<span className="text-cyan-400">"version"</span>: <span className="text-green-400">"1.0.0"</span>,{"\n"}
-            {"  "}<span className="text-cyan-400">"dockerfile"</span>: <span className="text-green-400">"./Dockerfile"</span>,{"\n"}
-            {"  "}<span className="text-cyan-400">"defaultRunOptions"</span>: {"{"}{"\n"}
-            {"    "}<span className="text-cyan-400">"memory"</span>: <span className="text-amber-400">1024</span>,{"\n"}
-            {"    "}<span className="text-cyan-400">"timeout"</span>: <span className="text-amber-400">3600</span>{"\n"}
-            {"  "}{"}"}{"\n"}
-            {"}"}
+}`}
+          >
+            <span className="text-zinc-500">.actor/actor.json</span>
+            {'\n'}
+            {'{'}
+            {'\n'}
+            {'  '}
+            <span className="text-cyan-400">"actorSpecification"</span>:{' '}
+            <span className="text-amber-400">1</span>,{'\n'}
+            {'  '}
+            <span className="text-cyan-400">"name"</span>:{' '}
+            <span className="text-green-400">"my-actor"</span>,{'\n'}
+            {'  '}
+            <span className="text-cyan-400">"title"</span>:{' '}
+            <span className="text-green-400">"My Actor"</span>,{'\n'}
+            {'  '}
+            <span className="text-cyan-400">"description"</span>:{' '}
+            <span className="text-green-400">"Scrapes data from example.com"</span>,{'\n'}
+            {'  '}
+            <span className="text-cyan-400">"version"</span>:{' '}
+            <span className="text-green-400">"1.0.0"</span>,{'\n'}
+            {'  '}
+            <span className="text-cyan-400">"dockerfile"</span>:{' '}
+            <span className="text-green-400">"./Dockerfile"</span>,{'\n'}
+            {'  '}
+            <span className="text-cyan-400">"defaultRunOptions"</span>: {'{'}
+            {'\n'}
+            {'    '}
+            <span className="text-cyan-400">"memory"</span>:{' '}
+            <span className="text-amber-400">1024</span>,{'\n'}
+            {'    '}
+            <span className="text-cyan-400">"timeout"</span>:{' '}
+            <span className="text-amber-400">3600</span>
+            {'\n'}
+            {'  '}
+            {'}'}
+            {'\n'}
+            {'}'}
           </CodeBlock>
         </CardContent>
       </Card>
@@ -167,13 +206,16 @@ export default function NewActorPage() {
         </CardHeader>
         <CardContent>
           <CodeBlock copyText="cd your-existing-actor && npx crawlee-cloud push">
-            <span className="text-zinc-500">$</span> cd <span className="text-amber-400">your-existing-actor</span>{"\n"}
-            <span className="text-zinc-500">$</span> npx crawlee-cloud push{"\n"}
-            {"\n"}
-            <span className="text-green-400">✓</span> Reading .actor/actor.json...{"\n"}
-            <span className="text-green-400">✓</span> Building Docker image...{"\n"}
-            <span className="text-green-400">✓</span> Registering actor "your-actor"...{"\n"}
-            <span className="text-green-400">✓</span> Done! View at http://localhost:3001/actors/your-actor
+            <span className="text-zinc-500">$</span> cd{' '}
+            <span className="text-amber-400">your-existing-actor</span>
+            {'\n'}
+            <span className="text-zinc-500">$</span> npx crawlee-cloud push{'\n'}
+            {'\n'}
+            <span className="text-green-400">✓</span> Reading .actor/actor.json...{'\n'}
+            <span className="text-green-400">✓</span> Building Docker image...{'\n'}
+            <span className="text-green-400">✓</span> Registering actor "your-actor"...{'\n'}
+            <span className="text-green-400">✓</span> Done! View at
+            http://localhost:3001/actors/your-actor
           </CodeBlock>
         </CardContent>
       </Card>
@@ -185,7 +227,11 @@ export default function NewActorPage() {
           <div className="space-y-1">
             <p className="font-medium text-amber-200">Apify SDK Compatibility</p>
             <p className="text-sm text-amber-200/70">
-              Your existing Apify actors work without code changes. The CLI reads your existing <code className="px-1 py-0.5 bg-amber-500/20 rounded text-amber-300 text-xs">.actor/actor.json</code> and handles everything automatically.
+              Your existing Apify actors work without code changes. The CLI reads your existing{' '}
+              <code className="px-1 py-0.5 bg-amber-500/20 rounded text-amber-300 text-xs">
+                .actor/actor.json
+              </code>{' '}
+              and handles everything automatically.
             </p>
           </div>
         </div>
@@ -193,10 +239,10 @@ export default function NewActorPage() {
 
       <div className="flex justify-start">
         <Button variant="outline" asChild>
-          <Link href="/actors">
+          <AppLink href="/actors">
             <ArrowLeft className="mr-2 h-4 w-4" />
             Back to Actors
-          </Link>
+          </AppLink>
         </Button>
       </div>
     </div>

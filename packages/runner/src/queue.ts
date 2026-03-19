@@ -43,6 +43,7 @@ let isProcessing = false;
 let activeRuns = 0;
 let shuttingDown = false;
 let runnerApiKey: string | null = null;
+const activeRunIds = new Set<string>();
 
 export function stopProcessing(): void {
   shuttingDown = true;
@@ -50,6 +51,10 @@ export function stopProcessing(): void {
 
 export function getActiveRunCount(): number {
   return activeRuns;
+}
+
+export function getActiveRunIds(): string[] {
+  return [...activeRunIds];
 }
 
 /**
@@ -142,10 +147,12 @@ async function processNextRun(): Promise<void> {
     );
 
     activeRuns++;
+    activeRunIds.add(run.id);
 
     // Process in background
     void processRun(run).finally(() => {
       activeRuns--;
+      activeRunIds.delete(run.id);
     });
   } finally {
     isProcessing = false;

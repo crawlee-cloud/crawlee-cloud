@@ -1,0 +1,76 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE"
+  },
+  "deploy": {
+    "restartPolicyType": "ON_FAILURE"
+  },
+  "services": {
+    "api": {
+      "build": {
+        "dockerfilePath": "docker/Dockerfile.api"
+      },
+      "deploy": {
+        "startCommand": "node packages/api/dist/index.js",
+        "healthcheckPath": "/v2/health"
+      },
+      "networking": {
+        "serviceDomain": {}
+      },
+      "variables": {
+        "NODE_ENV": "production",
+        "PORT": "3000",
+        "DATABASE_URL": "${{Postgres.DATABASE_URL}}",
+        "REDIS_URL": "${{Redis.REDIS_URL}}",
+        "S3_ENDPOINT": "http://${{minio.RAILWAY_PRIVATE_DOMAIN}}:9000",
+        "S3_ACCESS_KEY": "minioadmin",
+        "S3_SECRET_KEY": {
+          "generator": "secret"
+        },
+        "S3_BUCKET": "crawlee-cloud",
+        "S3_REGION": "us-east-1",
+        "S3_FORCE_PATH_STYLE": "true",
+        "API_SECRET": {
+          "generator": "secret"
+        },
+        "ADMIN_EMAIL": "admin@crawlee.cloud",
+        "ADMIN_PASSWORD": {
+          "generator": "secret"
+        },
+        "CORS_ORIGINS": "https://${{RAILWAY_PUBLIC_DOMAIN}}"
+      }
+    },
+    "dashboard": {
+      "build": {
+        "dockerfilePath": "docker/Dockerfile.dashboard"
+      },
+      "deploy": {
+        "startCommand": "node packages/dashboard/server.js"
+      },
+      "networking": {
+        "serviceDomain": {}
+      },
+      "variables": {
+        "NODE_ENV": "production",
+        "PORT": "3001",
+        "NEXT_PUBLIC_API_URL": "https://${{api.RAILWAY_PUBLIC_DOMAIN}}"
+      }
+    },
+    "minio": {
+      "image": "minio/minio:latest",
+      "deploy": {
+        "startCommand": "server /data --console-address :9001"
+      },
+      "volumes": {
+        "minio-data": {
+          "mountPath": "/data"
+        }
+      },
+      "variables": {
+        "MINIO_ROOT_USER": "minioadmin",
+        "MINIO_ROOT_PASSWORD": "${{api.S3_SECRET_KEY}}"
+      }
+    }
+  }
+}

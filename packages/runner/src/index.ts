@@ -8,9 +8,18 @@
  * 4. Triggers webhooks on completion
  */
 
+import { Redis } from 'ioredis';
+import os from 'os';
 import { config } from './config.js';
 import { checkDocker, listRunningContainers } from './docker.js';
-import { initJobQueue, startProcessing, stopProcessing, getActiveRunCount } from './queue.js';
+import {
+  initJobQueue,
+  startProcessing,
+  stopProcessing,
+  getActiveRunCount,
+  getActiveRunIds,
+} from './queue.js';
+import { startHeartbeat, stopHeartbeat } from './heartbeat.js';
 
 async function main() {
   console.log('='.repeat(60));
@@ -42,6 +51,16 @@ async function main() {
   console.log('Initializing job queue...');
   await initJobQueue();
 
+  // Start heartbeat (publishes metrics to Redis for the scaler)
+  const heartbeatRedis = new Redis(config.redisUrl);
+  const runnerId = process.env.RUNNER_ID || os.hostname();
+  startHeartbeat(
+    heartbeatRedis,
+    runnerId,
+    () => ({ count: getActiveRunCount(), ids: getActiveRunIds() }),
+    config.maxConcurrentRuns
+  );
+
   // Start processing runs
   console.log('Starting run processor...');
   await startProcessing();
@@ -57,6 +76,7 @@ function setupGracefulShutdown(): void {
     console.log(`Received ${signal}, stopping run processor...`);
 
     stopProcessing();
+    stopHeartbeat();
 
     const forceExit = setTimeout(() => {
       const active = getActiveRunCount();

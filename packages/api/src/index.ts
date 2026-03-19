@@ -20,6 +20,7 @@ import { webhooksRoutes } from './routes/webhooks.js';
 import { schedulesRoutes } from './routes/schedules.js';
 import { setupAdminUser } from './setup.js';
 import { initScheduler } from './scheduler.js';
+import { initScaler } from './scaler/index.js';
 import { registry, httpRequestsTotal, httpRequestDuration } from './metrics.js';
 import { registerHealthRoutes } from './health.js';
 
@@ -148,6 +149,12 @@ app.get('/health', () => ({
   version: process.env.npm_package_version ?? '1.0.0',
 }));
 
+// Scaler status endpoint
+app.get('/v2/scaler/status', async () => {
+  const { getScalerStatus } = await import('./scaler/index.js');
+  return { data: await getScalerStatus() };
+});
+
 // Prometheus metrics endpoint
 app.get('/metrics', async (_request, reply) => {
   reply.header('Content-Type', registry.contentType);
@@ -170,6 +177,9 @@ async function start() {
   // Start cron scheduler
   await initScheduler();
 
+  // Start auto-scaler (disabled by default, no-op when SCALER_ENABLED != true)
+  await initScaler();
+
   await app.listen({ port: config.port, host: '0.0.0.0' });
   console.log(`Server on http://0.0.0.0:${String(config.port)}`);
 }
@@ -191,9 +201,11 @@ function setupGracefulShutdown(): void {
     }, shutdownTimeoutSecs * 1000);
 
     try {
-      // 1. Stop scheduler
+      // 1. Stop scheduler and scaler
       const { unregisterAllSchedules } = await import('./scheduler.js');
       unregisterAllSchedules();
+      const { stopScaler } = await import('./scaler/index.js');
+      stopScaler();
 
       // 2. Close HTTP server (drain in-flight requests)
       await app.close();

@@ -6,15 +6,76 @@ Choose your deployment method:
 
 **Step 1:** Deploy API + Dashboard + managed databases with one click:
 
-| Provider     | Deploy                                                                                                                                                                     | Notes                                       |
-| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| Railway      | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/template/crawlee-cloud?referralCode=crawlee)                                                    | Includes PostgreSQL + Redis. Easiest setup. |
-| Render       | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/crawlee-cloud/crawlee-cloud)                | Free tier available.                        |
-| DigitalOcean | [![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/crawlee-cloud/crawlee-cloud&refcode=crawlee) | Managed PostgreSQL + Redis.                 |
+| Provider     | Deploy                                                                                                                                                                               | Notes                                       |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------- |
+| Railway      | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/crawlee-cloud/crawlee-cloud&referralCode=crawlee)                | Includes PostgreSQL + Redis. Easiest setup. |
+| Render       | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/crawlee-cloud/crawlee-cloud)                          | Free tier available.                        |
+| DigitalOcean | [![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/crawlee-cloud/crawlee-cloud/tree/main&refcode=crawlee) | Managed PostgreSQL + Redis.                 |
 
 **Step 2:** Connect a Runner on a $5 VPS so Actors can execute. See [Connecting a Runner](#connecting-a-runner-required-for-paas-deployments) below.
 
 > **Why two steps?** The Runner needs Docker socket access to spawn Actor containers, which PaaS platforms don't provide. A cheap VPS ($5/month) handles this perfectly.
+
+## DigitalOcean (Automated Full Stack)
+
+Deploys the entire stack with a single script: API + Dashboard on App Platform, Runner on a Droplet, managed PostgreSQL and Redis clusters.
+
+### Prerequisites
+
+- [doctl](https://docs.digitalocean.com/reference/doctl/how-to/install/) installed and authenticated (`doctl auth init`)
+- An SSH key added to your DO account
+
+### Deploy
+
+```bash
+git clone https://github.com/crawlee-cloud/crawlee-cloud.git
+cd crawlee-cloud
+bash deploy/digitalocean/setup.sh
+```
+
+The script will:
+
+1. Create a managed PostgreSQL cluster (`crawlee-cloud-db`)
+2. Create a managed Redis/Valkey cluster (`crawlee-cloud-redis`)
+3. Deploy API + Dashboard on App Platform (auto-runs migrations)
+4. Create a Runner Droplet with Docker pre-installed
+5. Configure the Runner with database/Redis connection strings
+6. Print admin credentials, URLs, and management commands
+
+### Cost
+
+| Component                      | Size         | Monthly     |
+| ------------------------------ | ------------ | ----------- |
+| App Platform (API + Dashboard) | basic-s x2   | ~$12        |
+| PostgreSQL (managed)           | 1 vCPU / 1GB | ~$15        |
+| Redis/Valkey (managed)         | 1 vCPU / 1GB | ~$15        |
+| Runner Droplet                 | 1 vCPU / 2GB | ~$12        |
+| **Total**                      |              | **~$54/mo** |
+
+### Architecture
+
+```
+                    DigitalOcean App Platform
+                   ┌─────────────────────────┐
+  Users ──────────>│  API        Dashboard   │
+                   │  (Fastify)  (Next.js)   │
+                   └────────┬────────────────┘
+                            │
+              ┌─────────────┼─────────────┐
+              v             v             v
+         PostgreSQL      Redis       DO Spaces
+         (managed)     (Valkey)      (S3 storage)
+              ^             ^
+              │             │
+                   ┌────────┴────────┐
+                   │  Runner Droplet │
+                   │  (Docker host)  │
+                   └─────────────────┘
+```
+
+### Note on S3 Storage
+
+The setup script configures placeholder values for S3. After deployment, create a [DO Spaces](https://cloud.digitalocean.com/spaces) bucket and update the `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` in the App Platform dashboard.
 
 ## Full Stack on VPS
 

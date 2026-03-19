@@ -1,7 +1,8 @@
 'use client';
 
-import Link from 'next/link';
 import Image from 'next/image';
+import { AppLink } from '@/components/app-link';
+import { prefixPath, ROUTE_PREFIX } from '@/lib/path-prefix';
 import { usePathname } from 'next/navigation';
 import { LayoutDashboard, Play, Drama, Database, Settings, BookOpen, LogOut } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -20,12 +21,23 @@ const secondaryItems = [
 ];
 
 export function Sidebar() {
-  const pathname = usePathname();
+  const rawPathname = usePathname();
+  // Strip route prefix so active-state detection works with unprefixed hrefs
+  const pathname =
+    ROUTE_PREFIX && rawPathname.startsWith(ROUTE_PREFIX)
+      ? rawPathname.slice(ROUTE_PREFIX.length) || '/'
+      : rawPathname;
 
   return (
     <aside className="w-64 flex flex-col h-screen sticky top-0 border-r border-white/5 bg-black/40 backdrop-blur-xl">
       <div className="p-6 flex items-center gap-3">
-        <Image src="/logo-dark.svg" alt="Crawlee Cloud" width={180} height={40} priority />
+        <Image
+          src={prefixPath('/logo-dark.svg')}
+          alt="Crawlee Cloud"
+          width={180}
+          height={40}
+          priority
+        />
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-4 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
@@ -34,7 +46,7 @@ export function Sidebar() {
             const isActive =
               pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href));
             return (
-              <Link
+              <AppLink
                 key={item.href}
                 href={item.href}
                 className={cn(
@@ -55,7 +67,7 @@ export function Sidebar() {
                 {isActive && (
                   <div className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-4 bg-indigo-500 rounded-full shadow-[0_0_8px_rgba(99,102,241,0.5)]" />
                 )}
-              </Link>
+              </AppLink>
             );
           })}
         </nav>
@@ -68,7 +80,7 @@ export function Sidebar() {
             {secondaryItems.map((item) => {
               const isActive = pathname === item.href;
               return (
-                <Link
+                <AppLink
                   key={item.href}
                   href={item.href}
                   className={cn(
@@ -85,7 +97,7 @@ export function Sidebar() {
                     )}
                   />
                   {item.label}
-                </Link>
+                </AppLink>
               );
             })}
           </nav>
@@ -114,7 +126,7 @@ export function Sidebar() {
             localStorage.removeItem('token');
             localStorage.removeItem('user');
             document.cookie = 'token=; path=/; max-age=0';
-            window.location.href = '/login';
+            window.location.href = prefixPath('/login');
           }}
         >
           <LogOut className="mr-2 h-4 w-4" />

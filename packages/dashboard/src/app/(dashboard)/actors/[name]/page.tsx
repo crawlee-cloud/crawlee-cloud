@@ -1,13 +1,27 @@
-"use client";
+'use client';
 
-import { use, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { ArrowLeft, Play, Trash2, Clock, Activity, Loader2, Database, Terminal, Settings, Code, ChevronDown, ChevronUp } from "lucide-react";
-import Link from "next/link";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Label } from "@/components/ui/label";
+import { use, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import {
+  ArrowLeft,
+  Play,
+  Trash2,
+  Clock,
+  Activity,
+  Loader2,
+  Database,
+  Terminal,
+  Settings,
+  Code,
+  ChevronDown,
+  ChevronUp,
+} from 'lucide-react';
+import { AppLink } from '@/components/app-link';
+import { prefixPath } from '@/lib/path-prefix';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Label } from '@/components/ui/label';
 import {
   Table,
   TableBody,
@@ -15,9 +29,10 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table";
-import { getActor, getActorRuns, deleteActor, startRun, Actor, Run } from "@/lib/api";
-import { cn } from "@/lib/utils";
+} from '@/components/ui/table';
+import type { Actor, Run } from '@/lib/api';
+import { getActor, getActorRuns, deleteActor, startRun } from '@/lib/api';
+import { cn } from '@/lib/utils';
 
 export default function ActorDetailPage({ params }: { params: Promise<{ name: string }> }) {
   const { name } = use(params);
@@ -26,7 +41,7 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
   const [runs, setRuns] = useState<Run[]>([]);
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
-  
+
   // Run configuration state
   const [showRunPanel, setShowRunPanel] = useState(false);
   const [inputJson, setInputJson] = useState('{\n  \n}');
@@ -48,17 +63,17 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
         setLoading(false);
       }
     }
-    load();
+    void load();
   }, [name]);
 
   async function handleDelete() {
     if (!actor) return;
     if (!confirm(`Delete actor "${actor.name}"? This cannot be undone.`)) return;
-    
+
     setDeleting(true);
     try {
       await deleteActor(actor.id);
-      router.push('/actors');
+      router.push(prefixPath('/actors'));
     } catch (err) {
       console.error('Failed to delete actor:', err);
       setDeleting(false);
@@ -67,7 +82,7 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
 
   async function handleStartRun() {
     if (!actor) return;
-    
+
     // Validate JSON
     let parsedInput;
     try {
@@ -77,7 +92,7 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
       setJsonError('Invalid JSON format');
       return;
     }
-    
+
     setStarting(true);
     try {
       const run = await startRun(actor.id, {
@@ -85,7 +100,7 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
         timeout,
         memory,
       });
-      router.push(`/runs/${run.id}`);
+      router.push(prefixPath(`/runs/${run.id}`));
     } catch (err) {
       console.error('Failed to start run:', err);
       setStarting(false);
@@ -112,11 +127,20 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
 
   function getStatusBadge(status: string) {
     switch (status) {
-      case 'RUNNING': return <Badge variant="secondary" className="bg-blue-500/10 text-blue-400 border-blue-500/20">Running</Badge>;
-      case 'SUCCEEDED': return <Badge variant="success">Succeeded</Badge>;
-      case 'FAILED': return <Badge variant="destructive">Failed</Badge>;
-      case 'READY': return <Badge variant="outline">Ready</Badge>;
-      default: return <Badge variant="outline">{status}</Badge>;
+      case 'RUNNING':
+        return (
+          <Badge variant="secondary" className="bg-blue-500/10 text-blue-400 border-blue-500/20">
+            Running
+          </Badge>
+        );
+      case 'SUCCEEDED':
+        return <Badge variant="success">Succeeded</Badge>;
+      case 'FAILED':
+        return <Badge variant="destructive">Failed</Badge>;
+      case 'READY':
+        return <Badge variant="outline">Ready</Badge>;
+      default:
+        return <Badge variant="outline">{status}</Badge>;
     }
   }
 
@@ -136,7 +160,7 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
         </div>
         <h2 className="text-xl font-semibold">Actor not found</h2>
         <Button asChild variant="outline">
-          <Link href="/actors">Back to Actors</Link>
+          <AppLink href="/actors">Back to Actors</AppLink>
         </Button>
       </div>
     );
@@ -149,38 +173,59 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
       {/* Header Section */}
       <div className="flex flex-col md:flex-row md:items-start justify-between gap-6">
         <div className="flex items-start gap-4">
-          <Button variant="outline" size="icon" asChild className="mt-1 h-9 w-9 bg-white/5 border-white/10 hover:bg-white/10">
-            <Link href="/actors">
+          <Button
+            variant="outline"
+            size="icon"
+            asChild
+            className="mt-1 h-9 w-9 bg-white/5 border-white/10 hover:bg-white/10"
+          >
+            <AppLink href="/actors">
               <ArrowLeft className="h-4 w-4" />
-            </Link>
+            </AppLink>
           </Button>
           <div className="space-y-1">
             <div className="flex items-center gap-3">
-              <h1 className="text-3xl font-bold tracking-tight text-white">{actor.title || actor.name}</h1>
-              <Badge variant="glass" className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20">Active</Badge>
+              <h1 className="text-3xl font-bold tracking-tight text-white">
+                {actor.title || actor.name}
+              </h1>
+              <Badge
+                variant="glass"
+                className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+              >
+                Active
+              </Badge>
             </div>
             <p className="text-muted-foreground font-mono text-sm flex items-center gap-2">
-              <span className="text-indigo-400">@crawlee/</span>{actor.name}
+              <span className="text-indigo-400">@crawlee/</span>
+              {actor.name}
             </p>
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <Button 
-            variant="ghost" 
-            size="icon" 
+          <Button
+            variant="ghost"
+            size="icon"
             className="text-muted-foreground hover:text-rose-400 hover:bg-rose-500/10"
-            onClick={handleDelete}
+            onClick={() => void handleDelete()}
             disabled={deleting}
           >
-            {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+            {deleting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Trash2 className="h-4 w-4" />
+            )}
           </Button>
-          <Button 
+          <Button
             onClick={() => setShowRunPanel(!showRunPanel)}
             className="bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-500/20 border-0"
           >
             <Play className="mr-2 h-4 w-4" />
             Start Run
-            {showRunPanel ? <ChevronUp className="ml-2 h-4 w-4" /> : <ChevronDown className="ml-2 h-4 w-4" />}
+            {showRunPanel ? (
+              <ChevronUp className="ml-2 h-4 w-4" />
+            ) : (
+              <ChevronDown className="ml-2 h-4 w-4" />
+            )}
           </Button>
         </div>
       </div>
@@ -200,7 +245,9 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
             <div className="space-y-2">
               <Label className="text-white/80 flex items-center gap-2">
                 Input (JSON)
-                {jsonError && <span className="text-rose-400 text-xs font-normal">{jsonError}</span>}
+                {jsonError && (
+                  <span className="text-rose-400 text-xs font-normal">{jsonError}</span>
+                )}
               </Label>
               <textarea
                 value={inputJson}
@@ -209,10 +256,10 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
                   setJsonError(null);
                 }}
                 className={cn(
-                  "w-full h-48 px-4 py-3 rounded-lg border bg-black/50 font-mono text-sm text-zinc-300 focus:outline-none focus:ring-2 transition-colors resize-none",
-                  jsonError 
-                    ? "border-rose-500/50 focus:ring-rose-500/50" 
-                    : "border-white/10 focus:ring-indigo-500/50"
+                  'w-full h-48 px-4 py-3 rounded-lg border bg-black/50 font-mono text-sm text-zinc-300 focus:outline-none focus:ring-2 transition-colors resize-none',
+                  jsonError
+                    ? 'border-rose-500/50 focus:ring-rose-500/50'
+                    : 'border-white/10 focus:ring-indigo-500/50'
                 )}
                 placeholder='{\n  "url": "https://example.com",\n  "maxItems": 100\n}'
                 spellCheck={false}
@@ -257,15 +304,15 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
 
             {/* Start Button */}
             <div className="flex justify-end gap-3 pt-2">
-              <Button 
-                variant="ghost" 
+              <Button
+                variant="ghost"
                 onClick={() => setShowRunPanel(false)}
                 className="text-muted-foreground hover:text-white"
               >
                 Cancel
               </Button>
-              <Button 
-                onClick={handleStartRun}
+              <Button
+                onClick={() => void handleStartRun()}
                 disabled={starting}
                 className="bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-500/20"
               >
@@ -322,10 +369,10 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
             </CardTitle>
           </CardHeader>
           <CardContent>
-             <div className="flex items-center gap-2">
-                <div className="text-2xl font-bold text-emerald-400">Valid</div>
-                <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-             </div>
+            <div className="flex items-center gap-2">
+              <div className="text-2xl font-bold text-emerald-400">Valid</div>
+              <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -354,33 +401,50 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
               <Table>
                 <TableHeader className="bg-white/5">
                   <TableRow className="border-white/5 hover:bg-transparent">
-                    <TableHead className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Run ID</TableHead>
-                    <TableHead className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Status</TableHead>
-                    <TableHead className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Duration</TableHead>
-                    <TableHead className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Dataset</TableHead>
-                    <TableHead className="text-right text-xs uppercase tracking-wider text-muted-foreground font-semibold">Started</TableHead>
+                    <TableHead className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
+                      Run ID
+                    </TableHead>
+                    <TableHead className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
+                      Status
+                    </TableHead>
+                    <TableHead className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
+                      Duration
+                    </TableHead>
+                    <TableHead className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
+                      Dataset
+                    </TableHead>
+                    <TableHead className="text-right text-xs uppercase tracking-wider text-muted-foreground font-semibold">
+                      Started
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {runs.slice(0, 10).map((run) => (
                     <TableRow key={run.id} className="border-white/5 hover:bg-white/5">
                       <TableCell className="font-mono text-sm">
-                        <Link href={`/runs/${run.id}`} className="text-indigo-300 hover:text-indigo-400 transition-colors">
+                        <AppLink
+                          href={`/runs/${run.id}`}
+                          className="text-indigo-300 hover:text-indigo-400 transition-colors"
+                        >
                           {run.id.slice(0, 8)}...
-                        </Link>
+                        </AppLink>
                       </TableCell>
                       <TableCell>{getStatusBadge(run.status)}</TableCell>
-                      <TableCell className="text-muted-foreground text-sm font-mono">{formatDuration(run.startedAt, run.finishedAt)}</TableCell>
+                      <TableCell className="text-muted-foreground text-sm font-mono">
+                        {formatDuration(run.startedAt, run.finishedAt)}
+                      </TableCell>
                       <TableCell>
                         {run.defaultDatasetId ? (
-                          <Link 
+                          <AppLink
                             href={`/datasets/${run.defaultDatasetId}`}
                             className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-indigo-400 transition-colors"
                           >
                             <Database className="h-3.5 w-3.5" />
                             <span className="font-mono">{run.defaultDatasetId.slice(0, 8)}...</span>
-                          </Link>
-                        ) : <span className="text-muted-foreground/50">-</span>}
+                          </AppLink>
+                        ) : (
+                          <span className="text-muted-foreground/50">-</span>
+                        )}
                       </TableCell>
                       <TableCell className="text-right text-muted-foreground text-sm">
                         {formatTimeAgo(run.createdAt)}
@@ -396,10 +460,10 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
                 <Play className="h-5 w-5 text-muted-foreground opacity-50" />
               </div>
               <p className="text-muted-foreground">No runs have been executed yet.</p>
-              <Button 
-                size="sm" 
-                variant="outline" 
-                className="mt-4" 
+              <Button
+                size="sm"
+                variant="outline"
+                className="mt-4"
                 onClick={() => setShowRunPanel(true)}
               >
                 Start First Run

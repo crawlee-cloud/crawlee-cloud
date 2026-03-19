@@ -1,9 +1,8 @@
-"use client";
+'use client';
 
-import { Suspense, useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
-import { Database, Download, Trash2, Loader2, Eye, Search } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Suspense, useEffect, useState } from 'react';
+import { Database, Download, Trash2, Loader2, Eye, Search } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import {
   Table,
   TableBody,
@@ -11,15 +10,16 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui/table";
-import { getDatasets, getDatasetItems, deleteDataset, Dataset } from "@/lib/api";
-import Link from "next/link";
+} from '@/components/ui/table';
+import type { Dataset } from '@/lib/api';
+import { getDatasets, getDatasetItems, deleteDataset } from '@/lib/api';
+import { AppLink } from '@/components/app-link';
 
 function DatasetsContent() {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
-  
+  const [search, setSearch] = useState('');
+
   async function loadDatasets() {
     setLoading(true);
     try {
@@ -33,25 +33,27 @@ function DatasetsContent() {
   }
 
   useEffect(() => {
-    loadDatasets();
+    void loadDatasets();
   }, []);
 
   async function handleDelete(id: string) {
     if (!confirm('Are you sure you want to delete this dataset?')) return;
     try {
       await deleteDataset(id);
-      setDatasets(datasets.filter(d => d.id !== id));
+      setDatasets(datasets.filter((d) => d.id !== id));
     } catch (err) {
       console.error('Failed to delete dataset:', err);
     }
   }
 
   function handleDownload(id: string) {
-    getDatasetItems(id).then(items => {
-      downloadJSON(items, `dataset-${id.slice(0, 8)}.json`);
-    }).catch(err => {
-      console.error('Failed to download dataset:', err);
-    });
+    getDatasetItems(id)
+      .then((items) => {
+        downloadJSON(items, `dataset-${id.slice(0, 8)}.json`);
+      })
+      .catch((err) => {
+        console.error('Failed to download dataset:', err);
+      });
   }
 
   function downloadJSON(data: unknown[], filename: string) {
@@ -64,8 +66,8 @@ function DatasetsContent() {
     URL.revokeObjectURL(url);
   }
 
-  const filtered = datasets.filter(d =>
-    d.id.includes(search) || (d.name && d.name.includes(search))
+  const filtered = datasets.filter(
+    (d) => d.id.includes(search) || (d.name && d.name.includes(search))
   );
 
   function formatTimeAgo(date: string): string {
@@ -80,7 +82,9 @@ function DatasetsContent() {
     <div className="space-y-8 animate-in fade-in duration-500 relative">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight bg-linear-to-r from-white to-white/60 bg-clip-text text-transparent">Datasets</h1>
+          <h1 className="text-3xl font-bold tracking-tight bg-linear-to-r from-white to-white/60 bg-clip-text text-transparent">
+            Datasets
+          </h1>
           <p className="text-muted-foreground mt-1 text-sm">
             Access and manage your scraped data collections
           </p>
@@ -106,28 +110,42 @@ function DatasetsContent() {
           <Table>
             <TableHeader className="bg-white/5">
               <TableRow className="border-white/5 hover:bg-transparent">
-                <TableHead className="font-semibold text-muted-foreground text-xs uppercase tracking-wider">Name / ID</TableHead>
-                <TableHead className="font-semibold text-muted-foreground text-xs uppercase tracking-wider text-right">Items</TableHead>
-                <TableHead className="font-semibold text-muted-foreground text-xs uppercase tracking-wider text-right">Modified</TableHead>
-                <TableHead className="font-semibold text-muted-foreground text-xs uppercase tracking-wider text-right">Actions</TableHead>
+                <TableHead className="font-semibold text-muted-foreground text-xs uppercase tracking-wider">
+                  Name / ID
+                </TableHead>
+                <TableHead className="font-semibold text-muted-foreground text-xs uppercase tracking-wider text-right">
+                  Items
+                </TableHead>
+                <TableHead className="font-semibold text-muted-foreground text-xs uppercase tracking-wider text-right">
+                  Modified
+                </TableHead>
+                <TableHead className="font-semibold text-muted-foreground text-xs uppercase tracking-wider text-right">
+                  Actions
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {filtered.map((dataset) => (
-                <TableRow key={dataset.id} className="border-white/5 hover:bg-white/5 transition-colors">
+                <TableRow
+                  key={dataset.id}
+                  className="border-white/5 hover:bg-white/5 transition-colors"
+                >
                   <TableCell>
                     <div className="flex items-center gap-3">
-                       <div className="h-8 w-8 rounded bg-pink-500/10 flex items-center justify-center border border-pink-500/20">
-                          <Database className="h-4 w-4 text-pink-400" />
-                       </div>
-                       <div>
-                          {dataset.name && (
-                            <p className="text-sm font-medium text-white/90">{dataset.name}</p>
-                          )}
-                          <Link href={`/datasets/${dataset.id}`} className="font-mono text-xs text-muted-foreground hover:underline hover:text-white">
-                             {dataset.id.slice(0, 8)}...
-                          </Link>
-                       </div>
+                      <div className="h-8 w-8 rounded bg-pink-500/10 flex items-center justify-center border border-pink-500/20">
+                        <Database className="h-4 w-4 text-pink-400" />
+                      </div>
+                      <div>
+                        {dataset.name && (
+                          <p className="text-sm font-medium text-white/90">{dataset.name}</p>
+                        )}
+                        <AppLink
+                          href={`/datasets/${dataset.id}`}
+                          className="font-mono text-xs text-muted-foreground hover:underline hover:text-white"
+                        >
+                          {dataset.id.slice(0, 8)}...
+                        </AppLink>
+                      </div>
                     </div>
                   </TableCell>
                   <TableCell className="text-right font-medium text-white/80">
@@ -138,32 +156,32 @@ function DatasetsContent() {
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-1">
-                      <Button 
-                        variant="ghost" 
-                        size="sm" 
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         className="h-8 w-8 hover:bg-white/10 hover:text-indigo-400"
                         title="View"
                         asChild
                       >
-                         <Link href={`/datasets/${dataset.id}`}>
-                            <Eye className="h-4 w-4" />
-                         </Link>
+                        <AppLink href={`/datasets/${dataset.id}`}>
+                          <Eye className="h-4 w-4" />
+                        </AppLink>
                       </Button>
-                      <Button 
-                        variant="ghost" 
-                        size="sm" 
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         className="h-8 w-8 hover:bg-white/10 hover:text-emerald-400"
                         title="Download"
                         onClick={() => handleDownload(dataset.id)}
                       >
                         <Download className="h-4 w-4" />
                       </Button>
-                      <Button 
-                        variant="ghost" 
-                        size="sm" 
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         className="h-8 w-8 hover:bg-white/10 hover:text-rose-400"
                         title="Delete"
-                        onClick={() => handleDelete(dataset.id)}
+                        onClick={() => void handleDelete(dataset.id)}
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>
@@ -178,8 +196,12 @@ function DatasetsContent() {
             <div className="h-16 w-16 mx-auto mb-4 rounded-full bg-white/5 flex items-center justify-center">
               <Database className="h-8 w-8 text-muted-foreground opacity-50" />
             </div>
-            <p className="text-lg font-medium text-white mb-2">{search ? 'No datasets found' : 'No datasets yet'}</p>
-            <p className="text-muted-foreground text-sm">Run a scraper to generate data collections.</p>
+            <p className="text-lg font-medium text-white mb-2">
+              {search ? 'No datasets found' : 'No datasets yet'}
+            </p>
+            <p className="text-muted-foreground text-sm">
+              Run a scraper to generate data collections.
+            </p>
           </div>
         )}
       </div>
@@ -189,11 +211,13 @@ function DatasetsContent() {
 
 export default function DatasetsPage() {
   return (
-    <Suspense fallback={
-      <div className="flex items-center justify-center py-20">
-        <Loader2 className="h-10 w-10 animate-spin text-pink-500" />
-      </div>
-    }>
+    <Suspense
+      fallback={
+        <div className="flex items-center justify-center py-20">
+          <Loader2 className="h-10 w-10 animate-spin text-pink-500" />
+        </div>
+      }
+    >
       <DatasetsContent />
     </Suspense>
   );

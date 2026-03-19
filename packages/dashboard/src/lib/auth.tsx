@@ -1,7 +1,9 @@
-"use client";
+'use client';
 
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
-import { useRouter, usePathname } from "next/navigation";
+import type { ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
+import { useRouter, usePathname } from 'next/navigation';
+import { prefixPath, ROUTE_PREFIX } from '@/lib/path-prefix';
 
 interface User {
   id: string;
@@ -19,21 +21,21 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const PUBLIC_PATHS = ["/login", "/register"];
+const PUBLIC_PATHS = ['/login', '/register'];
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const [user, setUser] = useState<User | null>(() => {
     if (typeof window !== 'undefined') {
-      const storedUser = localStorage.getItem("user");
+      const storedUser = localStorage.getItem('user');
       return storedUser ? JSON.parse(storedUser) : null;
     }
     return null;
   });
   const [token, setToken] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
-      return localStorage.getItem("token");
+      return localStorage.getItem('token');
     }
     return null;
   });
@@ -42,29 +44,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     // Redirect logic
     if (!isLoading) {
-      const isPublicPath = PUBLIC_PATHS.includes(pathname);
-      
+      // Strip route prefix so PUBLIC_PATHS matching works behind a reverse proxy
+      const normalizedPath =
+        ROUTE_PREFIX && pathname.startsWith(ROUTE_PREFIX)
+          ? pathname.slice(ROUTE_PREFIX.length) || '/'
+          : pathname;
+      const isPublicPath = PUBLIC_PATHS.includes(normalizedPath);
+
       if (!token && !isPublicPath) {
-        router.push("/login");
-      } else if (token && isPublicPath) {
-        router.push("/");
+        router.push(prefixPath('/login'));
       }
     }
   }, [token, isLoading, pathname, router]);
 
   function login(newToken: string, newUser: User) {
-    localStorage.setItem("token", newToken);
-    localStorage.setItem("user", JSON.stringify(newUser));
+    localStorage.setItem('token', newToken);
+    localStorage.setItem('user', JSON.stringify(newUser));
     setToken(newToken);
     setUser(newUser);
   }
 
   function logout() {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
     setToken(null);
     setUser(null);
-    router.push("/login");
+    router.push(prefixPath('/login'));
   }
 
   return (
@@ -77,7 +82,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 export function useAuth() {
   const context = useContext(AuthContext);
   if (context === undefined) {
-    throw new Error("useAuth must be used within an AuthProvider");
+    throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
 }

@@ -1,17 +1,25 @@
 # DigitalOcean App Platform Spec - Crawlee Cloud
 # Deploy: https://cloud.digitalocean.com/apps/new?repo=https://github.com/crawlee-cloud/crawlee-cloud
+#
+# NOTE: This deploys the API + Dashboard only. The Runner requires Docker socket
+# access which App Platform does not support. Run the Runner on a separate Droplet
+# using docker-compose — see deploy/vps/ for scripts.
 
 name: crawlee-cloud
 region: nyc
 
 services:
   - name: api
+    git:
+      branch: main
+      repo_clone_url: https://github.com/crawlee-cloud/crawlee-cloud.git
     dockerfile_path: docker/Dockerfile.api
     http_port: 3000
     instance_count: 1
     instance_size_slug: basic-s
     health_check:
-      http_path: /v2/health
+      http_path: /health
+    run_command: sh -c "node packages/api/dist/db/migrate.js; node packages/api/dist/index.js"
     routes:
       - path: /
     envs:
@@ -26,18 +34,20 @@ services:
         scope: RUN_TIME
         value: ${redis.DATABASE_URL}
       - key: S3_ENDPOINT
-        value: http://minio:9000
+        scope: RUN_TIME
+        value: REPLACE_WITH_SPACES_ENDPOINT
       - key: S3_ACCESS_KEY
-        value: minioadmin
+        type: SECRET
+        value: REPLACE_ME
       - key: S3_SECRET_KEY
         type: SECRET
         value: REPLACE_ME
       - key: S3_BUCKET
         value: crawlee-cloud
       - key: S3_REGION
-        value: us-east-1
+        value: nyc3
       - key: S3_FORCE_PATH_STYLE
-        value: 'true'
+        value: 'false'
       - key: API_SECRET
         type: SECRET
         value: REPLACE_ME
@@ -46,10 +56,18 @@ services:
       - key: ADMIN_PASSWORD
         type: SECRET
         value: REPLACE_ME
+      - key: LOG_LEVEL
+        value: info
+      - key: NODE_TLS_REJECT_UNAUTHORIZED
+        scope: RUN_TIME
+        value: '0'
       - key: CORS_ORIGINS
         value: ${APP_URL}
 
   - name: dashboard
+    git:
+      branch: main
+      repo_clone_url: https://github.com/crawlee-cloud/crawlee-cloud.git
     dockerfile_path: docker/Dockerfile.dashboard
     http_port: 3001
     instance_count: 1
@@ -63,16 +81,20 @@ services:
         value: '3001'
       - key: NEXT_PUBLIC_API_URL
         value: ${APP_URL}
+      - key: NEXT_PUBLIC_ASSET_PREFIX
+        value: /dashboard
+      - key: NEXT_PUBLIC_ROUTE_PREFIX
+        value: /dashboard
 
 databases:
   - engine: PG
     name: db
+    production: true
+    cluster_name: crawlee-cloud-db
     version: '16'
-    size: db-s-1vcpu-1gb
-    num_nodes: 1
 
   - engine: REDIS
     name: redis
+    production: true
+    cluster_name: crawlee-cloud-redis
     version: '7'
-    size: db-s-1vcpu-1gb
-    num_nodes: 1
