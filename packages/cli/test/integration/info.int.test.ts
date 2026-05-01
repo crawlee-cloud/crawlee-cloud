@@ -10,9 +10,16 @@
  *   4. With a wrong API URL, info reports unreachable and exits non-zero.
  */
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { TEST_API_URL, TEST_ADMIN_EMAIL, adminToken, makeIsolatedHome, runCli } from './setup.js';
+import {
+  API_REACHABLE,
+  TEST_API_URL,
+  TEST_ADMIN_EMAIL,
+  adminToken,
+  makeIsolatedHome,
+  runCli,
+} from './setup.js';
 
-describe('crc info (e2e)', () => {
+describe.skipIf(!API_REACHABLE)('crc info (e2e)', () => {
   let token: string;
 
   beforeAll(async () => {

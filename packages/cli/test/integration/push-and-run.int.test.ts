@@ -16,6 +16,7 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import path from 'node:path';
 import {
+  API_REACHABLE,
   TEST_API_URL,
   adminToken,
   deleteActorByName,
@@ -25,7 +26,7 @@ import {
   seedActorProject,
 } from './setup.js';
 
-describe('crc push / list / call (e2e)', () => {
+describe.skipIf(!API_REACHABLE)('crc push / list / call (e2e)', () => {
   let token: string;
 
   beforeAll(async () => {

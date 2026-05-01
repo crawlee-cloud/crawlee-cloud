@@ -40,17 +40,29 @@ async function findOrCreateActorVersion(
   versionNumber: string,
   buildTag = 'latest'
 ): Promise<string | null> {
+  // The tag is a single moving pointer per actor. Claiming it must
+  // happen for BOTH paths — newly created versions AND existing ones
+  // being re-pushed (rollback). Otherwise pushing v1 after v2 leaves
+  // current_version_id=v1 but build_tag=latest still on v2 — two
+  // sources of truth disagreeing on which build is current. Tests for
+  // this in test/integration/runs-list and the codex review on PR #18
+  // both flagged it.
+  //
+  // We claim-and-clear in a single statement so the tag is never on
+  // zero versions or two simultaneously.
   const existing = await query<{ id: string }>(
-    `SELECT id FROM actor_versions WHERE actor_id = $1 AND version_number = $2`,
-    [actorId, versionNumber]
+    `WITH cleared AS (
+       UPDATE actor_versions SET build_tag = NULL
+       WHERE actor_id = $1 AND build_tag = $3 AND version_number <> $2
+     )
+     UPDATE actor_versions SET build_tag = $3
+     WHERE actor_id = $1 AND version_number = $2
+     RETURNING id`,
+    [actorId, versionNumber, buildTag]
   );
   if (existing.rows[0]) return existing.rows[0].id;
 
-  // The tag (e.g. "latest", "beta") is a single moving pointer per actor.
-  // When a new version claims a tag, sibling versions must release it —
-  // otherwise the dashboard shows two "latest" rows and `actor:latest`
-  // becomes ambiguous. We do clear-then-insert in the same transaction so
-  // the tag is never momentarily on zero versions or two.
+  // Version doesn't exist yet — insert claiming the tag, clearing siblings.
   const id = nanoid();
   const inserted = await query<{ id: string }>(
     `WITH cleared AS (

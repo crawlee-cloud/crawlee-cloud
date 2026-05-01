@@ -86,6 +86,12 @@ export const infoCommand = new Command('info')
           2
         )
       );
+      // Both output formats share the same exit-code contract — an
+      // unreachable server or invalid token must exit non-zero so
+      // `crc info --json >/dev/null && crc push` works as a CI gate.
+      // Doing the check here (instead of `return`-ing early) keeps
+      // human + JSON in lockstep.
+      if (!serverReachable || !authValid) process.exit(1);
       return;
     }
 

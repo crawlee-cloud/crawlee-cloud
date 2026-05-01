@@ -11,6 +11,7 @@
  */
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
+  API_REACHABLE,
   TEST_API_URL,
   adminToken,
   makeIsolatedHome,
@@ -19,7 +20,7 @@ import {
   runCli,
 } from './setup.js';
 
-describe('crc login (e2e)', () => {
+describe.skipIf(!API_REACHABLE)('crc login (e2e)', () => {
   let token: string;
 
   beforeAll(async () => {

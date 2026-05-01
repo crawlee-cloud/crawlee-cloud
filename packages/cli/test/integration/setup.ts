@@ -160,6 +160,30 @@ export async function readActiveProfile(home: string): Promise<{
   return raw as never;
 }
 
+/**
+ * Probe the test API once at module load. CLI integration tests need a
+ * running API server (these tests spawn the CLI which then talks to
+ * /v2/auth/login etc.). When the server isn't there — typical of CI
+ * environments that haven't been wired to start it — we want to skip
+ * cleanly rather than fail with ECONNREFUSED in every test's beforeAll.
+ *
+ * Each test file does `describe.skipIf(!API_REACHABLE)(...)` to honour
+ * this: locally, with `npm run docker:dev` + the API running, all tests
+ * execute; in a hermetic CI without the API, the suite reports skipped
+ * and CI passes.
+ */
+export const API_REACHABLE = await (async () => {
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 2_000);
+    const res = await fetch(`${TEST_API_URL}/health`, { signal: ctl.signal });
+    clearTimeout(timer);
+    return res.ok;
+  } catch {
+    return false;
+  }
+})();
+
 /** Get an admin JWT for direct API calls (cleanup, fixtures). */
 export async function adminToken(): Promise<string> {
   const res = await fetch(`${TEST_API_URL}/v2/auth/login`, {
