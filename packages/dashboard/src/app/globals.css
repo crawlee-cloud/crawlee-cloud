@@ -133,7 +133,7 @@
   --popover: #1a1a17;
   --popover-foreground: #e8e6df;
 
-  --primary: #9eff8a;
+  --primary: #F98618;
   --primary-foreground: #0e0e0c;
 
   --secondary: #1d1d19;
@@ -142,7 +142,7 @@
   --muted: #1d1d19;
   --muted-foreground: #8a877d;
 
-  --accent: #9eff8a;
+  --accent: #F98618;
   --accent-foreground: #0e0e0c;
 
   --destructive: #ff5f48;
@@ -150,14 +150,16 @@
 
   --border: #25251f;
   --input: #1d1d19;
-  --ring: #9eff8a;
+  --ring: #F98618;
 
-  --signal: #9eff8a;
+  /* Brand signal stays warm-orange across themes — same accent in both
+     light and dark for a consistent "this is the action" recognition. */
+  --signal: #F98618;
   --warn: #ffb840;
   --fail: #ff5f48;
   --info: #7ec5ff;
 
-  --glow: rgb(158 255 138 / 0.025);
+  --glow: rgb(249 134 24 / 0.04);
 
   /* SVG noise — soft warm tones for dark surface */
   --grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.92  0 0 0 0 0.91  0 0 0 0 0.87  0 0 0 0.04 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
