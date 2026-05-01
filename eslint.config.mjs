@@ -33,8 +33,33 @@ export default tseslint.config(
       ],
       "@typescript-eslint/consistent-type-imports": "error",
       "@typescript-eslint/no-import-type-side-effects": "error",
-      // Relaxed rules for practical development
+
+      // ── Real bugs, kept strict ────────────────────────────────────
+      // These catch unhandled rejections and Promise-as-condition bugs
+      // that are silently broken in production. Don't soften.
+      "@typescript-eslint/no-floating-promises": "error",
+      // ...but the `void return expected` arm of no-misused-promises is
+      // mostly noise on JSX `onClick={async () => ...}` — that pattern is
+      // safe (React swallows the returned Promise) and clean to read.
+      // Keep the conditional/argument checks, drop the void-return one.
+      "@typescript-eslint/no-misused-promises": [
+        "error",
+        { checksVoidReturn: false },
+      ],
+
+      // ── Pedantic; demoted to warnings ─────────────────────────────
+      // Literal-string unions next to `string` are useful as inline docs
+      // ("here are the values you'll typically see"). The rule fires
+      // anyway. Warn so contributors notice; don't block CI.
+      "@typescript-eslint/no-redundant-type-constituents": "warn",
+      // String(v ?? '') is a routine pattern after a typeof guard the
+      // rule doesn't track through. Real cases are narrowable; the false
+      // positives outnumber them. Warn instead of error.
+      "@typescript-eslint/no-base-to-string": "warn",
+      // any is a contract smell, not a bug.
       "@typescript-eslint/no-explicit-any": "warn",
+
+      // ── Relaxed: noisy with the project's TS setup ───────────────
       "@typescript-eslint/no-unsafe-assignment": "off",
       "@typescript-eslint/no-unsafe-member-access": "off",
       "@typescript-eslint/no-unsafe-call": "off",
