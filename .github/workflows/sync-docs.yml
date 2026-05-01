@@ -1,0 +1,93 @@
+name: Sync docs to website
+
+# Mirrors the contents of `docs/` into the public website repo
+# (crawlee-cloud/crawlee-cloud.github.io) under `src/docs/`. The platform
+# repo is the source of truth — operators edit here, the website pulls.
+#
+# Required secret: DOCS_SYNC_TOKEN
+#   A personal-access token (or GitHub App installation token) with `repo`
+#   scope on crawlee-cloud/crawlee-cloud.github.io. The default GITHUB_TOKEN
+#   doesn't have cross-repo write permission.
+#
+# To use a GitHub App instead of a PAT (recommended for orgs), replace the
+# checkout token with the output of `actions/create-github-app-token`.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/sync-docs.yml'
+  # Manual trigger — useful for re-running after a token rotation or to
+  # bootstrap a fresh website checkout.
+  workflow_dispatch:
+
+# One sync at a time. If two pushes land seconds apart we serialise so the
+# website repo doesn't get conflicting commits.
+concurrency:
+  group: sync-docs
+  cancel-in-progress: false
+
+permissions:
+  # We don't need any platform-repo permissions; the cross-repo write uses
+  # DOCS_SYNC_TOKEN. Explicit empty perms reduce blast radius if the token
+  # was ever leaked or the workflow misbehaved.
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout platform (source of truth)
+        uses: actions/checkout@v4
+        with:
+          path: platform
+          # Default depth=1 is fine — we only need the current `docs/`.
+
+      - name: Checkout website (sync target)
+        uses: actions/checkout@v4
+        with:
+          repository: crawlee-cloud/crawlee-cloud.github.io
+          path: website
+          token: ${{ secrets.DOCS_SYNC_TOKEN }}
+
+      - name: Mirror docs into website/src/docs
+        run: |
+          # rsync with --delete so a file removed from platform is also
+          # removed from the website. README.md is excluded — the
+          # platform-side README is workflow documentation, not a doc page.
+          mkdir -p website/src/docs
+          rsync -av --delete \
+            --exclude='README.md' \
+            platform/docs/ website/src/docs/
+
+      - name: Commit & push if changed
+        working-directory: website
+        # All template inputs surfaced via env: rather than inlined into
+        # the shell. Even though GitHub-set env vars are not user-
+        # controllable, this keeps the run script free of any `${{ ... }}`
+        # interpolation — the canonical "no injection ever" pattern.
+        env:
+          PLATFORM_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          # Identify commits as a bot. The author trail makes it obvious
+          # this came from automation — don't blame a human for the diff.
+          git config user.name  'crawlee-cloud-docs-bot'
+          git config user.email 'docs-bot@crawlee.cloud'
+
+          git add src/docs
+          # `git diff --staged --quiet` exits 0 when nothing's staged. Use
+          # it to skip empty commits — the action stays silent when no doc
+          # actually changed.
+          if git diff --staged --quiet; then
+            echo "No doc changes to sync."
+            exit 0
+          fi
+
+          PLATFORM_SHORT="${PLATFORM_SHA:0:7}"
+          git commit -m "docs: sync from platform@${PLATFORM_SHORT}" \
+                     -m "Mirrored from crawlee-cloud/crawlee-cloud@${PLATFORM_SHA}" \
+                     -m "Triggered by ${EVENT_NAME} on ${REF_NAME}"
+          git push
