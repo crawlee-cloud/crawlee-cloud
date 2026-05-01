@@ -45,7 +45,7 @@ export default function ActorsPage() {
         </div>
         <AppLink
           href="/actors/new"
-          className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 rounded-sm"
+          className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm"
         >
           <Plus className="h-3.5 w-3.5" /> new actor
         </AppLink>
@@ -58,7 +58,7 @@ export default function ActorsPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="search actors"
-          className="w-full h-9 pl-9 pr-3 rounded-sm border border-border bg-[color:var(--background)] text-[13px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+          className="w-full h-9 pl-9 pr-3 rounded-sm border border-border bg-background text-[13px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-signal/50"
         />
       </div>
 
@@ -80,7 +80,7 @@ export default function ActorsPage() {
           {!search && (
             <AppLink
               href="/actors/new"
-              className="mt-5 h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] rounded-sm"
+              className="mt-5 h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-signal text-background rounded-sm"
             >
               <Plus className="h-3.5 w-3.5" /> create actor
             </AppLink>
@@ -92,21 +92,21 @@ export default function ActorsPage() {
             <li key={a.id}>
               <AppLink
                 href={`/actors/${a.name}`}
-                className="block panel p-5 hover:border-[color:var(--signal)]/40 transition-colors group h-full"
+                className="block panel p-5 hover:border-signal/40 transition-colors group h-full"
               >
                 <div className="flex items-start justify-between mb-3">
-                  <div className="h-9 w-9 rounded-sm border border-border bg-secondary/60 grid place-items-center text-muted-foreground group-hover:text-[color:var(--signal)] group-hover:border-[color:var(--signal)]/40 transition-colors">
+                  <div className="h-9 w-9 rounded-sm border border-border bg-secondary/60 grid place-items-center text-muted-foreground group-hover:text-signal group-hover:border-signal/40 transition-colors">
                     <Drama className="h-4 w-4" />
                   </div>
                   <span className="font-mono text-[10px] tracking-widest text-muted-foreground border border-border px-1.5 py-0.5 rounded-sm">
                     {a.id.slice(0, 8)}
                   </span>
                 </div>
-                <h3 className="text-[15px] leading-tight text-foreground group-hover:text-[color:var(--signal)] transition-colors">
+                <h3 className="text-[15px] leading-tight text-foreground group-hover:text-signal transition-colors">
                   {a.title || a.name}
                 </h3>
                 <p className="font-mono text-[11px] text-muted-foreground mt-1">
-                  <span className="text-[color:var(--signal)]">@crawlee/</span>
+                  <span className="text-signal">@crawlee/</span>
                   {a.name}
                 </p>
                 {a.description && (

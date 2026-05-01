@@ -185,13 +185,13 @@ export default function RunsPage() {
             type="button"
             onClick={() => void refresh()}
             disabled={loading}
-            className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-[color:var(--signal)]/40 hover:text-[color:var(--signal)] rounded-sm disabled:opacity-50"
+            className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-signal/40 hover:text-signal rounded-sm disabled:opacity-50"
           >
             <RotateCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} /> refresh
           </button>
           <AppLink
             href="/runs/new"
-            className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 rounded-sm"
+            className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm"
           >
             <Play className="h-3.5 w-3.5" /> start run
           </AppLink>
@@ -207,7 +207,7 @@ export default function RunsPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="search the current page (id / actor)"
-            className="w-full h-9 pl-9 pr-3 rounded-sm border border-border bg-[color:var(--input)] text-[13px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+            className="w-full h-9 pl-9 pr-3 rounded-sm border border-border bg-input text-[13px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-signal/50"
           />
         </div>
         <div className="flex items-center gap-1 overflow-x-auto">
@@ -228,13 +228,13 @@ export default function RunsPage() {
             const count = counts[f.id];
             const toneActive =
               f.tone === 'info'
-                ? 'border-[color:var(--info)]/50 bg-[color:var(--info)]/10 text-[color:var(--info)]'
+                ? 'border-info/50 bg-info/10 text-info'
                 : f.tone === 'signal'
-                  ? 'border-[color:var(--signal)]/50 bg-[color:var(--signal)]/10 text-[color:var(--signal)]'
+                  ? 'border-signal/50 bg-signal/10 text-signal'
                   : f.tone === 'fail'
-                    ? 'border-[color:var(--fail)]/50 bg-[color:var(--fail)]/10 text-[color:var(--fail)]'
+                    ? 'border-fail/50 bg-fail/10 text-fail'
                     : f.tone === 'warn'
-                      ? 'border-[color:var(--warn)]/50 bg-[color:var(--warn)]/10 text-[color:var(--warn)]'
+                      ? 'border-warn/50 bg-warn/10 text-warn'
                       : 'border-border bg-secondary text-foreground';
             return (
               <button
@@ -287,7 +287,7 @@ export default function RunsPage() {
               <button
                 type="button"
                 onClick={() => setSearch('')}
-                className="text-[color:var(--signal)] hover:underline font-mono text-[12px]"
+                className="text-signal hover:underline font-mono text-[12px]"
               >
                 clear search
               </button>
@@ -297,7 +297,7 @@ export default function RunsPage() {
                   <button
                     type="button"
                     onClick={() => void loadPage(statusFilter, offset + PAGE_SIZE)}
-                    className="text-[color:var(--signal)] hover:underline font-mono text-[12px]"
+                    className="text-signal hover:underline font-mono text-[12px]"
                   >
                     next page
                   </button>
@@ -328,7 +328,7 @@ export default function RunsPage() {
                     <td className="px-5 py-3 font-mono">
                       <AppLink
                         href={`/runs/${run.id}`}
-                        className="text-foreground hover:text-[color:var(--signal)]"
+                        className="text-foreground hover:text-signal"
                       >
                         {run.id.slice(0, 12)}
                       </AppLink>
@@ -386,7 +386,7 @@ export default function RunsPage() {
                 type="button"
                 onClick={() => void loadPage(statusFilter, Math.max(0, offset - PAGE_SIZE))}
                 disabled={!canPrev || loading}
-                className="h-8 px-3 inline-flex items-center gap-1 border border-border rounded-sm hover:border-[color:var(--signal)]/40 hover:text-[color:var(--signal)] disabled:opacity-40 disabled:hover:border-border disabled:hover:text-muted-foreground"
+                className="h-8 px-3 inline-flex items-center gap-1 border border-border rounded-sm hover:border-signal/40 hover:text-signal disabled:opacity-40 disabled:hover:border-border disabled:hover:text-muted-foreground"
               >
                 <ChevronLeft className="h-3.5 w-3.5" /> prev
               </button>
@@ -394,7 +394,7 @@ export default function RunsPage() {
                 type="button"
                 onClick={() => void loadPage(statusFilter, offset + PAGE_SIZE)}
                 disabled={!canNext || loading}
-                className="h-8 px-3 inline-flex items-center gap-1 border border-border rounded-sm hover:border-[color:var(--signal)]/40 hover:text-[color:var(--signal)] disabled:opacity-40 disabled:hover:border-border disabled:hover:text-muted-foreground"
+                className="h-8 px-3 inline-flex items-center gap-1 border border-border rounded-sm hover:border-signal/40 hover:text-signal disabled:opacity-40 disabled:hover:border-border disabled:hover:text-muted-foreground"
               >
                 next <ChevronRight className="h-3.5 w-3.5" />
               </button>

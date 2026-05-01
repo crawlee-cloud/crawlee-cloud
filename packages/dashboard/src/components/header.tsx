@@ -53,7 +53,7 @@ export function Header() {
   const crumbs = useBreadcrumb();
 
   return (
-    <header className="h-10 shrink-0 px-3 sm:px-4 flex items-center justify-between gap-2 sm:gap-4 border-b border-border bg-[color:var(--surface-2)] sticky top-0 z-10">
+    <header className="h-10 shrink-0 px-3 sm:px-4 flex items-center justify-between gap-2 sm:gap-4 border-b border-border bg-surface-2 sticky top-0 z-10">
       {/* Mobile nav trigger — hidden on lg+ where the sidebar is visible */}
       <MobileNavButton />
 
@@ -77,7 +77,7 @@ export function Header() {
           <input
             type="search"
             placeholder="search"
-            className="h-7 w-56 pl-7 pr-12 rounded-sm border border-border bg-secondary/40 text-[12px] font-mono text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:border-[color:var(--signal)]/40"
+            className="h-7 w-56 pl-7 pr-12 rounded-sm border border-border bg-secondary/40 text-[12px] font-mono text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:border-signal/40"
           />
           <span className="absolute right-2 top-1/2 -translate-y-1/2 font-mono text-[9px] text-muted-foreground tracking-widest">
             ⌘K

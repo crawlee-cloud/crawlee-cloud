@@ -88,7 +88,7 @@ function NewRunContent() {
             id="actor"
             value={selectedActor}
             onChange={(e) => setSelectedActor(e.target.value)}
-            className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--input)] text-[13px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+            className="w-full h-9 px-3 rounded-sm border border-border bg-input text-[13px] text-foreground focus:outline-none focus:border-signal/50"
             required
           >
             <option value="" disabled>
@@ -109,7 +109,7 @@ function NewRunContent() {
           <button
             type="submit"
             disabled={!selectedActor || submitting}
-            className="h-9 px-4 inline-flex items-center gap-2 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 rounded-sm disabled:opacity-50"
+            className="h-9 px-4 inline-flex items-center gap-2 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm disabled:opacity-50"
           >
             {submitting ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />

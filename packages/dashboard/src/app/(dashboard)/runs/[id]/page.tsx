@@ -176,7 +176,7 @@ function RunDetail() {
           </p>
           <AppLink
             href="/runs"
-            className="inline-flex items-center gap-1.5 h-8 px-3 text-[11px] font-mono uppercase tracking-wider border border-border text-muted-foreground hover:text-foreground hover:border-[color:var(--signal)]/40 rounded-sm"
+            className="inline-flex items-center gap-1.5 h-8 px-3 text-[11px] font-mono uppercase tracking-wider border border-border text-muted-foreground hover:text-foreground hover:border-signal/40 rounded-sm"
           >
             ← back to runs
           </AppLink>
@@ -213,17 +213,11 @@ function RunDetail() {
           <p className="font-mono text-[11px] text-muted-foreground">
             actor ·{' '}
             {actor ? (
-              <AppLink
-                href={`/actors/${actor.name}`}
-                className="text-foreground hover:text-[color:var(--signal)]"
-              >
+              <AppLink href={`/actors/${actor.name}`} className="text-foreground hover:text-signal">
                 {actor.title || actor.name}
               </AppLink>
             ) : (
-              <AppLink
-                href={`/actors/${run.actId}`}
-                className="text-foreground hover:text-[color:var(--signal)]"
-              >
+              <AppLink href={`/actors/${run.actId}`} className="text-foreground hover:text-signal">
                 {run.actId}
               </AppLink>
             )}
@@ -233,7 +227,7 @@ function RunDetail() {
           <button
             type="button"
             onClick={() => void handleAbort()}
-            className="h-8 px-3 self-start md:self-auto inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-[color:var(--fail)]/40 text-[color:var(--fail)] hover:bg-[color:var(--fail)]/10 rounded-sm"
+            className="h-8 px-3 self-start md:self-auto inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-fail/40 text-fail hover:bg-fail/10 rounded-sm"
           >
             <Ban className="h-3.5 w-3.5" /> Abort
           </button>
@@ -260,7 +254,7 @@ function RunDetail() {
             <DefRow icon={Database} label="Dataset">
               <AppLink
                 href={`/datasets/${run.defaultDatasetId}`}
-                className="font-mono text-[11px] text-foreground hover:text-[color:var(--signal)] break-all"
+                className="font-mono text-[11px] text-foreground hover:text-signal break-all"
               >
                 {run.defaultDatasetId}
               </AppLink>
@@ -270,7 +264,7 @@ function RunDetail() {
             <DefRow icon={Boxes} label="KV store">
               <AppLink
                 href={`/key-value-stores/${run.defaultKeyValueStoreId}`}
-                className="font-mono text-[11px] text-foreground hover:text-[color:var(--signal)] break-all"
+                className="font-mono text-[11px] text-foreground hover:text-signal break-all"
               >
                 {run.defaultKeyValueStoreId}
               </AppLink>
@@ -280,7 +274,7 @@ function RunDetail() {
             <DefRow icon={ListOrdered} label="Request queue">
               <AppLink
                 href={`/request-queues/${run.defaultRequestQueueId}`}
-                className="font-mono text-[11px] text-foreground hover:text-[color:var(--signal)] break-all"
+                className="font-mono text-[11px] text-foreground hover:text-signal break-all"
               >
                 {run.defaultRequestQueueId}
               </AppLink>
@@ -301,7 +295,7 @@ function RunDetail() {
                   className={cn(
                     'inline-flex items-center gap-2 px-4 h-10 text-[12px] font-mono uppercase tracking-wider transition-colors -mb-px border-b',
                     isActive
-                      ? 'text-[color:var(--signal)] border-[color:var(--signal)]'
+                      ? 'text-signal border-signal'
                       : 'text-muted-foreground border-transparent hover:text-foreground'
                   )}
                 >
@@ -315,7 +309,7 @@ function RunDetail() {
 
           <div className="flex-1 overflow-hidden relative">
             {tab === 'logs' && (
-              <div className="absolute inset-0 overflow-auto p-4 font-mono text-[11px] bg-[color:var(--background)]/60">
+              <div className="absolute inset-0 overflow-auto p-4 font-mono text-[11px] bg-background/60">
                 {/*
                   Tail viewport header: shows what fraction of the full log is
                   currently rendered, plus a "view raw" link that opens the
@@ -341,7 +335,7 @@ function RunDetail() {
                           })
                         );
                       }}
-                      className="inline-flex items-center gap-1 hover:text-[color:var(--signal)]"
+                      className="inline-flex items-center gap-1 hover:text-signal"
                     >
                       view raw ↗
                     </button>
@@ -364,9 +358,9 @@ function RunDetail() {
                         <span
                           className={cn(
                             'shrink-0 w-[52px] tracking-wider',
-                            log.level === 'INFO' && 'text-[color:var(--info)]',
-                            log.level === 'WARN' && 'text-[color:var(--warn)]',
-                            log.level === 'ERROR' && 'text-[color:var(--fail)]',
+                            log.level === 'INFO' && 'text-info',
+                            log.level === 'WARN' && 'text-warn',
+                            log.level === 'ERROR' && 'text-fail',
                             log.level === 'DEBUG' && 'text-muted-foreground'
                           )}
                         >
@@ -390,7 +384,7 @@ function RunDetail() {
                     <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
                   </div>
                 ) : input && Object.keys(input as object).length > 0 ? (
-                  <pre className="font-mono text-[12px] text-foreground whitespace-pre-wrap p-4 border border-border rounded-sm bg-[color:var(--background)]/60">
+                  <pre className="font-mono text-[12px] text-foreground whitespace-pre-wrap p-4 border border-border rounded-sm bg-background/60">
                     {JSON.stringify(input, null, 2)}
                   </pre>
                 ) : (
@@ -448,7 +442,7 @@ function RunDetail() {
                     })
                   );
                 }}
-                className="font-mono text-[10px] tracking-widest text-muted-foreground hover:text-[color:var(--signal)] uppercase"
+                className="font-mono text-[10px] tracking-widest text-muted-foreground hover:text-signal uppercase"
               >
                 ↓ download all
               </button>

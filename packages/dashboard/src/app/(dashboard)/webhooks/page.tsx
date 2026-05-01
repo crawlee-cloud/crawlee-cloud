@@ -88,7 +88,7 @@ export default function WebhooksPage() {
         <button
           type="button"
           onClick={() => setShowForm((v) => !v)}
-          className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 rounded-sm"
+          className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm"
         >
           <Plus className="h-3.5 w-3.5" /> new webhook
         </button>
@@ -125,7 +125,7 @@ export default function WebhooksPage() {
                   className={cn(
                     'mt-1 shrink-0 font-mono text-[10px] tracking-widest px-1.5 py-0.5 rounded-sm border transition-colors',
                     w.isEnabled
-                      ? 'text-[color:var(--signal)] border-[color:var(--signal)]/40 hover:bg-[color:var(--signal)]/10'
+                      ? 'text-signal border-signal/40 hover:bg-signal/10'
                       : 'text-muted-foreground border-border hover:text-foreground'
                   )}
                 >
@@ -162,7 +162,7 @@ export default function WebhooksPage() {
                 <button
                   type="button"
                   onClick={() => void handleDelete(w.id)}
-                  className="text-muted-foreground hover:text-[color:var(--fail)] p-1"
+                  className="text-muted-foreground hover:text-fail p-1"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
@@ -237,7 +237,7 @@ function CreateForm({
           <input
             value={requestUrl}
             onChange={(e) => setRequestUrl(e.target.value)}
-            className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+            className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
           />
         </div>
         <div className="space-y-1.5">
@@ -247,7 +247,7 @@ function CreateForm({
           <select
             value={actorId}
             onChange={(e) => setActorId(e.target.value)}
-            className="w-full h-9 px-2 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+            className="w-full h-9 px-2 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
           >
             <option value="">all actors · global</option>
             {actors.map((a) => (
@@ -267,7 +267,7 @@ function CreateForm({
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="Posts to #scrapers in Slack"
-          className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+          className="w-full h-9 px-3 rounded-sm border border-border bg-background text-[12px] text-foreground focus:outline-none focus:border-signal/50"
         />
       </div>
 
@@ -290,9 +290,7 @@ function CreateForm({
                     onClick={() => toggle(e.id)}
                     className={cn(
                       'text-left px-3 py-2 border rounded-sm transition-colors',
-                      isOn
-                        ? 'border-[color:var(--signal)]/50 bg-[color:var(--signal)]/5'
-                        : 'border-border bg-[color:var(--background)]'
+                      isOn ? 'border-signal/50 bg-signal/5' : 'border-border bg-background'
                     )}
                   >
                     <div className="flex items-center justify-between">
@@ -300,7 +298,7 @@ function CreateForm({
                       <span
                         className={cn(
                           'font-mono text-[10px]',
-                          isOn ? 'text-[color:var(--signal)]' : 'text-muted-foreground/50'
+                          isOn ? 'text-signal' : 'text-muted-foreground/50'
                         )}
                       >
                         {isOn ? '[ON]' : '[ ]'}
@@ -315,7 +313,7 @@ function CreateForm({
         ))}
       </div>
 
-      {error && <p className="font-mono text-[11px] text-[color:var(--fail)]">[ERR] {error}</p>}
+      {error && <p className="font-mono text-[11px] text-fail">[ERR] {error}</p>}
 
       <div className="flex justify-end gap-2 pt-2 border-t border-border">
         <button
@@ -329,7 +327,7 @@ function CreateForm({
           type="button"
           onClick={() => void handleCreate()}
           disabled={submitting}
-          className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] rounded-sm disabled:opacity-50"
+          className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-signal text-background rounded-sm disabled:opacity-50"
         >
           {submitting ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />

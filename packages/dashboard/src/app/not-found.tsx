@@ -21,7 +21,7 @@ export default function NotFound() {
         </p>
         <AppLink
           href="/"
-          className="inline-flex items-center gap-1.5 h-9 px-4 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 rounded-sm"
+          className="inline-flex items-center gap-1.5 h-9 px-4 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm"
         >
           <Home className="h-3.5 w-3.5" /> back to console
         </AppLink>

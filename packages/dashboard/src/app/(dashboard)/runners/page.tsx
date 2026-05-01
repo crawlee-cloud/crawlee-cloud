@@ -58,11 +58,11 @@ export default function RunnersPage() {
           <p className="eyebrow mb-2">SYSTEM · RUNNERS</p>
           <h1 className="text-[28px] leading-none font-medium tracking-tight">Runners</h1>
         </header>
-        <div className="panel border-l-2 border-l-[color:var(--fail)] p-5">
+        <div className="panel border-l-2 border-l-fail p-5">
           <div className="flex items-start gap-3">
-            <ShieldAlert className="h-4 w-4 text-[color:var(--fail)] mt-0.5 shrink-0" />
+            <ShieldAlert className="h-4 w-4 text-fail mt-0.5 shrink-0" />
             <div>
-              <p className="font-mono text-[10px] tracking-widest text-[color:var(--fail)] uppercase mb-1">
+              <p className="font-mono text-[10px] tracking-widest text-fail uppercase mb-1">
                 [ ACCESS · DENIED ]
               </p>
               <p className="text-[13px] text-foreground">{error}</p>
@@ -93,7 +93,7 @@ export default function RunnersPage() {
           type="button"
           onClick={() => void load()}
           disabled={refreshing}
-          className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-[color:var(--signal)]/40 hover:text-[color:var(--signal)] rounded-sm disabled:opacity-50"
+          className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-signal/40 hover:text-signal rounded-sm disabled:opacity-50"
         >
           <RotateCw className={cn('h-3.5 w-3.5', refreshing && 'animate-spin')} /> refresh
         </button>
@@ -127,7 +127,7 @@ export default function RunnersPage() {
       {/* Runners */}
       <section className="panel">
         <header className="px-5 py-3 border-b border-border flex items-center gap-2">
-          <Cpu className="h-3.5 w-3.5 text-[color:var(--signal)]" />
+          <Cpu className="h-3.5 w-3.5 text-signal" />
           <span className="text-[13px] text-foreground">Runners</span>
           <span className="font-mono text-[10px] text-muted-foreground tracking-wider">
             · {status.runners.length} tracked
@@ -192,7 +192,7 @@ export default function RunnersPage() {
               · {status.heartbeats.length}
             </span>
           </header>
-          <pre className="p-5 font-mono text-[11px] text-foreground overflow-auto max-h-96 bg-[color:var(--background)]/40">
+          <pre className="p-5 font-mono text-[11px] text-foreground overflow-auto max-h-96 bg-background/40">
             {JSON.stringify(status.heartbeats, null, 2)}
           </pre>
         </section>
@@ -205,13 +205,13 @@ function RunnerChip({ status }: { status: RunnerInfo['status'] }) {
   const tone = STATUS_TONE[status];
   const cls =
     tone === 'signal'
-      ? 'border-[color:var(--signal)]/40 bg-[color:var(--signal)]/10 text-[color:var(--signal)]'
+      ? 'border-signal/40 bg-signal/10 text-signal'
       : tone === 'info'
-        ? 'border-[color:var(--info)]/40 bg-[color:var(--info)]/10 text-[color:var(--info)]'
+        ? 'border-info/40 bg-info/10 text-info'
         : tone === 'warn'
-          ? 'border-[color:var(--warn)]/40 bg-[color:var(--warn)]/10 text-[color:var(--warn)]'
+          ? 'border-warn/40 bg-warn/10 text-warn'
           : tone === 'fail'
-            ? 'border-[color:var(--fail)]/40 bg-[color:var(--fail)]/10 text-[color:var(--fail)]'
+            ? 'border-fail/40 bg-fail/10 text-fail'
             : 'border-border text-muted-foreground';
   return (
     <span
@@ -239,13 +239,13 @@ function Tile({
 }) {
   const toneClass =
     tone === 'signal'
-      ? 'text-[color:var(--signal)]'
+      ? 'text-signal'
       : tone === 'info'
-        ? 'text-[color:var(--info)]'
+        ? 'text-info'
         : tone === 'warn'
-          ? 'text-[color:var(--warn)]'
+          ? 'text-warn'
           : tone === 'fail'
-            ? 'text-[color:var(--fail)]'
+            ? 'text-fail'
             : 'text-foreground';
   return (
     <div className="bg-card px-5 py-4">

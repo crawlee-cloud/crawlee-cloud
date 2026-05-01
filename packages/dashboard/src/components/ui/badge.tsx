@@ -18,13 +18,11 @@ const badgeVariants = cva(
         outline: 'border-border bg-transparent text-muted-foreground',
         secondary: 'border-border bg-secondary text-foreground',
 
-        success:
-          'border-[color:var(--signal)]/40 bg-[color:var(--signal)]/10 text-[color:var(--signal)]',
-        warning: 'border-[color:var(--warn)]/40 bg-[color:var(--warn)]/10 text-[color:var(--warn)]',
-        error: 'border-[color:var(--fail)]/40 bg-[color:var(--fail)]/10 text-[color:var(--fail)]',
-        destructive:
-          'border-[color:var(--fail)]/40 bg-[color:var(--fail)]/10 text-[color:var(--fail)]',
-        info: 'border-[color:var(--info)]/40 bg-[color:var(--info)]/10 text-[color:var(--info)]',
+        success: 'border-signal/40 bg-signal/10 text-signal',
+        warning: 'border-warn/40 bg-warn/10 text-warn',
+        error: 'border-fail/40 bg-fail/10 text-fail',
+        destructive: 'border-fail/40 bg-fail/10 text-fail',
+        info: 'border-info/40 bg-info/10 text-info',
 
         // Legacy variant kept for compatibility with existing call sites;
         // re-skinned to match the operator console aesthetic.

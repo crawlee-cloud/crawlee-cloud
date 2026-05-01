@@ -87,7 +87,7 @@ export default function BuildsPage() {
           type="button"
           onClick={() => void load()}
           disabled={refreshing}
-          className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-[color:var(--signal)]/40 hover:text-[color:var(--signal)] rounded-sm disabled:opacity-50"
+          className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-signal/40 hover:text-signal rounded-sm disabled:opacity-50"
         >
           <RotateCw className={cn('h-3.5 w-3.5', refreshing && 'animate-spin')} /> refresh
         </button>
@@ -166,7 +166,7 @@ export default function BuildsPage() {
                   <td className="px-5 py-3">
                     <AppLink
                       href={`/actors/${b.actorName}`}
-                      className="text-foreground hover:text-[color:var(--signal)] text-[13px]"
+                      className="text-foreground hover:text-signal text-[13px]"
                     >
                       {b.actorTitle || b.actorName}
                     </AppLink>
@@ -247,11 +247,7 @@ function Tile({
   live?: boolean;
 }) {
   const toneClass =
-    tone === 'signal'
-      ? 'text-[color:var(--signal)]'
-      : tone === 'fail'
-        ? 'text-[color:var(--fail)]'
-        : 'text-foreground';
+    tone === 'signal' ? 'text-signal' : tone === 'fail' ? 'text-fail' : 'text-foreground';
   return (
     <div className="bg-card px-5 py-4">
       <div className="flex items-center justify-between mb-2">

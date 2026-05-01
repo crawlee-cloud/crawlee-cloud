@@ -48,7 +48,7 @@ export function MobileNavButton() {
         type="button"
         onClick={() => setOpen(true)}
         aria-label="Open navigation"
-        className="lg:hidden h-7 w-7 grid place-items-center border border-border rounded-sm text-muted-foreground hover:text-foreground hover:border-[color:var(--signal)]/40"
+        className="lg:hidden h-7 w-7 grid place-items-center border border-border rounded-sm text-muted-foreground hover:text-foreground hover:border-signal/40"
       >
         <Menu className="h-3.5 w-3.5" />
       </button>
@@ -67,7 +67,7 @@ export function MobileNavButton() {
       >
         {open && (
           <div
-            className="w-72 max-w-[85vw] h-screen flex flex-col bg-[color:var(--surface-2)] border-r border-border shadow-2xl shadow-black/40 animate-in slide-in-from-left duration-200"
+            className="w-72 max-w-[85vw] h-screen flex flex-col bg-surface-2 border-r border-border shadow-2xl shadow-black/40 animate-in slide-in-from-left duration-200"
             role="document"
           >
             <div className="relative">

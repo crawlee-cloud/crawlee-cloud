@@ -44,7 +44,7 @@ export default function LoginPage() {
         terminal block, mono labels — sells the "this is a developer tool" vibe
         before they even sign in.
       */}
-      <div className="hidden lg:flex flex-col justify-between p-10 bg-[color:var(--surface-2)] border-r border-border relative overflow-hidden">
+      <div className="hidden lg:flex flex-col justify-between p-10 bg-surface-2 border-r border-border relative overflow-hidden">
         <header className="flex items-center gap-2.5 relative z-10">
           <Image
             src={prefixPath('/logo-icon.svg')}
@@ -72,7 +72,7 @@ export default function LoginPage() {
           </p>
 
           {/* Faux terminal block — pure aesthetic */}
-          <div className="mt-8 panel bg-[color:var(--background)] font-mono text-[11px] leading-relaxed">
+          <div className="mt-8 panel bg-background font-mono text-[11px] leading-relaxed">
             <div className="px-3 py-2 border-b border-border flex items-center justify-between">
               <span className="text-muted-foreground tracking-widest">$ TERMINAL</span>
               <span className="flex items-center gap-1.5 text-muted-foreground">
@@ -80,10 +80,10 @@ export default function LoginPage() {
               </span>
             </div>
             <pre className="px-3 py-3 text-foreground whitespace-pre">
-              <span className="text-[color:var(--signal)]">$</span> crc push my-scraper{'\n'}
+              <span className="text-signal">$</span> crc push my-scraper{'\n'}
               <span className="text-muted-foreground">→ build queued · sha 4f1e2c0</span>
               {'\n'}
-              <span className="text-[color:var(--signal)]">$</span> crc run my-scraper{'\n'}
+              <span className="text-signal">$</span> crc run my-scraper{'\n'}
               <span className="text-muted-foreground">→ run started · 8a2f1b3c</span>
             </pre>
           </div>
@@ -109,8 +109,8 @@ export default function LoginPage() {
         <div className="w-full max-w-sm space-y-7">
           {/* Tiny brand on mobile (left panel hidden) */}
           <div className="lg:hidden flex items-center gap-2.5">
-            <div className="h-7 w-7 rounded-sm border border-[color:var(--signal)]/40 bg-[color:var(--signal)]/10 grid place-items-center">
-              <span className="font-mono text-[11px] text-[color:var(--signal)]">CC</span>
+            <div className="h-7 w-7 rounded-sm border border-signal/40 bg-signal/10 grid place-items-center">
+              <span className="font-mono text-[11px] text-signal">CC</span>
             </div>
             <span className="font-mono text-[12px] tracking-widest text-foreground">
               CRAWLEE · OPERATOR
@@ -131,11 +131,11 @@ export default function LoginPage() {
             {error && (
               <div
                 role="alert"
-                className="flex items-start gap-2 p-3 border border-[color:var(--fail)]/40 bg-[color:var(--fail)]/5 rounded-sm"
+                className="flex items-start gap-2 p-3 border border-fail/40 bg-fail/5 rounded-sm"
               >
-                <ShieldAlert className="h-3.5 w-3.5 text-[color:var(--fail)] mt-0.5 shrink-0" />
+                <ShieldAlert className="h-3.5 w-3.5 text-fail mt-0.5 shrink-0" />
                 <div className="min-w-0">
-                  <p className="font-mono text-[10px] tracking-widest text-[color:var(--fail)] uppercase">
+                  <p className="font-mono text-[10px] tracking-widest text-fail uppercase">
                     AUTH · FAILED
                   </p>
                   <p className="text-[12px] text-foreground mt-0.5 break-words">{error}</p>
@@ -158,7 +158,7 @@ export default function LoginPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
-                className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--input)] text-[13px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+                className="w-full h-9 px-3 rounded-sm border border-border bg-input text-[13px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-signal/50"
               />
             </div>
 
@@ -177,14 +177,14 @@ export default function LoginPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
-                className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--input)] text-[13px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+                className="w-full h-9 px-3 rounded-sm border border-border bg-input text-[13px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-signal/50"
               />
             </div>
 
             <button
               type="submit"
               disabled={loading}
-              className="w-full h-10 inline-flex items-center justify-center gap-2 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 rounded-sm disabled:opacity-50 transition-colors"
+              className="w-full h-10 inline-flex items-center justify-center gap-2 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm disabled:opacity-50 transition-colors"
             >
               {loading ? (
                 <>

@@ -103,7 +103,7 @@ export default function SettingsPage() {
       {/* API ACCESS */}
       <section className="panel">
         <header className="px-5 py-4 border-b border-border flex items-center gap-3">
-          <Shield className="h-4 w-4 text-[color:var(--signal)]" />
+          <Shield className="h-4 w-4 text-signal" />
           <div>
             <p className="eyebrow">AUTH · API ACCESS</p>
             <h2 className="text-[15px] mt-1">Connection details &amp; tokens</h2>
@@ -118,13 +118,13 @@ export default function SettingsPage() {
                 value={API_BASE}
                 readOnly
                 onClick={(e) => e.currentTarget.select()}
-                className="flex-1 h-9 px-3 rounded-sm border border-border bg-[color:var(--input)] font-mono text-[12px] text-foreground"
+                className="flex-1 h-9 px-3 rounded-sm border border-border bg-input font-mono text-[12px] text-foreground"
               />
               <button
                 type="button"
                 onClick={() => void copy(API_BASE, 'Base URL')}
                 title="Copy"
-                className="h-9 w-9 grid place-items-center border border-border rounded-sm text-muted-foreground hover:text-foreground hover:border-[color:var(--signal)]/40"
+                className="h-9 w-9 grid place-items-center border border-border rounded-sm text-muted-foreground hover:text-foreground hover:border-signal/40"
               >
                 <Copy className="h-3.5 w-3.5" />
               </button>
@@ -133,9 +133,9 @@ export default function SettingsPage() {
 
           {/* Newly created key — show ONCE */}
           {newlyCreatedKey && (
-            <div className="panel border-l-2 border-l-[color:var(--signal)] p-4 space-y-3 bg-[color:var(--signal)]/5">
+            <div className="panel border-l-2 border-l-signal p-4 space-y-3 bg-signal/5">
               <div className="flex items-center justify-between">
-                <p className="font-mono text-[10px] tracking-widest text-[color:var(--signal)] uppercase">
+                <p className="font-mono text-[10px] tracking-widest text-signal uppercase">
                   [ NEW KEY · COPY NOW ]
                 </p>
                 <button
@@ -155,7 +155,7 @@ export default function SettingsPage() {
                   value={newlyCreatedKey}
                   readOnly
                   onClick={(e) => (e.target as HTMLInputElement).select()}
-                  className="flex-1 h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground"
+                  className="flex-1 h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground"
                 />
                 <button
                   type="button"
@@ -172,7 +172,7 @@ export default function SettingsPage() {
                 <button
                   type="button"
                   onClick={() => void copy(newlyCreatedKey, 'API key')}
-                  className="h-9 px-3 inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider border border-border rounded-sm text-muted-foreground hover:text-foreground hover:border-[color:var(--signal)]/40"
+                  className="h-9 px-3 inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider border border-border rounded-sm text-muted-foreground hover:text-foreground hover:border-signal/40"
                 >
                   <Copy className="h-3.5 w-3.5" /> copy
                 </button>
@@ -187,7 +187,7 @@ export default function SettingsPage() {
                 value={newKeyName}
                 onChange={(e) => setNewKeyName(e.target.value)}
                 placeholder="key name (e.g. CLI access)"
-                className="flex-1 h-9 px-3 rounded-sm border border-border bg-[color:var(--input)] text-[13px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+                className="flex-1 h-9 px-3 rounded-sm border border-border bg-input text-[13px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-signal/50"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && newKeyName.trim()) {
                     e.preventDefault();
@@ -199,7 +199,7 @@ export default function SettingsPage() {
                 type="button"
                 onClick={() => void handleCreate()}
                 disabled={creating || !newKeyName.trim()}
-                className="h-9 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 rounded-sm disabled:opacity-50"
+                className="h-9 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm disabled:opacity-50"
               >
                 {creating ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -252,7 +252,7 @@ export default function SettingsPage() {
                         type="button"
                         title="Revoke"
                         onClick={() => void handleRevoke(key)}
-                        className="h-7 w-7 grid place-items-center text-muted-foreground hover:text-[color:var(--fail)] border border-transparent hover:border-border rounded-sm"
+                        className="h-7 w-7 grid place-items-center text-muted-foreground hover:text-fail border border-transparent hover:border-border rounded-sm"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -267,7 +267,7 @@ export default function SettingsPage() {
       {/* STORAGE BACKENDS */}
       <section className="panel">
         <header className="px-5 py-4 border-b border-border flex items-center gap-3">
-          <HardDrive className="h-4 w-4 text-[color:var(--signal)]" />
+          <HardDrive className="h-4 w-4 text-signal" />
           <div>
             <p className="eyebrow">SYSTEM · STORAGE</p>
             <h2 className="text-[15px] mt-1">Connected backends</h2>
@@ -292,7 +292,7 @@ export default function SettingsPage() {
       {/* EXECUTION DEFAULTS */}
       <section className="panel">
         <header className="px-5 py-4 border-b border-border flex items-center gap-3">
-          <Settings2 className="h-4 w-4 text-[color:var(--signal)]" />
+          <Settings2 className="h-4 w-4 text-signal" />
           <div>
             <p className="eyebrow">SYSTEM · EXECUTION DEFAULTS</p>
             <h2 className="text-[15px] mt-1">Used by every new run</h2>
@@ -318,7 +318,7 @@ export default function SettingsPage() {
 }
 
 const INPUT_CLASS = cn(
-  'w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--input)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50'
+  'w-full h-9 px-3 rounded-sm border border-border bg-input font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50'
 );
 
 const STORAGE_BACKENDS = [

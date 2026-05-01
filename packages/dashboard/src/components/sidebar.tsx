@@ -169,18 +169,18 @@ export function NavContents({ onNavigate }: { onNavigate?: () => void }) {
                     className={cn(
                       baseRow,
                       isActive
-                        ? 'text-foreground bg-[color:var(--signal)]/5'
+                        ? 'text-foreground bg-signal/5'
                         : 'text-muted-foreground hover:text-foreground hover:bg-secondary/60'
                     )}
                   >
                     {isActive && (
-                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-3.5 bg-[color:var(--signal)]" />
+                      <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-3.5 bg-signal" />
                     )}
                     <Icon
                       className={cn(
                         'h-3.5 w-3.5 shrink-0',
                         isActive
-                          ? 'text-[color:var(--signal)]'
+                          ? 'text-signal'
                           : 'text-muted-foreground group-hover:text-foreground'
                       )}
                     />
@@ -203,8 +203,8 @@ export function OperatorFooter() {
   return (
     <div className="border-t border-border px-3 py-3 shrink-0">
       <div className="flex items-center gap-2.5 px-2 py-2 bg-secondary/40 border border-border rounded-sm">
-        <div className="h-7 w-7 rounded-sm bg-[color:var(--signal)]/10 border border-[color:var(--signal)]/40 grid place-items-center">
-          <span className="font-mono text-[10px] text-[color:var(--signal)]">OP</span>
+        <div className="h-7 w-7 rounded-sm bg-signal/10 border border-signal/40 grid place-items-center">
+          <span className="font-mono text-[10px] text-signal">OP</span>
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-[12px] text-foreground truncate leading-tight">Operator</p>
@@ -221,7 +221,7 @@ export function OperatorFooter() {
             document.cookie = 'token=; path=/; max-age=0';
             window.location.href = prefixPath('/login');
           }}
-          className="text-muted-foreground hover:text-[color:var(--fail)] transition-colors p-1"
+          className="text-muted-foreground hover:text-fail transition-colors p-1"
         >
           <LogOut className="h-3.5 w-3.5" />
         </button>
@@ -232,7 +232,7 @@ export function OperatorFooter() {
 
 export function Sidebar() {
   return (
-    <aside className="hidden lg:flex w-60 shrink-0 flex-col h-screen sticky top-0 border-r border-border bg-[color:var(--surface-2)]">
+    <aside className="hidden lg:flex w-60 shrink-0 flex-col h-screen sticky top-0 border-r border-border bg-surface-2">
       <BrandStrip />
       <NavContents />
       <OperatorFooter />

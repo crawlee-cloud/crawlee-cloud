@@ -99,10 +99,10 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
   const isDanger = opts?.tone === 'danger';
   const isWarn = opts?.tone === 'warn';
   const confirmTone = isDanger
-    ? 'border-[color:var(--fail)]/40 bg-[color:var(--fail)]/10 text-[color:var(--fail)] hover:bg-[color:var(--fail)]/20'
+    ? 'border-fail/40 bg-fail/10 text-fail hover:bg-fail/20'
     : isWarn
-      ? 'border-[color:var(--warn)]/40 bg-[color:var(--warn)]/10 text-[color:var(--warn)] hover:bg-[color:var(--warn)]/20'
-      : 'bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 border border-transparent';
+      ? 'border-warn/40 bg-warn/10 text-warn hover:bg-warn/20'
+      : 'bg-signal text-background hover:brightness-110 border border-transparent';
 
   return (
     <Ctx.Provider value={value}>

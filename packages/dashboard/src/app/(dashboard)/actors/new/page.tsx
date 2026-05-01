@@ -30,13 +30,9 @@ function CopyButton({ text }: { text: string }) {
         })();
       }}
       title="Copy"
-      className="absolute right-2 top-2 p-1.5 rounded-sm border border-border bg-card text-muted-foreground hover:text-foreground hover:border-[color:var(--signal)]/40"
+      className="absolute right-2 top-2 p-1.5 rounded-sm border border-border bg-card text-muted-foreground hover:text-foreground hover:border-signal/40"
     >
-      {copied ? (
-        <Check className="h-3.5 w-3.5 text-[color:var(--signal)]" />
-      ) : (
-        <Copy className="h-3.5 w-3.5" />
-      )}
+      {copied ? <Check className="h-3.5 w-3.5 text-signal" /> : <Copy className="h-3.5 w-3.5" />}
     </button>
   );
 }
@@ -57,7 +53,7 @@ function CodeBlock({
           {caption}
         </p>
       )}
-      <pre className="panel bg-[color:var(--background)] p-4 pr-12 font-mono text-[12px] text-foreground overflow-x-auto leading-relaxed">
+      <pre className="panel bg-background p-4 pr-12 font-mono text-[12px] text-foreground overflow-x-auto leading-relaxed">
         {children}
       </pre>
       <CopyButton text={copyText} />
@@ -69,7 +65,7 @@ function Step({ n, label, children }: { n: number; label: string; children: Reac
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
-        <span className="font-mono text-[11px] text-[color:var(--signal)] tracking-wider tnum">
+        <span className="font-mono text-[11px] text-signal tracking-wider tnum">
           [{String(n).padStart(2, '0')}]
         </span>
         <span className="text-[14px] text-foreground">{label}</span>
@@ -101,14 +97,14 @@ export default function NewActorPage() {
       {/* Quickstart */}
       <section className="space-y-5">
         <div className="flex items-center gap-2">
-          <Terminal className="h-4 w-4 text-[color:var(--signal)]" />
+          <Terminal className="h-4 w-4 text-signal" />
           <h2 className="text-[15px] text-foreground">Quickstart</h2>
         </div>
 
         <Step n={1} label="Scaffold from a template">
           <CodeBlock copyText="npx apify-cli create my-actor">
             <span className="text-muted-foreground">$</span> npx apify-cli create{' '}
-            <span className="text-[color:var(--info)]">my-actor</span>
+            <span className="text-info">my-actor</span>
           </CodeBlock>
           <p className="text-[12px] text-muted-foreground pl-1">
             Uses the official Apify CLI — Cheerio, Playwright, Puppeteer templates all work.
@@ -136,7 +132,7 @@ export default function NewActorPage() {
       {/* Manifest */}
       <section className="space-y-3">
         <div className="flex items-center gap-2">
-          <Sparkles className="h-4 w-4 text-[color:var(--signal)]" />
+          <Sparkles className="h-4 w-4 text-signal" />
           <h2 className="text-[15px] text-foreground">Actor manifest</h2>
         </div>
         <p className="text-[13px] text-muted-foreground">
@@ -160,35 +156,35 @@ export default function NewActorPage() {
         >
           {`{
   `}
-          <span className="text-[color:var(--info)]">&quot;actorSpecification&quot;</span>:{' '}
-          <span className="text-[color:var(--warn)]">1</span>,
+          <span className="text-info">&quot;actorSpecification&quot;</span>:{' '}
+          <span className="text-warn">1</span>,
           {`
   `}
-          <span className="text-[color:var(--info)]">&quot;name&quot;</span>:{' '}
-          <span className="text-[color:var(--signal)]">&quot;my-actor&quot;</span>,
+          <span className="text-info">&quot;name&quot;</span>:{' '}
+          <span className="text-signal">&quot;my-actor&quot;</span>,
           {`
   `}
-          <span className="text-[color:var(--info)]">&quot;title&quot;</span>:{' '}
-          <span className="text-[color:var(--signal)]">&quot;My Actor&quot;</span>,
+          <span className="text-info">&quot;title&quot;</span>:{' '}
+          <span className="text-signal">&quot;My Actor&quot;</span>,
           {`
   `}
-          <span className="text-[color:var(--info)]">&quot;version&quot;</span>:{' '}
-          <span className="text-[color:var(--signal)]">&quot;1.0.0&quot;</span>,
+          <span className="text-info">&quot;version&quot;</span>:{' '}
+          <span className="text-signal">&quot;1.0.0&quot;</span>,
           {`
   `}
-          <span className="text-[color:var(--info)]">&quot;dockerfile&quot;</span>:{' '}
-          <span className="text-[color:var(--signal)]">&quot;./Dockerfile&quot;</span>,
+          <span className="text-info">&quot;dockerfile&quot;</span>:{' '}
+          <span className="text-signal">&quot;./Dockerfile&quot;</span>,
           {`
   `}
-          <span className="text-[color:var(--info)]">&quot;defaultRunOptions&quot;</span>:{' '}
+          <span className="text-info">&quot;defaultRunOptions&quot;</span>:{' '}
           {`{
     `}
-          <span className="text-[color:var(--info)]">&quot;memory&quot;</span>:{' '}
-          <span className="text-[color:var(--warn)]">1024</span>,
+          <span className="text-info">&quot;memory&quot;</span>:{' '}
+          <span className="text-warn">1024</span>,
           {`
     `}
-          <span className="text-[color:var(--info)]">&quot;timeout&quot;</span>:{' '}
-          <span className="text-[color:var(--warn)]">3600</span>
+          <span className="text-info">&quot;timeout&quot;</span>:{' '}
+          <span className="text-warn">3600</span>
           {`
   }
 }`}
@@ -198,38 +194,36 @@ export default function NewActorPage() {
       {/* Existing actor */}
       <section className="space-y-3">
         <div className="flex items-center gap-2">
-          <Folder className="h-4 w-4 text-[color:var(--signal)]" />
+          <Folder className="h-4 w-4 text-signal" />
           <h2 className="text-[15px] text-foreground">Push an existing Apify actor</h2>
         </div>
         <CodeBlock copyText="cd your-existing-actor && npx crawlee-cloud push">
           <span className="text-muted-foreground">$</span> cd{' '}
-          <span className="text-[color:var(--info)]">your-existing-actor</span>
+          <span className="text-info">your-existing-actor</span>
           {`
 `}
           <span className="text-muted-foreground">$</span> npx crawlee-cloud push
           {`
 
 `}
-          <span className="text-[color:var(--signal)]">✓</span> reading .actor/actor.json
+          <span className="text-signal">✓</span> reading .actor/actor.json
           {`
 `}
-          <span className="text-[color:var(--signal)]">✓</span> building docker image
+          <span className="text-signal">✓</span> building docker image
           {`
 `}
-          <span className="text-[color:var(--signal)]">✓</span> registering actor
+          <span className="text-signal">✓</span> registering actor
           {`
 `}
-          <span className="text-[color:var(--signal)]">✓</span> done · /actors/your-actor
+          <span className="text-signal">✓</span> done · /actors/your-actor
         </CodeBlock>
       </section>
 
       {/* Compatibility note */}
-      <aside
-        className={cn('panel p-4 flex items-start gap-3 border-l-2 border-l-[color:var(--info)]')}
-      >
-        <Package className="h-4 w-4 text-[color:var(--info)] mt-0.5 shrink-0" />
+      <aside className={cn('panel p-4 flex items-start gap-3 border-l-2 border-l-info')}>
+        <Package className="h-4 w-4 text-info mt-0.5 shrink-0" />
         <div>
-          <p className="font-mono text-[10px] tracking-widest text-[color:var(--info)] uppercase mb-1">
+          <p className="font-mono text-[10px] tracking-widest text-info uppercase mb-1">
             APIFY · COMPATIBILITY
           </p>
           <p className="text-[13px] text-foreground">

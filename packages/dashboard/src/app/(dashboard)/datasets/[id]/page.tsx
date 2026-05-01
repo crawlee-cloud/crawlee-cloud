@@ -164,7 +164,7 @@ function DatasetDetailContent() {
           <p className="font-mono text-[11px] tracking-widest text-muted-foreground mb-2">
             [ DATASET NOT FOUND ]
           </p>
-          <AppLink href="/datasets" className="text-[13px] hover:text-[color:var(--signal)]">
+          <AppLink href="/datasets" className="text-[13px] hover:text-signal">
             ← back to datasets
           </AppLink>
         </div>
@@ -197,7 +197,7 @@ function DatasetDetailContent() {
             onClick={handleDownloadPage}
             disabled={items.length === 0}
             title="Download just this page as JSON"
-            className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-[color:var(--signal)]/40 hover:text-[color:var(--signal)] rounded-sm disabled:opacity-50"
+            className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-signal/40 hover:text-signal rounded-sm disabled:opacity-50"
           >
             <Download className="h-3.5 w-3.5" /> export page
           </button>
@@ -212,14 +212,14 @@ function DatasetDetailContent() {
               );
             }}
             title="Download the full dataset as JSON"
-            className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-[color:var(--signal)]/40 hover:text-[color:var(--signal)] rounded-sm"
+            className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-signal/40 hover:text-signal rounded-sm"
           >
             <Download className="h-3.5 w-3.5" /> download all
           </button>
           <button
             type="button"
             onClick={() => void handleDelete()}
-            className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border text-muted-foreground hover:border-[color:var(--fail)]/40 hover:text-[color:var(--fail)] rounded-sm"
+            className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border text-muted-foreground hover:border-fail/40 hover:text-fail rounded-sm"
           >
             <Trash2 className="h-3.5 w-3.5" /> delete
           </button>
@@ -240,7 +240,7 @@ function DatasetDetailContent() {
           <div className="flex flex-wrap items-center gap-3 text-[13px]">
             <AppLink
               href={`/runs/${producingRun.id}`}
-              className="font-mono text-foreground hover:text-[color:var(--signal)]"
+              className="font-mono text-foreground hover:text-signal"
             >
               run · {producingRun.id.slice(0, 12)}
             </AppLink>
@@ -248,7 +248,7 @@ function DatasetDetailContent() {
             {producingActor ? (
               <AppLink
                 href={`/actors/${producingActor.name}`}
-                className="text-foreground hover:text-[color:var(--signal)]"
+                className="text-foreground hover:text-signal"
               >
                 {producingActor.title || producingActor.name}
               </AppLink>
@@ -265,7 +265,7 @@ function DatasetDetailContent() {
       <section className="panel">
         <header className="px-5 py-3 border-b border-border flex items-center justify-between">
           <div className="flex items-center gap-2 text-[13px]">
-            <FileJson className="h-3.5 w-3.5 text-[color:var(--signal)]" />
+            <FileJson className="h-3.5 w-3.5 text-signal" />
             <span className="text-foreground">Records</span>
             <span className="text-muted-foreground">
               · page {page} of {totalPages}

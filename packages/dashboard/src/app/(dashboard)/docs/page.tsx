@@ -94,22 +94,22 @@ export default function DocsPage() {
                 href={card.href}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="block panel p-5 h-full hover:border-[color:var(--signal)]/40 transition-colors group"
+                className="block panel p-5 h-full hover:border-signal/40 transition-colors group"
               >
                 <div className="flex items-start justify-between mb-3">
-                  <div className="h-8 w-8 rounded-sm border border-border bg-secondary/60 grid place-items-center text-muted-foreground group-hover:text-[color:var(--signal)] group-hover:border-[color:var(--signal)]/40 transition-colors">
+                  <div className="h-8 w-8 rounded-sm border border-border bg-secondary/60 grid place-items-center text-muted-foreground group-hover:text-signal group-hover:border-signal/40 transition-colors">
                     <Icon className="h-4 w-4" />
                   </div>
                   <ArrowUpRight className="h-3.5 w-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
                 </div>
-                <h3 className="text-[15px] text-foreground group-hover:text-[color:var(--signal)] transition-colors">
+                <h3 className="text-[15px] text-foreground group-hover:text-signal transition-colors">
                   {card.title}
                 </h3>
                 <p className="text-[12px] text-muted-foreground mt-1">{card.description}</p>
                 <ul className="mt-4 space-y-1 text-[12px] text-muted-foreground font-mono">
                   {card.items.map((item) => (
                     <li key={item} className="flex items-center gap-2">
-                      <span className="text-[color:var(--signal)]/60">▸</span>
+                      <span className="text-signal/60">▸</span>
                       <span>{item}</span>
                     </li>
                   ))}
@@ -131,7 +131,7 @@ export default function DocsPage() {
             <p className="font-mono text-[10px] tracking-widest text-muted-foreground uppercase mb-1.5">
               API base URL
             </p>
-            <pre className="panel bg-[color:var(--background)] p-3 font-mono text-[12px] text-foreground">
+            <pre className="panel bg-background p-3 font-mono text-[12px] text-foreground">
               http://localhost:3000/v2
             </pre>
           </div>
@@ -139,7 +139,7 @@ export default function DocsPage() {
             <p className="font-mono text-[10px] tracking-widest text-muted-foreground uppercase mb-1.5">
               Apify-compat env vars
             </p>
-            <pre className="panel bg-[color:var(--background)] p-3 font-mono text-[12px] text-foreground whitespace-pre">
+            <pre className="panel bg-background p-3 font-mono text-[12px] text-foreground whitespace-pre">
               {`APIFY_API_BASE_URL=http://localhost:3000/v2
 APIFY_TOKEN=your-token
 APIFY_IS_AT_HOME=1`}
@@ -150,7 +150,7 @@ APIFY_IS_AT_HOME=1`}
               href={GITHUB_REPO}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 text-[12px] text-foreground hover:text-[color:var(--signal)] transition-colors"
+              className="inline-flex items-center gap-1.5 text-[12px] text-foreground hover:text-signal transition-colors"
             >
               <span>github.com/crawlee-cloud</span>
               <ArrowUpRight className="h-3 w-3" />
@@ -159,7 +159,7 @@ APIFY_IS_AT_HOME=1`}
               href={APIFY_DOCS}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 text-[12px] text-foreground hover:text-[color:var(--signal)] transition-colors"
+              className="inline-flex items-center gap-1.5 text-[12px] text-foreground hover:text-signal transition-colors"
             >
               <span>Apify SDK docs</span>
               <ArrowUpRight className="h-3 w-3" />

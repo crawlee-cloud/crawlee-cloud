@@ -86,9 +86,9 @@ export function Dialog({
 
   const accentBorder =
     tone === 'danger'
-      ? 'border-l-2 border-l-[color:var(--fail)]'
+      ? 'border-l-2 border-l-fail'
       : tone === 'warn'
-        ? 'border-l-2 border-l-[color:var(--warn)]'
+        ? 'border-l-2 border-l-warn'
         : '';
 
   return (

@@ -93,13 +93,13 @@ export default function ConsolePage() {
         <div className="flex items-center gap-2">
           <AppLink
             href="/actors/new"
-            className="inline-flex items-center gap-1.5 px-3 h-8 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-[color:var(--signal)]/50 hover:text-[color:var(--signal)] transition-colors rounded-sm"
+            className="inline-flex items-center gap-1.5 px-3 h-8 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-signal/50 hover:text-signal transition-colors rounded-sm"
           >
             <Plus className="h-3.5 w-3.5" /> New actor
           </AppLink>
           <AppLink
             href="/runs/new"
-            className="inline-flex items-center gap-1.5 px-3 h-8 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 rounded-sm"
+            className="inline-flex items-center gap-1.5 px-3 h-8 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm"
           >
             <Zap className="h-3.5 w-3.5" /> Start run
           </AppLink>
@@ -150,10 +150,10 @@ export default function ConsolePage() {
             </div>
             <div className="flex items-center gap-3 font-mono text-[10px] tracking-widest text-muted-foreground">
               <span className="flex items-center gap-1.5">
-                <span className="inline-block w-2 h-2 rounded-sm bg-[color:var(--signal)]" /> OK
+                <span className="inline-block w-2 h-2 rounded-sm bg-signal" /> OK
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="inline-block w-2 h-2 rounded-sm bg-[color:var(--fail)]" /> FAIL
+                <span className="inline-block w-2 h-2 rounded-sm bg-fail" /> FAIL
               </span>
             </div>
           </header>
@@ -171,12 +171,12 @@ export default function ConsolePage() {
                 >
                   <div
                     style={{ height: `${h}%` }}
-                    className="bg-[color:var(--signal)]/30 group-hover:bg-[color:var(--signal)]/60 transition-colors relative"
+                    className="bg-signal/30 group-hover:bg-signal/60 transition-colors relative"
                   >
                     {failedH > 0 && (
                       <div
                         style={{ height: `${failedH}%` }}
-                        className="absolute inset-x-0 top-0 bg-[color:var(--fail)]/70"
+                        className="absolute inset-x-0 top-0 bg-fail/70"
                       />
                     )}
                   </div>
@@ -259,7 +259,7 @@ export default function ConsolePage() {
                   <td className="px-5 py-3 font-mono">
                     <AppLink
                       href={`/runs/${run.id}`}
-                      className="text-foreground hover:text-[color:var(--signal)] transition-colors"
+                      className="text-foreground hover:text-signal transition-colors"
                     >
                       {run.id.slice(0, 12)}
                     </AppLink>
@@ -270,7 +270,7 @@ export default function ConsolePage() {
                       return actor ? (
                         <AppLink
                           href={`/actors/${actor.name}`}
-                          className="text-foreground hover:text-[color:var(--signal)] text-[13px]"
+                          className="text-foreground hover:text-signal text-[13px]"
                         >
                           {actor.title || actor.name}
                         </AppLink>
@@ -312,11 +312,11 @@ function Stat({
 }) {
   const toneClass =
     tone === 'signal'
-      ? 'text-[color:var(--signal)]'
+      ? 'text-signal'
       : tone === 'warn'
-        ? 'text-[color:var(--warn)]'
+        ? 'text-warn'
         : tone === 'fail'
-          ? 'text-[color:var(--fail)]'
+          ? 'text-fail'
           : 'text-foreground';
   return (
     <div className="bg-card px-5 py-4 relative">
@@ -348,7 +348,7 @@ function QuickAction({
         href={href}
         className="group flex items-center gap-3 px-3 py-2.5 border border-transparent hover:border-border hover:bg-secondary/40 rounded-sm transition-colors"
       >
-        <Icon className="h-3.5 w-3.5 text-muted-foreground group-hover:text-[color:var(--signal)]" />
+        <Icon className="h-3.5 w-3.5 text-muted-foreground group-hover:text-signal" />
         <div className="flex-1 min-w-0">
           <p className="text-[13px] text-foreground leading-none">{label}</p>
           <p className="font-mono text-[10px] text-muted-foreground tracking-wider mt-1 leading-none">

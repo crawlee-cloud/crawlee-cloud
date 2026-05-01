@@ -135,10 +135,7 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
           <p className="font-mono text-[11px] tracking-widest text-muted-foreground mb-2">
             [ ACTOR NOT FOUND ]
           </p>
-          <AppLink
-            href="/actors"
-            className="text-[13px] text-foreground hover:text-[color:var(--signal)]"
-          >
+          <AppLink href="/actors" className="text-[13px] text-foreground hover:text-signal">
             ← back to actors
           </AppLink>
         </div>
@@ -166,7 +163,7 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
               {actor.title || actor.name}
             </h1>
             <p className="font-mono text-[12px] text-muted-foreground">
-              <span className="text-[color:var(--signal)]">@crawlee/</span>
+              <span className="text-signal">@crawlee/</span>
               {actor.name}
             </p>
           </div>
@@ -174,7 +171,7 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
             <button
               type="button"
               onClick={() => void handleDelete()}
-              className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border text-muted-foreground hover:border-[color:var(--fail)]/40 hover:text-[color:var(--fail)] rounded-sm transition-colors"
+              className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border text-muted-foreground hover:border-fail/40 hover:text-fail rounded-sm transition-colors"
             >
               <Trash2 className="h-3.5 w-3.5" />
               Delete
@@ -182,7 +179,7 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
             <button
               type="button"
               onClick={() => setTab('overview')}
-              className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 rounded-sm"
+              className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm"
             >
               <Play className="h-3.5 w-3.5" /> Run
             </button>
@@ -228,7 +225,7 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
               className={cn(
                 'flex items-center gap-2 px-4 h-10 text-[12px] font-mono uppercase tracking-wider transition-colors -mb-px border-b',
                 isActive
-                  ? 'text-[color:var(--signal)] border-[color:var(--signal)]'
+                  ? 'text-signal border-signal'
                   : 'text-muted-foreground border-transparent hover:text-foreground'
               )}
             >
@@ -324,16 +321,12 @@ function OverviewPanel({ actor, onStarted }: { actor: Actor; onStarted: (run: Ru
             }}
             spellCheck={false}
             className={cn(
-              'w-full h-44 px-3 py-2 rounded-sm border bg-[color:var(--background)] font-mono text-[12px] text-foreground resize-none focus:outline-none transition-colors',
-              jsonError
-                ? 'border-[color:var(--fail)]/60'
-                : 'border-border focus:border-[color:var(--signal)]/50'
+              'w-full h-44 px-3 py-2 rounded-sm border bg-background font-mono text-[12px] text-foreground resize-none focus:outline-none transition-colors',
+              jsonError ? 'border-fail/60' : 'border-border focus:border-signal/50'
             )}
             placeholder='{ "url": "https://example.com" }'
           />
-          {jsonError && (
-            <p className="font-mono text-[11px] text-[color:var(--fail)]">[ERR] {jsonError}</p>
-          )}
+          {jsonError && <p className="font-mono text-[11px] text-fail">[ERR] {jsonError}</p>}
         </div>
 
         <div className="grid grid-cols-2 gap-4">
@@ -341,7 +334,7 @@ function OverviewPanel({ actor, onStarted }: { actor: Actor; onStarted: (run: Ru
             <select
               value={timeout}
               onChange={(e) => setTimeoutSecs(Number(e.target.value))}
-              className="w-full h-9 px-2 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+              className="w-full h-9 px-2 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
             >
               {[300, 600, 1800, 3600, 7200, 14400].map((n) => (
                 <option key={n} value={n}>
@@ -354,7 +347,7 @@ function OverviewPanel({ actor, onStarted }: { actor: Actor; onStarted: (run: Ru
             <select
               value={memory}
               onChange={(e) => setMemory(Number(e.target.value))}
-              className="w-full h-9 px-2 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+              className="w-full h-9 px-2 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
             >
               {[256, 512, 1024, 2048, 4096, 8192].map((n) => (
                 <option key={n} value={n}>
@@ -366,7 +359,7 @@ function OverviewPanel({ actor, onStarted }: { actor: Actor; onStarted: (run: Ru
         </div>
 
         {error && (
-          <p className="font-mono text-[11px] text-[color:var(--fail)] border border-[color:var(--fail)]/30 bg-[color:var(--fail)]/5 p-2 rounded-sm">
+          <p className="font-mono text-[11px] text-fail border border-fail/30 bg-fail/5 p-2 rounded-sm">
             [ERR] {error}
           </p>
         )}
@@ -376,7 +369,7 @@ function OverviewPanel({ actor, onStarted }: { actor: Actor; onStarted: (run: Ru
             type="button"
             onClick={() => void handleStart()}
             disabled={starting}
-            className="h-9 px-4 inline-flex items-center gap-2 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 rounded-sm disabled:opacity-50"
+            className="h-9 px-4 inline-flex items-center gap-2 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm disabled:opacity-50"
           >
             {starting ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -478,7 +471,7 @@ function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => 
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Human-readable title"
-            className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] text-[13px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+            className="w-full h-9 px-3 rounded-sm border border-border bg-background text-[13px] text-foreground focus:outline-none focus:border-signal/50"
           />
         </Field>
 
@@ -487,7 +480,7 @@ function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => 
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             rows={3}
-            className="w-full px-3 py-2 rounded-sm border border-border bg-[color:var(--background)] text-[13px] text-foreground resize-y focus:outline-none focus:border-[color:var(--signal)]/50"
+            className="w-full px-3 py-2 rounded-sm border border-border bg-background text-[13px] text-foreground resize-y focus:outline-none focus:border-signal/50"
           />
         </Field>
 
@@ -501,7 +494,7 @@ function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => 
             value={image}
             onChange={(e) => setImage(e.target.value)}
             placeholder="ghcr.io/org/repo/actor-foo:latest"
-            className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+            className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
           />
         </Field>
 
@@ -511,7 +504,7 @@ function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => 
               value={build}
               onChange={(e) => setBuild(e.target.value)}
               placeholder="latest"
-              className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+              className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
             />
           </Field>
           <Field label="Default timeout · seconds">
@@ -520,7 +513,7 @@ function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => 
               value={timeoutSecs}
               onChange={(e) => setTimeoutSecs(e.target.value === '' ? '' : Number(e.target.value))}
               placeholder="3600"
-              className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+              className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
             />
           </Field>
           <Field label="Default memory · MB">
@@ -529,7 +522,7 @@ function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => 
               value={memoryMbytes}
               onChange={(e) => setMemoryMbytes(e.target.value === '' ? '' : Number(e.target.value))}
               placeholder="1024"
-              className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+              className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
             />
           </Field>
           <Field label="Max retries">
@@ -538,7 +531,7 @@ function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => 
               value={maxRetries}
               onChange={(e) => setMaxRetries(e.target.value === '' ? '' : Number(e.target.value))}
               placeholder="0"
-              className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+              className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
             />
           </Field>
           <Field label="Retry delay · seconds">
@@ -549,7 +542,7 @@ function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => 
                 setRetryDelaySecs(e.target.value === '' ? '' : Number(e.target.value))
               }
               placeholder="60"
-              className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+              className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
             />
           </Field>
         </div>
@@ -568,7 +561,7 @@ function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => 
                     )
                   }
                   placeholder="KEY"
-                  className="w-44 h-8 px-2 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[11px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+                  className="w-44 h-8 px-2 rounded-sm border border-border bg-background font-mono text-[11px] text-foreground focus:outline-none focus:border-signal/50"
                 />
                 <span className="text-muted-foreground font-mono text-[11px]">=</span>
                 <input
@@ -579,12 +572,12 @@ function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => 
                     )
                   }
                   placeholder="value"
-                  className="flex-1 h-8 px-2 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[11px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+                  className="flex-1 h-8 px-2 rounded-sm border border-border bg-background font-mono text-[11px] text-foreground focus:outline-none focus:border-signal/50"
                 />
                 <button
                   type="button"
                   onClick={() => setEnvVars((prev) => prev.filter((_, i) => i !== idx))}
-                  className="h-8 w-8 grid place-items-center text-muted-foreground hover:text-[color:var(--fail)] border border-border rounded-sm"
+                  className="h-8 w-8 grid place-items-center text-muted-foreground hover:text-fail border border-border rounded-sm"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
@@ -593,7 +586,7 @@ function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => 
             <button
               type="button"
               onClick={() => setEnvVars((prev) => [...prev, { key: '', value: '' }])}
-              className="h-8 px-3 inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider border border-dashed border-border text-muted-foreground hover:border-[color:var(--signal)]/50 hover:text-[color:var(--signal)] rounded-sm"
+              className="h-8 px-3 inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider border border-dashed border-border text-muted-foreground hover:border-signal/50 hover:text-signal rounded-sm"
             >
               <Plus className="h-3 w-3" /> add var
             </button>
@@ -601,14 +594,14 @@ function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => 
         </div>
 
         {error && (
-          <p className="font-mono text-[11px] text-[color:var(--fail)] border border-[color:var(--fail)]/30 bg-[color:var(--fail)]/5 p-2 rounded-sm">
+          <p className="font-mono text-[11px] text-fail border border-fail/30 bg-fail/5 p-2 rounded-sm">
             [ERR] {error}
           </p>
         )}
 
         <div className="flex items-center justify-end gap-3 pt-2 border-t border-border">
           {savedAt && (
-            <span className="font-mono text-[10px] text-[color:var(--signal)] tracking-widest">
+            <span className="font-mono text-[10px] text-signal tracking-widest">
               [SAVED · {new Date(savedAt).toISOString().split('T')[1].slice(0, 8)}]
             </span>
           )}
@@ -616,7 +609,7 @@ function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => 
             type="button"
             onClick={() => void handleSave()}
             disabled={saving}
-            className="h-9 px-4 inline-flex items-center gap-2 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 rounded-sm disabled:opacity-50"
+            className="h-9 px-4 inline-flex items-center gap-2 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm disabled:opacity-50"
           >
             {saving ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -718,7 +711,7 @@ function BuildsPanel({
           <button
             type="button"
             onClick={() => setShowForm((v) => !v)}
-            className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-[color:var(--signal)]/50 hover:text-[color:var(--signal)] rounded-sm"
+            className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-signal/50 hover:text-signal rounded-sm"
           >
             <Plus className="h-3.5 w-3.5" /> new build
           </button>
@@ -731,14 +724,14 @@ function BuildsPanel({
                 <input
                   value={versionNumber}
                   onChange={(e) => setVersionNumber(e.target.value)}
-                  className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+                  className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
                 />
               </Field>
               <Field label="Build tag">
                 <input
                   value={buildTag}
                   onChange={(e) => setBuildTag(e.target.value)}
-                  className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+                  className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
                 />
               </Field>
               <Field label="Git source URL · optional">
@@ -746,13 +739,11 @@ function BuildsPanel({
                   value={sourceUrl}
                   onChange={(e) => setSourceUrl(e.target.value)}
                   placeholder="https://github.com/org/repo.git"
-                  className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[11px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+                  className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[11px] text-foreground focus:outline-none focus:border-signal/50"
                 />
               </Field>
             </div>
-            {error && (
-              <p className="font-mono text-[11px] text-[color:var(--fail)]">[ERR] {error}</p>
-            )}
+            {error && <p className="font-mono text-[11px] text-fail">[ERR] {error}</p>}
             <div className="flex justify-end gap-2">
               <button
                 type="button"
@@ -765,7 +756,7 @@ function BuildsPanel({
                 type="button"
                 onClick={() => void handleStartBuild()}
                 disabled={submitting}
-                className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] rounded-sm disabled:opacity-50"
+                className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-signal text-background rounded-sm disabled:opacity-50"
               >
                 {submitting ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -874,7 +865,7 @@ function BuildsPanel({
                       <button
                         type="button"
                         onClick={() => void handleAbort(b.id)}
-                        className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground hover:text-[color:var(--fail)]"
+                        className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground hover:text-fail"
                       >
                         abort
                       </button>
@@ -978,7 +969,7 @@ function WebhooksPanel({
         <button
           type="button"
           onClick={() => setShowForm((v) => !v)}
-          className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-[color:var(--signal)]/50 hover:text-[color:var(--signal)] rounded-sm"
+          className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-signal/50 hover:text-signal rounded-sm"
         >
           <Plus className="h-3.5 w-3.5" /> new webhook
         </button>
@@ -991,7 +982,7 @@ function WebhooksPanel({
               value={requestUrl}
               onChange={(e) => setRequestUrl(e.target.value)}
               placeholder="https://hooks.example.com/run"
-              className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+              className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
             />
           </Field>
 
@@ -1000,7 +991,7 @@ function WebhooksPanel({
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Posts to #scrapers in Slack"
-              className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+              className="w-full h-9 px-3 rounded-sm border border-border bg-background text-[12px] text-foreground focus:outline-none focus:border-signal/50"
             />
           </Field>
 
@@ -1023,8 +1014,8 @@ function WebhooksPanel({
                           className={cn(
                             'text-left px-3 py-2 border rounded-sm transition-colors',
                             isOn
-                              ? 'border-[color:var(--signal)]/50 bg-[color:var(--signal)]/5'
-                              : 'border-border hover:border-border/80 bg-[color:var(--background)]'
+                              ? 'border-signal/50 bg-signal/5'
+                              : 'border-border hover:border-border/80 bg-background'
                           )}
                         >
                           <div className="flex items-center justify-between">
@@ -1032,7 +1023,7 @@ function WebhooksPanel({
                             <span
                               className={cn(
                                 'font-mono text-[10px]',
-                                isOn ? 'text-[color:var(--signal)]' : 'text-muted-foreground/50'
+                                isOn ? 'text-signal' : 'text-muted-foreground/50'
                               )}
                             >
                               {isOn ? '[ON]' : '[ ]'}
@@ -1048,7 +1039,7 @@ function WebhooksPanel({
             </div>
           </div>
 
-          {error && <p className="font-mono text-[11px] text-[color:var(--fail)]">[ERR] {error}</p>}
+          {error && <p className="font-mono text-[11px] text-fail">[ERR] {error}</p>}
 
           <div className="flex justify-end gap-2">
             <button
@@ -1062,7 +1053,7 @@ function WebhooksPanel({
               type="button"
               onClick={() => void handleCreate()}
               disabled={submitting}
-              className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] rounded-sm disabled:opacity-50"
+              className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-signal text-background rounded-sm disabled:opacity-50"
             >
               {submitting ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1092,7 +1083,7 @@ function WebhooksPanel({
                       className={cn(
                         'font-mono text-[10px] tracking-widest px-1.5 py-0.5 rounded-sm border',
                         w.isEnabled
-                          ? 'text-[color:var(--signal)] border-[color:var(--signal)]/40'
+                          ? 'text-signal border-signal/40'
                           : 'text-muted-foreground border-border'
                       )}
                     >
@@ -1117,7 +1108,7 @@ function WebhooksPanel({
                 <button
                   type="button"
                   onClick={() => void handleDelete(w.id)}
-                  className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-[color:var(--fail)]"
+                  className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-fail"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
@@ -1163,10 +1154,7 @@ function RunsPanel({ runs }: { runs: Run[] }) {
               className="border-b border-border/60 last:border-0 hover:bg-secondary/40"
             >
               <td className="px-5 py-3 font-mono">
-                <AppLink
-                  href={`/runs/${r.id}`}
-                  className="text-foreground hover:text-[color:var(--signal)]"
-                >
+                <AppLink href={`/runs/${r.id}`} className="text-foreground hover:text-signal">
                   {r.id.slice(0, 12)}
                 </AppLink>
               </td>

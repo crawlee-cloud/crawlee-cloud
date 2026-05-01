@@ -27,7 +27,7 @@ export default function GlobalError({
     <div className="min-h-screen grid place-items-center px-6">
       <div className="max-w-md w-full space-y-6">
         <header>
-          <p className="font-mono text-[11px] tracking-widest text-[color:var(--fail)] mb-3">
+          <p className="font-mono text-[11px] tracking-widest text-fail mb-3">
             [ FATAL · UNCAUGHT ]
           </p>
           <h1 className="text-[28px] leading-tight font-medium tracking-tight text-foreground">
@@ -52,13 +52,13 @@ export default function GlobalError({
           <button
             type="button"
             onClick={reset}
-            className="h-9 px-4 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 rounded-sm"
+            className="h-9 px-4 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm"
           >
             <RotateCw className="h-3.5 w-3.5" /> retry
           </button>
           <AppLink
             href="/"
-            className="h-9 px-4 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border text-foreground hover:border-[color:var(--signal)]/40 hover:text-[color:var(--signal)] rounded-sm"
+            className="h-9 px-4 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border text-foreground hover:border-signal/40 hover:text-signal rounded-sm"
           >
             <Home className="h-3.5 w-3.5" /> console
           </AppLink>

@@ -27,14 +27,14 @@ export default function DashboardNotFound() {
         <div className="flex items-center justify-center gap-2 pt-2">
           <AppLink
             href="/"
-            className="inline-flex items-center gap-1.5 h-8 px-3 text-[11px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 rounded-sm"
+            className="inline-flex items-center gap-1.5 h-8 px-3 text-[11px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm"
           >
             <Home className="h-3.5 w-3.5" /> console
           </AppLink>
           <button
             type="button"
             onClick={() => history.back()}
-            className="inline-flex items-center gap-1.5 h-8 px-3 text-[11px] font-mono uppercase tracking-wider border border-border text-muted-foreground hover:text-foreground hover:border-[color:var(--signal)]/40 rounded-sm"
+            className="inline-flex items-center gap-1.5 h-8 px-3 text-[11px] font-mono uppercase tracking-wider border border-border text-muted-foreground hover:text-foreground hover:border-signal/40 rounded-sm"
           >
             <ArrowLeft className="h-3.5 w-3.5" /> back
           </button>

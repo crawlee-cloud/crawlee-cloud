@@ -44,7 +44,7 @@ export function ThemeToggle() {
       className={cn(
         'h-7 px-2 inline-flex items-center gap-1.5 border border-border rounded-sm',
         'font-mono text-[10px] tracking-widest text-muted-foreground',
-        'hover:text-foreground hover:border-[color:var(--signal)]/40 transition-colors'
+        'hover:text-foreground hover:border-signal/40 transition-colors'
       )}
     >
       <Icon className="h-3 w-3" />

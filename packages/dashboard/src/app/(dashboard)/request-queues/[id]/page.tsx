@@ -87,7 +87,7 @@ export default function RequestQueueDetail({ params }: { params: Promise<{ id: s
           <p className="font-mono text-[11px] tracking-widest text-muted-foreground mb-2">
             [ QUEUE NOT FOUND ]
           </p>
-          <AppLink href="/request-queues" className="text-[13px] hover:text-[color:var(--signal)]">
+          <AppLink href="/request-queues" className="text-[13px] hover:text-signal">
             ← back to queues
           </AppLink>
         </div>
@@ -120,7 +120,7 @@ export default function RequestQueueDetail({ params }: { params: Promise<{ id: s
         <button
           type="button"
           onClick={() => void handleDelete()}
-          className="h-8 px-3 self-start md:self-auto inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border text-muted-foreground hover:border-[color:var(--fail)]/40 hover:text-[color:var(--fail)] rounded-sm"
+          className="h-8 px-3 self-start md:self-auto inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border text-muted-foreground hover:border-fail/40 hover:text-fail rounded-sm"
         >
           <Trash2 className="h-3.5 w-3.5" /> delete
         </button>
@@ -149,10 +149,7 @@ export default function RequestQueueDetail({ params }: { params: Promise<{ id: s
           <span className="font-mono text-[12px] text-foreground tnum">{progress}%</span>
         </div>
         <div className="h-2 w-full bg-secondary border border-border rounded-sm overflow-hidden">
-          <div
-            style={{ width: `${progress}%` }}
-            className="h-full bg-[color:var(--signal)] transition-all"
-          />
+          <div style={{ width: `${progress}%` }} className="h-full bg-signal transition-all" />
         </div>
         <p className="font-mono text-[10px] tracking-widest text-muted-foreground">
           {queue.handledRequestCount.toLocaleString()} handled ·{' '}
@@ -167,7 +164,7 @@ export default function RequestQueueDetail({ params }: { params: Promise<{ id: s
           <div className="flex flex-wrap items-center gap-3 text-[13px]">
             <AppLink
               href={`/runs/${producingRun.id}`}
-              className="font-mono text-foreground hover:text-[color:var(--signal)]"
+              className="font-mono text-foreground hover:text-signal"
             >
               run · {producingRun.id.slice(0, 12)}
             </AppLink>
@@ -175,7 +172,7 @@ export default function RequestQueueDetail({ params }: { params: Promise<{ id: s
             {producingActor ? (
               <AppLink
                 href={`/actors/${producingActor.name}`}
-                className="text-foreground hover:text-[color:var(--signal)]"
+                className="text-foreground hover:text-signal"
               >
                 {producingActor.title || producingActor.name}
               </AppLink>
@@ -224,11 +221,7 @@ function Tile({
   live?: boolean;
 }) {
   const toneClass =
-    tone === 'signal'
-      ? 'text-[color:var(--signal)]'
-      : tone === 'warn'
-        ? 'text-[color:var(--warn)]'
-        : 'text-foreground';
+    tone === 'signal' ? 'text-signal' : tone === 'warn' ? 'text-warn' : 'text-foreground';
   return (
     <div className="bg-card px-5 py-4">
       <div className="flex items-center justify-between mb-2">

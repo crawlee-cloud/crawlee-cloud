@@ -91,7 +91,7 @@ export default function SchedulesPage() {
           type="button"
           onClick={() => setShowForm((v) => !v)}
           disabled={actors.length === 0}
-          className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 rounded-sm disabled:opacity-50"
+          className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm disabled:opacity-50"
         >
           <Plus className="h-3.5 w-3.5" /> new schedule
         </button>
@@ -146,7 +146,7 @@ export default function SchedulesPage() {
                   className={cn(
                     'mt-1 shrink-0 font-mono text-[10px] tracking-widest px-1.5 py-0.5 rounded-sm border transition-colors',
                     s.isEnabled
-                      ? 'text-[color:var(--signal)] border-[color:var(--signal)]/40 hover:bg-[color:var(--signal)]/10'
+                      ? 'text-signal border-signal/40 hover:bg-signal/10'
                       : 'text-muted-foreground border-border hover:text-foreground'
                   )}
                 >
@@ -190,7 +190,7 @@ export default function SchedulesPage() {
                 <button
                   type="button"
                   onClick={() => void handleDelete(s)}
-                  className="text-muted-foreground hover:text-[color:var(--fail)] p-1"
+                  className="text-muted-foreground hover:text-fail p-1"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
@@ -280,9 +280,7 @@ function CreateScheduleForm({
                 onClick={() => setPreset(p.value)}
                 className={cn(
                   'text-left px-3 py-2 border rounded-sm transition-colors',
-                  isOn
-                    ? 'border-[color:var(--signal)]/50 bg-[color:var(--signal)]/5'
-                    : 'border-border bg-[color:var(--background)]'
+                  isOn ? 'border-signal/50 bg-signal/5' : 'border-border bg-background'
                 )}
               >
                 <p className="text-[12px] text-foreground leading-tight">{p.label}</p>
@@ -307,7 +305,7 @@ function CreateScheduleForm({
         <input value={timezone} onChange={(e) => setTimezone(e.target.value)} className={INPUT} />
       </Field>
 
-      {error && <p className="font-mono text-[11px] text-[color:var(--fail)]">[ERR] {error}</p>}
+      {error && <p className="font-mono text-[11px] text-fail">[ERR] {error}</p>}
 
       <div className="flex justify-end gap-2 pt-2 border-t border-border">
         <button
@@ -321,7 +319,7 @@ function CreateScheduleForm({
           type="button"
           onClick={() => void handleCreate()}
           disabled={submitting}
-          className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] rounded-sm disabled:opacity-50"
+          className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-signal text-background rounded-sm disabled:opacity-50"
         >
           {submitting ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -356,9 +354,9 @@ function Field({
 }
 
 const INPUT =
-  'w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--input)] text-[13px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-[color:var(--signal)]/50';
+  'w-full h-9 px-3 rounded-sm border border-border bg-input text-[13px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-signal/50';
 const SELECT =
-  'w-full h-9 px-2 rounded-sm border border-border bg-[color:var(--input)] text-[13px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50';
+  'w-full h-9 px-2 rounded-sm border border-border bg-input text-[13px] text-foreground focus:outline-none focus:border-signal/50';
 
 function timeAgo(iso: string): string {
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);

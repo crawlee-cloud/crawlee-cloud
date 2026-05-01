@@ -105,10 +105,7 @@ export default function KVStoreDetail({ params }: { params: Promise<{ id: string
           <p className="font-mono text-[11px] tracking-widest text-muted-foreground mb-2">
             [ STORE NOT FOUND ]
           </p>
-          <AppLink
-            href="/key-value-stores"
-            className="text-[13px] hover:text-[color:var(--signal)]"
-          >
+          <AppLink href="/key-value-stores" className="text-[13px] hover:text-signal">
             ← back to stores
           </AppLink>
         </div>
@@ -136,7 +133,7 @@ export default function KVStoreDetail({ params }: { params: Promise<{ id: string
         <button
           type="button"
           onClick={() => void handleDelete()}
-          className="h-8 px-3 self-start md:self-auto inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border text-muted-foreground hover:border-[color:var(--fail)]/40 hover:text-[color:var(--fail)] rounded-sm"
+          className="h-8 px-3 self-start md:self-auto inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border text-muted-foreground hover:border-fail/40 hover:text-fail rounded-sm"
         >
           <Trash2 className="h-3.5 w-3.5" /> delete
         </button>
@@ -159,7 +156,7 @@ export default function KVStoreDetail({ params }: { params: Promise<{ id: string
           <div className="flex flex-wrap items-center gap-3 text-[13px]">
             <AppLink
               href={`/runs/${producingRun.id}`}
-              className="font-mono text-foreground hover:text-[color:var(--signal)]"
+              className="font-mono text-foreground hover:text-signal"
             >
               run · {producingRun.id.slice(0, 12)}
             </AppLink>
@@ -167,7 +164,7 @@ export default function KVStoreDetail({ params }: { params: Promise<{ id: string
             {producingActor ? (
               <AppLink
                 href={`/actors/${producingActor.name}`}
-                className="text-foreground hover:text-[color:var(--signal)]"
+                className="text-foreground hover:text-signal"
               >
                 {producingActor.title || producingActor.name}
               </AppLink>
@@ -183,7 +180,7 @@ export default function KVStoreDetail({ params }: { params: Promise<{ id: string
       {/* Keys */}
       <section className="panel">
         <header className="px-5 py-3 border-b border-border flex items-center gap-2">
-          <FileKey className="h-3.5 w-3.5 text-[color:var(--signal)]" />
+          <FileKey className="h-3.5 w-3.5 text-signal" />
           <span className="text-[13px] text-foreground">Keys</span>
           {truncated && (
             <span className="font-mono text-[10px] text-muted-foreground tracking-wider">
@@ -232,7 +229,7 @@ export default function KVStoreDetail({ params }: { params: Promise<{ id: string
                     <button
                       type="button"
                       onClick={() => void openRawRecord(id, k.key, toast)}
-                      className="inline-flex items-center gap-1 font-mono text-[10px] tracking-wider text-muted-foreground hover:text-[color:var(--signal)] uppercase"
+                      className="inline-flex items-center gap-1 font-mono text-[10px] tracking-wider text-muted-foreground hover:text-signal uppercase"
                     >
                       view <ExternalLink className="h-3 w-3" />
                     </button>

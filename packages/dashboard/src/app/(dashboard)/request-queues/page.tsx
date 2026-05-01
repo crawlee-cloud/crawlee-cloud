@@ -67,7 +67,7 @@ export default function RequestQueuesPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="search by id or name"
-          className="w-full h-9 pl-9 pr-3 rounded-sm border border-border bg-[color:var(--input)] text-[13px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+          className="w-full h-9 pl-9 pr-3 rounded-sm border border-border bg-input text-[13px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-signal/50"
         />
       </div>
 
@@ -126,9 +126,7 @@ export default function RequestQueuesPage() {
                   <td className="px-5 py-3 text-right font-mono tnum">
                     <span
                       className={
-                        q.pendingRequestCount > 0
-                          ? 'text-[color:var(--signal)]'
-                          : 'text-muted-foreground/60'
+                        q.pendingRequestCount > 0 ? 'text-signal' : 'text-muted-foreground/60'
                       }
                     >
                       {q.pendingRequestCount.toLocaleString()}
@@ -148,7 +146,7 @@ export default function RequestQueuesPage() {
                       type="button"
                       title="Delete"
                       onClick={() => void handleDelete(q)}
-                      className="h-7 w-7 grid place-items-center text-muted-foreground hover:text-[color:var(--fail)] border border-transparent hover:border-border rounded-sm"
+                      className="h-7 w-7 grid place-items-center text-muted-foreground hover:text-fail border border-transparent hover:border-border rounded-sm"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>

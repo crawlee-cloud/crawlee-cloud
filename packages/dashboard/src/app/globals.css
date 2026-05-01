@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+/* nudge: rescan after Tailwind v4 utility-name migration (bg-signal etc.) */
 
 /*
   ============================================================================

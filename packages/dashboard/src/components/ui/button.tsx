@@ -16,13 +16,12 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: 'bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110',
-        destructive:
-          'bg-[color:var(--fail)]/10 text-[color:var(--fail)] border border-[color:var(--fail)]/40 hover:bg-[color:var(--fail)]/20',
+        default: 'bg-signal text-background hover:brightness-110',
+        destructive: 'bg-fail/10 text-fail border border-fail/40 hover:bg-fail/20',
         outline: 'border border-border bg-transparent hover:bg-secondary text-foreground',
         secondary: 'bg-secondary text-foreground hover:bg-secondary/70',
         ghost: 'text-muted-foreground hover:text-foreground hover:bg-secondary',
-        link: 'text-foreground underline-offset-4 hover:underline hover:text-[color:var(--signal)]',
+        link: 'text-foreground underline-offset-4 hover:underline hover:text-signal',
         glass: 'bg-secondary text-foreground border border-border hover:bg-secondary/70',
       },
       size: {

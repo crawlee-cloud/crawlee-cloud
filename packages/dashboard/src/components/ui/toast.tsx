@@ -176,12 +176,12 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
 
   const toneClass =
     toast.tone === 'success'
-      ? 'text-[color:var(--signal)] border-l-[color:var(--signal)]'
+      ? 'text-signal border-l-signal'
       : toast.tone === 'error'
-        ? 'text-[color:var(--fail)] border-l-[color:var(--fail)]'
+        ? 'text-fail border-l-fail'
         : toast.tone === 'warn'
-          ? 'text-[color:var(--warn)] border-l-[color:var(--warn)]'
-          : 'text-[color:var(--info)] border-l-[color:var(--info)]';
+          ? 'text-warn border-l-warn'
+          : 'text-info border-l-info';
 
   return (
     <div
