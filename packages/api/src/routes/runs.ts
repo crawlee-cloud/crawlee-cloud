@@ -86,8 +86,12 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
         params
       ),
       query<RunRow>(
+        // Stable tiebreaker on `id`. Without it, LIMIT/OFFSET pagination
+        // can drop or duplicate rows when two runs share the exact same
+        // created_at (ms-precision ties are realistic at 140 scrapers ×
+        // burst writes — Postgres doesn't guarantee row order on ties).
         `SELECT * FROM runs WHERE ${whereSql}
-         ORDER BY created_at ${desc ? 'DESC' : 'ASC'}
+         ORDER BY created_at ${desc ? 'DESC' : 'ASC'}, id ${desc ? 'DESC' : 'ASC'}
          LIMIT $${p++} OFFSET $${p++}`,
         [...params, limit, offset]
       ),

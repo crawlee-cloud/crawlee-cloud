@@ -99,10 +99,21 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
       return { error: { type: 'record-not-found', message: 'Actor not found' } };
     }
 
+    // The build_tag column has a partial UNIQUE index per actor (see
+    // db/migrate.ts: idx_actor_versions_actor_tag). To avoid a constraint
+    // violation when the caller wants the new version to claim a tag that
+    // an existing version still holds, we clear siblings in the same
+    // statement. This mirrors the behaviour of findOrCreateActorVersion in
+    // routes/actors.ts so both insertion paths converge on the same
+    // "single-pointer-per-tag" invariant.
     const id = nanoid();
     const result = await query<VersionRow>(
-      `INSERT INTO actor_versions 
-       (id, actor_id, version_number, source_type, source_url, dockerfile, build_tag, env_vars)
+      `WITH cleared AS (
+         UPDATE actor_versions SET build_tag = NULL
+         WHERE actor_id = $2 AND build_tag IS NOT NULL AND build_tag = $7 AND version_number <> $3
+       )
+       INSERT INTO actor_versions
+         (id, actor_id, version_number, source_type, source_url, dockerfile, build_tag, env_vars)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
       [

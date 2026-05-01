@@ -184,6 +184,18 @@ CREATE TABLE IF NOT EXISTS actor_versions (
   UNIQUE(actor_id, version_number)
 );
 
+-- A given build_tag (e.g. "latest", "beta") may only point at ONE version
+-- per actor at a time. A partial index excludes NULL tags (untagged
+-- versions are normal) but enforces uniqueness for any actively-set tag.
+-- This is the DB-level invariant that makes "current pointer" semantics
+-- ironclad against:
+--   (a) concurrent push races where two writers' clear-then-set CTEs
+--       interleave and both end up holding the tag,
+--   (b) any code path that bypasses findOrCreateActorVersion and writes
+--       build_tag directly (e.g. the POST /v2/acts/:id/versions route).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_actor_versions_actor_tag
+  ON actor_versions(actor_id, build_tag) WHERE build_tag IS NOT NULL;
+
 -- Actor Builds (build history)
 CREATE TABLE IF NOT EXISTS actor_builds (
   id VARCHAR(21) PRIMARY KEY,
