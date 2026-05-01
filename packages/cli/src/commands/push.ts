@@ -218,6 +218,10 @@ export const pushCommand = new Command('push')
         name: actorName,
         title: actorJson.title,
         description: actorJson.description,
+        // Source version from .actor/actor.json. Sent so the API can upsert
+        // an actor_versions row and link the build to it. Apify uses this
+        // for the version selector on the dashboard's build history.
+        version: actorJson.version,
         defaultRunOptions: {
           image: runtimeImage,
           envVars: Object.keys(mergedEnvVars).length > 0 ? mergedEnvVars : undefined,

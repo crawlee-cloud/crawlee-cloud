@@ -7,7 +7,12 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { nanoid } from 'nanoid';
 import { query } from '../db/index.js';
-import { putDatasetItem, listDatasetItems } from '../storage/s3.js';
+import {
+  putDatasetItem,
+  listDatasetItems,
+  iterateDatasetKeys,
+  getDatasetItemByKey,
+} from '../storage/s3.js';
 import { authenticate } from '../auth/middleware.js';
 import { CreateDatasetSchema } from '../schemas/datasets.js';
 
@@ -123,11 +128,9 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
    */
   fastify.get<{
     Params: { datasetId: string };
-    Querystring: { offset?: string; limit?: string; desc?: string };
+    Querystring: { offset?: string; limit?: string; desc?: string; download?: string };
   }>('/datasets/:datasetId/items', async (request, reply) => {
     const { datasetId } = request.params;
-    const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
-    const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
 
     // Get dataset to confirm it exists and belongs to user
     const dataset = await query<DatasetRow>(
@@ -139,6 +142,66 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
       reply.status(404);
       return { error: { type: 'record-not-found', message: 'Dataset not found' } };
     }
+
+    // ?download=1 — stream the FULL dataset as a single JSON array file.
+    // Browser opens it as a download; no in-memory materialization on either
+    // server (chunked S3 GETs with bounded concurrency) or client. This
+    // sidesteps the silent ~1000-item cap in listDatasetItems and the
+    // browser-blob memory pressure on the dashboard side.
+    if (request.query.download === '1' || request.query.download === 'true') {
+      const dsId = dataset.rows[0].id;
+      // setHeader on the raw response — reply.header() needs Fastify's
+      // lifecycle to flush, but streaming via reply.raw bypasses that.
+      // First propagate Fastify-prepared headers (CORS from @fastify/cors,
+      // etc.) so the browser doesn't reject the response.
+      const stream = reply.raw;
+      for (const [k, v] of Object.entries(reply.getHeaders())) {
+        if (v !== undefined) stream.setHeader(k, v);
+      }
+      stream.setHeader('content-type', 'application/json; charset=utf-8');
+      stream.setHeader('content-disposition', `attachment; filename="dataset-${dsId}.json"`);
+      stream.write('[');
+
+      // Bounded concurrency: 16 parallel S3 GETs is enough to saturate a
+      // local MinIO and still leaves headroom under AWS's per-prefix QPS cap.
+      const CONCURRENCY = 16;
+      let inflight: Array<Promise<{ idx: number; data: unknown }>> = [];
+      let writeIdx = 0;
+      let firstWritten = false;
+      const buffer = new Map<number, unknown>();
+
+      function drainBuffer() {
+        while (buffer.has(writeIdx)) {
+          const item = buffer.get(writeIdx);
+          buffer.delete(writeIdx);
+          stream.write((firstWritten ? ',' : '') + JSON.stringify(item));
+          firstWritten = true;
+          writeIdx++;
+        }
+      }
+
+      let nextIdx = 0;
+      for await (const key of iterateDatasetKeys(dsId)) {
+        const myIdx = nextIdx++;
+        inflight.push(getDatasetItemByKey(key).then((data) => ({ idx: myIdx, data })));
+        if (inflight.length >= CONCURRENCY) {
+          const settled = await Promise.all(inflight);
+          for (const r of settled) buffer.set(r.idx, r.data);
+          inflight = [];
+          drainBuffer();
+        }
+      }
+      const tail = await Promise.all(inflight);
+      for (const r of tail) buffer.set(r.idx, r.data);
+      drainBuffer();
+
+      stream.write(']');
+      stream.end();
+      return reply;
+    }
+
+    const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
+    const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
 
     // Get items from S3
     const { items, total } = await listDatasetItems(dataset.rows[0].id, { offset, limit });

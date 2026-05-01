@@ -1,24 +1,54 @@
-"use client"
+'use client';
 
-import * as React from "react"
-import { Moon, Sun } from "lucide-react"
-import { useTheme } from "next-themes"
+import { Monitor, Moon, Sun } from 'lucide-react';
+import { useTheme } from 'next-themes';
 
-import { Button } from "@/components/ui/button"
+import { cn } from '@/lib/utils';
+
+/*
+  Three-state cycle: system → light → dark → system.
+  Operator-style — flat icon button with mono caption, no fade transition.
+
+  Loaded with `ssr: false` from header.tsx, so we never render on the server
+  and there's no hydration mismatch when next-themes resolves localStorage.
+*/
+
+const ORDER = ['system', 'light', 'dark'] as const;
+type Mode = (typeof ORDER)[number];
+
+const ICON: Record<Mode, React.ComponentType<{ className?: string }>> = {
+  system: Monitor,
+  light: Sun,
+  dark: Moon,
+};
+
+const LABEL: Record<Mode, string> = {
+  system: 'SYS',
+  light: 'LGT',
+  dark: 'DRK',
+};
 
 export function ThemeToggle() {
-  const { setTheme, theme } = useTheme()
+  const { theme, setTheme } = useTheme();
+
+  const current: Mode = (theme as Mode) || 'system';
+  const next = ORDER[(ORDER.indexOf(current) + 1) % ORDER.length];
+  const Icon = ICON[current];
 
   return (
-    <Button
-      variant="ghost"
-      size="icon"
-      onClick={() => setTheme(theme === "light" ? "dark" : "light")}
-      className="glass-button h-9 w-9"
-      aria-label="Toggle theme"
+    <button
+      type="button"
+      onClick={() => setTheme(next)}
+      title={`Theme · ${current} → ${next}`}
+      aria-label={`Theme: ${current}. Click to switch to ${next}.`}
+      className={cn(
+        'h-7 px-2 inline-flex items-center gap-1.5 border border-border rounded-sm',
+        'font-mono text-[10px] tracking-widest text-muted-foreground',
+        'hover:text-foreground hover:border-[color:var(--signal)]/40 transition-colors'
+      )}
     >
-      <Sun className="h-4 w-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
-      <Moon className="absolute h-4 w-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
-    </Button>
-  )
+      <Icon className="h-3 w-3" />
+      <span>{LABEL[current]}</span>
+    </button>
+  );
 }

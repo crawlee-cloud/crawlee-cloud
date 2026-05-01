@@ -1,40 +1,85 @@
-import * as React from "react"
-import { cva, type VariantProps } from "class-variance-authority"
+import * as React from 'react';
+import { cva, type VariantProps } from 'class-variance-authority';
 
-import { cn } from "@/lib/utils"
+import { cn } from '@/lib/utils';
+
+/*
+  Operator Console badge.
+  - All variants are flat: foreground color + 1px border in same hue, no fill swap on hover.
+  - "chip" variant draws as [STATUS] in mono — used for RUN status, BUILD status, etc.
+*/
 
 const badgeVariants = cva(
-  "inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+  'inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-medium tabular-nums rounded-sm border',
   {
     variants: {
       variant: {
-        default:
-          "border-transparent bg-primary text-primary-foreground hover:bg-primary/80",
-        secondary:
-          "border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80",
+        default: 'border-border bg-secondary text-foreground',
+        outline: 'border-border bg-transparent text-muted-foreground',
+        secondary: 'border-border bg-secondary text-foreground',
+
+        success:
+          'border-[color:var(--signal)]/40 bg-[color:var(--signal)]/10 text-[color:var(--signal)]',
+        warning: 'border-[color:var(--warn)]/40 bg-[color:var(--warn)]/10 text-[color:var(--warn)]',
+        error: 'border-[color:var(--fail)]/40 bg-[color:var(--fail)]/10 text-[color:var(--fail)]',
         destructive:
-          "border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/80",
-        outline: "text-foreground",
-        glass: "border-white/10 bg-white/5 text-white/90 backdrop-blur-sm",
-        success: "border-transparent bg-emerald-500/15 text-emerald-500 hover:bg-emerald-500/25",
-        warning: "border-transparent bg-amber-500/15 text-amber-500 hover:bg-amber-500/25",
-        error: "border-transparent bg-rose-500/15 text-rose-500 hover:bg-rose-500/25",
+          'border-[color:var(--fail)]/40 bg-[color:var(--fail)]/10 text-[color:var(--fail)]',
+        info: 'border-[color:var(--info)]/40 bg-[color:var(--info)]/10 text-[color:var(--info)]',
+
+        // Legacy variant kept for compatibility with existing call sites;
+        // re-skinned to match the operator console aesthetic.
+        glass: 'border-border bg-secondary text-muted-foreground',
+      },
+      shape: {
+        chip: 'font-mono uppercase tracking-wider',
+        pill: 'rounded-full',
+        square: '',
       },
     },
     defaultVariants: {
-      variant: "default",
+      variant: 'default',
+      shape: 'square',
     },
   }
-)
+);
 
 export interface BadgeProps
-  extends React.HTMLAttributes<HTMLDivElement>,
-    VariantProps<typeof badgeVariants> {}
+  extends React.HTMLAttributes<HTMLDivElement>, VariantProps<typeof badgeVariants> {}
 
-function Badge({ className, variant, ...props }: BadgeProps) {
-  return (
-    <div className={cn(badgeVariants({ variant }), className)} {...props} />
-  )
+function Badge({ className, variant, shape, ...props }: BadgeProps) {
+  return <div className={cn(badgeVariants({ variant, shape }), className)} {...props} />;
 }
 
-export { Badge, badgeVariants }
+/*
+  Helper: render a run/build status as a bracketed mono chip.
+  Maps status string → variant + label, so call sites stop branching.
+*/
+// Wide string keeps it open to future statuses without a type bump.
+// The literals exist as documentation for which values get a coloured
+// variant in STATUS_VARIANT below; anything else falls through to outline.
+type StatusKind = string;
+
+const STATUS_VARIANT: Record<string, 'success' | 'warning' | 'error' | 'info' | 'outline'> = {
+  SUCCEEDED: 'success',
+  RUNNING: 'info',
+  BUILDING: 'info',
+  PENDING: 'outline',
+  READY: 'outline',
+  FAILED: 'error',
+  'TIMED-OUT': 'error',
+  ABORTING: 'warning',
+  ABORTED: 'warning',
+};
+
+export function StatusChip({ status, className }: { status: StatusKind; className?: string }) {
+  const variant = STATUS_VARIANT[status] ?? 'outline';
+  const showLive = status === 'RUNNING' || status === 'BUILDING';
+  return (
+    <Badge variant={variant} shape="chip" className={cn('px-2', className)}>
+      {showLive && <span className="live-dot mr-0.5" aria-hidden />}
+      <span>[{status}]</span>
+    </Badge>
+  );
+}
+
+export { Badge, badgeVariants };

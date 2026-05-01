@@ -6,472 +6,1275 @@ import {
   ArrowLeft,
   Play,
   Trash2,
-  Clock,
-  Activity,
   Loader2,
   Database,
-  Terminal,
-  Settings,
-  Code,
-  ChevronDown,
-  ChevronUp,
+  Hammer,
+  Webhook as WebhookIcon,
+  Settings as SettingsIcon,
+  GitCommit,
+  GitBranch,
+  History,
+  Save,
+  Plus,
+  X,
+  CircleDot,
 } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
 import { prefixPath } from '@/lib/path-prefix';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Label } from '@/components/ui/label';
+import { StatusChip } from '@/components/ui/badge';
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import type { Actor, Run } from '@/lib/api';
-import { getActor, getActorRuns, deleteActor, startRun } from '@/lib/api';
+  abortBuild,
+  createWebhook,
+  deleteActor,
+  deleteWebhook,
+  getActor,
+  getActorRuns,
+  getBuilds,
+  getWebhooks,
+  startBuild,
+  startRun,
+  updateActor,
+  type Actor,
+  type ActorBuild,
+  type Run,
+  type Webhook,
+} from '@/lib/api';
+import { WEBHOOK_EVENTS } from '@/lib/webhooks';
 import { cn } from '@/lib/utils';
+import { useConfirm } from '@/components/ui/confirm';
+import { useToast } from '@/components/ui/toast';
+
+type Tab = 'overview' | 'config' | 'builds' | 'webhooks' | 'runs';
+
+const TABS: { id: Tab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+  { id: 'overview', label: 'Overview', icon: CircleDot },
+  { id: 'config', label: 'Config', icon: SettingsIcon },
+  { id: 'builds', label: 'Builds', icon: Hammer },
+  { id: 'webhooks', label: 'Webhooks', icon: WebhookIcon },
+  { id: 'runs', label: 'Runs', icon: History },
+];
 
 export default function ActorDetailPage({ params }: { params: Promise<{ name: string }> }) {
   const { name } = use(params);
   const router = useRouter();
+  const confirm = useConfirm();
+  const toast = useToast();
+
   const [actor, setActor] = useState<Actor | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
+  const [builds, setBuilds] = useState<ActorBuild[]>([]);
+  const [webhooks, setWebhooks] = useState<Webhook[]>([]);
   const [loading, setLoading] = useState(true);
-  const [deleting, setDeleting] = useState(false);
-
-  // Run configuration state
-  const [showRunPanel, setShowRunPanel] = useState(false);
-  const [inputJson, setInputJson] = useState('{\n  \n}');
-  const [timeout, setTimeout] = useState(3600);
-  const [memory, setMemory] = useState(1024);
-  const [starting, setStarting] = useState(false);
-  const [jsonError, setJsonError] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>('overview');
 
   useEffect(() => {
+    let alive = true;
     async function load() {
+      setLoading(true);
       try {
-        const actorData = await getActor(name);
-        setActor(actorData);
-        const runsData = await getActorRuns(actorData.id);
-        setRuns(runsData);
-      } catch (err) {
-        console.error('Failed to load actor:', err);
+        const a = await getActor(name);
+        if (!alive) return;
+        setActor(a);
+        // Fan-out the secondary fetches; let any individual one fail without blocking the page.
+        const [r, b, w] = await Promise.all([
+          getActorRuns(a.id).catch(() => []),
+          getBuilds(a.id).catch(() => []),
+          getWebhooks().catch(() => []),
+        ]);
+        if (!alive) return;
+        setRuns(r);
+        setBuilds(b);
+        setWebhooks(w.filter((wh) => !wh.actorId || wh.actorId === a.id));
       } finally {
-        setLoading(false);
+        if (alive) setLoading(false);
       }
     }
     void load();
+    return () => {
+      alive = false;
+    };
   }, [name]);
 
   async function handleDelete() {
     if (!actor) return;
-    if (!confirm(`Delete actor "${actor.name}"? This cannot be undone.`)) return;
-
-    setDeleting(true);
+    const ok = await confirm({
+      tone: 'danger',
+      title: `Delete actor "${actor.name}"?`,
+      description: (
+        <>
+          Removes the actor record, default storage, and all build history. Run logs and datasets
+          are kept.
+          <br />
+          <span className="text-foreground font-mono">This cannot be undone.</span>
+        </>
+      ),
+      confirmLabel: 'delete actor',
+    });
+    if (!ok) return;
     try {
       await deleteActor(actor.id);
+      toast.success(`Actor "${actor.name}" deleted`);
       router.push(prefixPath('/actors'));
     } catch (err) {
-      console.error('Failed to delete actor:', err);
-      setDeleting(false);
-    }
-  }
-
-  async function handleStartRun() {
-    if (!actor) return;
-
-    // Validate JSON
-    let parsedInput;
-    try {
-      parsedInput = inputJson.trim() ? JSON.parse(inputJson) : undefined;
-      setJsonError(null);
-    } catch {
-      setJsonError('Invalid JSON format');
-      return;
-    }
-
-    setStarting(true);
-    try {
-      const run = await startRun(actor.id, {
-        input: parsedInput,
-        timeout,
-        memory,
-      });
-      router.push(prefixPath(`/runs/${run.id}`));
-    } catch (err) {
-      console.error('Failed to start run:', err);
-      setStarting(false);
-    }
-  }
-
-  function formatDuration(startedAt?: string, finishedAt?: string): string {
-    if (!startedAt) return '-';
-    const start = new Date(startedAt).getTime();
-    const end = finishedAt ? new Date(finishedAt).getTime() : Date.now();
-    const seconds = Math.floor((end - start) / 1000);
-    if (seconds < 60) return `${seconds}s`;
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-    return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
-  }
-
-  function formatTimeAgo(date: string): string {
-    const seconds = Math.floor((Date.now() - new Date(date).getTime()) / 1000);
-    if (seconds < 60) return 'just now';
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-    return `${Math.floor(seconds / 86400)}d ago`;
-  }
-
-  function getStatusBadge(status: string) {
-    switch (status) {
-      case 'RUNNING':
-        return (
-          <Badge variant="secondary" className="bg-blue-500/10 text-blue-400 border-blue-500/20">
-            Running
-          </Badge>
-        );
-      case 'SUCCEEDED':
-        return <Badge variant="success">Succeeded</Badge>;
-      case 'FAILED':
-        return <Badge variant="destructive">Failed</Badge>;
-      case 'READY':
-        return <Badge variant="outline">Ready</Badge>;
-      default:
-        return <Badge variant="outline">{status}</Badge>;
+      toast.error('Failed to delete actor', { description: (err as Error).message });
     }
   }
 
   if (loading) {
     return (
-      <div className="flex h-[50vh] items-center justify-center">
-        <Loader2 className="h-10 w-10 animate-spin text-indigo-500" />
+      <div className="grid place-items-center min-h-[60vh]">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
       </div>
     );
   }
 
   if (!actor) {
     return (
-      <div className="flex flex-col items-center justify-center py-24 space-y-4">
-        <div className="h-12 w-12 rounded-full bg-white/5 flex items-center justify-center">
-          <Terminal className="h-6 w-6 text-muted-foreground" />
+      <div className="grid place-items-center min-h-[60vh] text-center">
+        <div>
+          <p className="font-mono text-[11px] tracking-widest text-muted-foreground mb-2">
+            [ ACTOR NOT FOUND ]
+          </p>
+          <AppLink
+            href="/actors"
+            className="text-[13px] text-foreground hover:text-[color:var(--signal)]"
+          >
+            ← back to actors
+          </AppLink>
         </div>
-        <h2 className="text-xl font-semibold">Actor not found</h2>
-        <Button asChild variant="outline">
-          <AppLink href="/actors">Back to Actors</AppLink>
-        </Button>
       </div>
     );
   }
 
-  const lastRun = runs[0];
+  const lastBuild = builds[0];
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500">
-      {/* Header Section */}
-      <div className="flex flex-col md:flex-row md:items-start justify-between gap-6">
-        <div className="flex items-start gap-4">
-          <Button
-            variant="outline"
-            size="icon"
-            asChild
-            className="mt-1 h-9 w-9 bg-white/5 border-white/10 hover:bg-white/10"
-          >
-            <AppLink href="/actors">
-              <ArrowLeft className="h-4 w-4" />
-            </AppLink>
-          </Button>
-          <div className="space-y-1">
-            <div className="flex items-center gap-3">
-              <h1 className="text-3xl font-bold tracking-tight text-white">
-                {actor.title || actor.name}
-              </h1>
-              <Badge
-                variant="glass"
-                className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
-              >
-                Active
-              </Badge>
-            </div>
-            <p className="text-muted-foreground font-mono text-sm flex items-center gap-2">
-              <span className="text-indigo-400">@crawlee/</span>
+    <div className="space-y-6">
+      {/* Page header */}
+      <div className="space-y-4">
+        <AppLink
+          href="/actors"
+          className="inline-flex items-center gap-1.5 font-mono text-[10px] tracking-widest text-muted-foreground hover:text-foreground transition-colors uppercase"
+        >
+          <ArrowLeft className="h-3 w-3" /> actors
+        </AppLink>
+
+        <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4 pb-5 border-b border-border">
+          <div className="space-y-2 min-w-0">
+            <p className="eyebrow">ACTOR · {actor.id.slice(0, 12)}</p>
+            <h1 className="text-[28px] leading-none font-medium tracking-tight truncate">
+              {actor.title || actor.name}
+            </h1>
+            <p className="font-mono text-[12px] text-muted-foreground">
+              <span className="text-[color:var(--signal)]">@crawlee/</span>
               {actor.name}
             </p>
           </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => void handleDelete()}
+              className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border text-muted-foreground hover:border-[color:var(--fail)]/40 hover:text-[color:var(--fail)] rounded-sm transition-colors"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Delete
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab('overview')}
+              className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 rounded-sm"
+            >
+              <Play className="h-3.5 w-3.5" /> Run
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-3">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="text-muted-foreground hover:text-rose-400 hover:bg-rose-500/10"
-            onClick={() => void handleDelete()}
-            disabled={deleting}
-          >
-            {deleting ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Trash2 className="h-4 w-4" />
-            )}
-          </Button>
-          <Button
-            onClick={() => setShowRunPanel(!showRunPanel)}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-500/20 border-0"
-          >
-            <Play className="mr-2 h-4 w-4" />
-            Start Run
-            {showRunPanel ? (
-              <ChevronUp className="ml-2 h-4 w-4" />
-            ) : (
-              <ChevronDown className="ml-2 h-4 w-4" />
-            )}
-          </Button>
+
+        {/* Build summary strip */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-border border border-border rounded-md overflow-hidden">
+          <SummaryTile label="Total runs" value={runs.length} />
+          <SummaryTile
+            label="Last run"
+            value={runs[0] ? <StatusChip status={runs[0].status} /> : '—'}
+          />
+          <SummaryTile
+            label="Last build"
+            value={lastBuild ? <StatusChip status={lastBuild.status} /> : '—'}
+          />
+          <SummaryTile
+            label="Image"
+            value={
+              actor.defaultRunOptions?.image ? (
+                <span className="font-mono text-[11px] text-muted-foreground truncate block">
+                  {actor.defaultRunOptions.image}
+                </span>
+              ) : (
+                '—'
+              )
+            }
+          />
         </div>
       </div>
 
-      {/* Run Configuration Panel */}
-      {showRunPanel && (
-        <Card className="border-indigo-500/30 bg-indigo-950/20 backdrop-blur-xl animate-in slide-in-from-top-2 duration-200">
-          <CardHeader className="pb-4">
-            <CardTitle className="text-lg flex items-center gap-2">
-              <Code className="h-5 w-5 text-indigo-400" />
-              Run Configuration
-            </CardTitle>
-            <CardDescription>Configure input and resources for this run</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            {/* Input JSON Editor */}
-            <div className="space-y-2">
-              <Label className="text-white/80 flex items-center gap-2">
-                Input (JSON)
-                {jsonError && (
-                  <span className="text-rose-400 text-xs font-normal">{jsonError}</span>
-                )}
-              </Label>
-              <textarea
-                value={inputJson}
-                onChange={(e) => {
-                  setInputJson(e.target.value);
-                  setJsonError(null);
-                }}
-                className={cn(
-                  'w-full h-48 px-4 py-3 rounded-lg border bg-black/50 font-mono text-sm text-zinc-300 focus:outline-none focus:ring-2 transition-colors resize-none',
-                  jsonError
-                    ? 'border-rose-500/50 focus:ring-rose-500/50'
-                    : 'border-white/10 focus:ring-indigo-500/50'
-                )}
-                placeholder='{\n  "url": "https://example.com",\n  "maxItems": 100\n}'
-                spellCheck={false}
-              />
-              <p className="text-[11px] text-muted-foreground">
-                Enter JSON input for the actor. Leave empty to run with no input.
-              </p>
-            </div>
+      {/* Tabs */}
+      <nav className="flex border-b border-border">
+        {TABS.map((t) => {
+          const Icon = t.icon;
+          const isActive = tab === t.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setTab(t.id)}
+              className={cn(
+                'flex items-center gap-2 px-4 h-10 text-[12px] font-mono uppercase tracking-wider transition-colors -mb-px border-b',
+                isActive
+                  ? 'text-[color:var(--signal)] border-[color:var(--signal)]'
+                  : 'text-muted-foreground border-transparent hover:text-foreground'
+              )}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              {t.label}
+            </button>
+          );
+        })}
+      </nav>
 
-            {/* Resource Settings */}
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label className="text-white/80">Timeout (seconds)</Label>
-                <select
-                  value={timeout}
-                  onChange={(e) => setTimeout(Number(e.target.value))}
-                  className="w-full h-10 px-3 rounded-md border border-white/10 bg-black/50 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
-                >
-                  <option value={300}>5 minutes</option>
-                  <option value={600}>10 minutes</option>
-                  <option value={1800}>30 minutes</option>
-                  <option value={3600}>1 hour</option>
-                  <option value={7200}>2 hours</option>
-                  <option value={14400}>4 hours</option>
-                </select>
-              </div>
-              <div className="space-y-2">
-                <Label className="text-white/80">Memory (MB)</Label>
-                <select
-                  value={memory}
-                  onChange={(e) => setMemory(Number(e.target.value))}
-                  className="w-full h-10 px-3 rounded-md border border-white/10 bg-black/50 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
-                >
-                  <option value={256}>256 MB</option>
-                  <option value={512}>512 MB</option>
-                  <option value={1024}>1 GB</option>
-                  <option value={2048}>2 GB</option>
-                  <option value={4096}>4 GB</option>
-                </select>
-              </div>
-            </div>
-
-            {/* Start Button */}
-            <div className="flex justify-end gap-3 pt-2">
-              <Button
-                variant="ghost"
-                onClick={() => setShowRunPanel(false)}
-                className="text-muted-foreground hover:text-white"
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={() => void handleStartRun()}
-                disabled={starting}
-                className="bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-500/20"
-              >
-                {starting ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Starting...
-                  </>
-                ) : (
-                  <>
-                    <Play className="mr-2 h-4 w-4" />
-                    Start Run
-                  </>
-                )}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Stats Grid */}
-      <div className="grid gap-4 md:grid-cols-3">
-        <Card className="bg-white/5 border-white/10">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <Activity className="h-4 w-4 text-indigo-400" />
-              Total Runs
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-white">{runs.length}</div>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-white/5 border-white/10">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <Clock className="h-4 w-4 text-purple-400" />
-              Last Run
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-white">
-              {lastRun ? formatTimeAgo(lastRun.createdAt) : 'Never'}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-white/5 border-white/10">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <Settings className="h-4 w-4 text-pink-400" />
-              Build Status
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center gap-2">
-              <div className="text-2xl font-bold text-emerald-400">Valid</div>
-              <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-            </div>
-          </CardContent>
-        </Card>
+      {/* Tab panels */}
+      <div>
+        {tab === 'overview' && (
+          <OverviewPanel
+            actor={actor}
+            onStarted={(run) => router.push(prefixPath(`/runs/${run.id}`))}
+          />
+        )}
+        {tab === 'config' && <ConfigPanel actor={actor} onSaved={(updated) => setActor(updated)} />}
+        {tab === 'builds' && <BuildsPanel actor={actor} builds={builds} setBuilds={setBuilds} />}
+        {tab === 'webhooks' && (
+          <WebhooksPanel actor={actor} webhooks={webhooks} setWebhooks={setWebhooks} />
+        )}
+        {tab === 'runs' && <RunsPanel runs={runs} />}
       </div>
-
-      {/* Description */}
-      {actor.description && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">About</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-muted-foreground leading-relaxed">{actor.description}</p>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Runs Table */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Run History</CardTitle>
-          <CardDescription>Recent execution logs and results</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {runs.length > 0 ? (
-            <div className="rounded-md border border-white/5 overflow-hidden">
-              <Table>
-                <TableHeader className="bg-white/5">
-                  <TableRow className="border-white/5 hover:bg-transparent">
-                    <TableHead className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
-                      Run ID
-                    </TableHead>
-                    <TableHead className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
-                      Status
-                    </TableHead>
-                    <TableHead className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
-                      Duration
-                    </TableHead>
-                    <TableHead className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">
-                      Dataset
-                    </TableHead>
-                    <TableHead className="text-right text-xs uppercase tracking-wider text-muted-foreground font-semibold">
-                      Started
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {runs.slice(0, 10).map((run) => (
-                    <TableRow key={run.id} className="border-white/5 hover:bg-white/5">
-                      <TableCell className="font-mono text-sm">
-                        <AppLink
-                          href={`/runs/${run.id}`}
-                          className="text-indigo-300 hover:text-indigo-400 transition-colors"
-                        >
-                          {run.id.slice(0, 8)}...
-                        </AppLink>
-                      </TableCell>
-                      <TableCell>{getStatusBadge(run.status)}</TableCell>
-                      <TableCell className="text-muted-foreground text-sm font-mono">
-                        {formatDuration(run.startedAt, run.finishedAt)}
-                      </TableCell>
-                      <TableCell>
-                        {run.defaultDatasetId ? (
-                          <AppLink
-                            href={`/datasets/${run.defaultDatasetId}`}
-                            className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-indigo-400 transition-colors"
-                          >
-                            <Database className="h-3.5 w-3.5" />
-                            <span className="font-mono">{run.defaultDatasetId.slice(0, 8)}...</span>
-                          </AppLink>
-                        ) : (
-                          <span className="text-muted-foreground/50">-</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right text-muted-foreground text-sm">
-                        {formatTimeAgo(run.createdAt)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          ) : (
-            <div className="flex flex-col items-center justify-center py-12 text-center">
-              <div className="h-10 w-10 rounded-full bg-white/5 flex items-center justify-center mb-3">
-                <Play className="h-5 w-5 text-muted-foreground opacity-50" />
-              </div>
-              <p className="text-muted-foreground">No runs have been executed yet.</p>
-              <Button
-                size="sm"
-                variant="outline"
-                className="mt-4"
-                onClick={() => setShowRunPanel(true)}
-              >
-                Start First Run
-              </Button>
-            </div>
-          )}
-        </CardContent>
-      </Card>
     </div>
   );
+}
+
+// ===========================================================================
+// SUMMARY TILE
+// ===========================================================================
+
+function SummaryTile({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="bg-card px-5 py-4 min-w-0">
+      <p className="eyebrow mb-2">{label}</p>
+      <div className="text-foreground text-base leading-tight tnum truncate">{value}</div>
+    </div>
+  );
+}
+
+// ===========================================================================
+// OVERVIEW + RUN LAUNCHER
+// ===========================================================================
+
+function OverviewPanel({ actor, onStarted }: { actor: Actor; onStarted: (run: Run) => void }) {
+  const [inputJson, setInputJson] = useState('{\n  \n}');
+  const [timeout, setTimeoutSecs] = useState(actor.defaultRunOptions?.timeoutSecs ?? 3600);
+  const [memory, setMemory] = useState(actor.defaultRunOptions?.memoryMbytes ?? 1024);
+  const [starting, setStarting] = useState(false);
+  const [jsonError, setJsonError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleStart() {
+    let parsed: unknown;
+    try {
+      parsed = inputJson.trim() ? JSON.parse(inputJson) : undefined;
+      setJsonError(null);
+    } catch {
+      setJsonError('input is not valid JSON');
+      return;
+    }
+    setStarting(true);
+    setError(null);
+    try {
+      const run = await startRun(actor.id, { input: parsed, timeout, memory });
+      onStarted(run);
+    } catch (err) {
+      setError((err as Error).message);
+      setStarting(false);
+    }
+  }
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* Run launcher */}
+      <section className="panel p-6 lg:col-span-2 space-y-5">
+        <header className="flex items-center justify-between">
+          <div>
+            <p className="eyebrow">EXEC · LAUNCH</p>
+            <h2 className="text-base mt-1">Start a new run</h2>
+          </div>
+        </header>
+
+        <div className="space-y-2">
+          <Label>input · JSON</Label>
+          <textarea
+            value={inputJson}
+            onChange={(e) => {
+              setInputJson(e.target.value);
+              setJsonError(null);
+            }}
+            spellCheck={false}
+            className={cn(
+              'w-full h-44 px-3 py-2 rounded-sm border bg-[color:var(--background)] font-mono text-[12px] text-foreground resize-none focus:outline-none transition-colors',
+              jsonError
+                ? 'border-[color:var(--fail)]/60'
+                : 'border-border focus:border-[color:var(--signal)]/50'
+            )}
+            placeholder='{ "url": "https://example.com" }'
+          />
+          {jsonError && (
+            <p className="font-mono text-[11px] text-[color:var(--fail)]">[ERR] {jsonError}</p>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Timeout · seconds">
+            <select
+              value={timeout}
+              onChange={(e) => setTimeoutSecs(Number(e.target.value))}
+              className="w-full h-9 px-2 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+            >
+              {[300, 600, 1800, 3600, 7200, 14400].map((n) => (
+                <option key={n} value={n}>
+                  {n}s · {fmtDuration(n)}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Memory · MB">
+            <select
+              value={memory}
+              onChange={(e) => setMemory(Number(e.target.value))}
+              className="w-full h-9 px-2 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+            >
+              {[256, 512, 1024, 2048, 4096, 8192].map((n) => (
+                <option key={n} value={n}>
+                  {n} MB
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+
+        {error && (
+          <p className="font-mono text-[11px] text-[color:var(--fail)] border border-[color:var(--fail)]/30 bg-[color:var(--fail)]/5 p-2 rounded-sm">
+            [ERR] {error}
+          </p>
+        )}
+
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => void handleStart()}
+            disabled={starting}
+            className="h-9 px-4 inline-flex items-center gap-2 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 rounded-sm disabled:opacity-50"
+          >
+            {starting ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Play className="h-3.5 w-3.5" />
+            )}
+            Execute
+          </button>
+        </div>
+      </section>
+
+      {/* Description / metadata */}
+      <section className="panel p-6 space-y-4">
+        <p className="eyebrow">META</p>
+        <DefRow label="ID" mono>
+          {actor.id}
+        </DefRow>
+        <DefRow label="Created">{new Date(actor.createdAt).toLocaleString()}</DefRow>
+        <DefRow label="Modified">{new Date(actor.modifiedAt).toLocaleString()}</DefRow>
+        {actor.description && (
+          <div>
+            <p className="eyebrow mb-2">ABOUT</p>
+            <p className="text-[13px] text-foreground leading-relaxed">{actor.description}</p>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// ===========================================================================
+// CONFIG
+// ===========================================================================
+
+function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => void }) {
+  const toast = useToast();
+  const [title, setTitle] = useState(actor.title ?? '');
+  const [description, setDescription] = useState(actor.description ?? '');
+  const [image, setImage] = useState(actor.defaultRunOptions?.image ?? '');
+  const [build, setBuild] = useState(actor.defaultRunOptions?.build ?? '');
+  const [timeoutSecs, setTimeoutSecs] = useState<number | ''>(
+    actor.defaultRunOptions?.timeoutSecs ?? ''
+  );
+  const [memoryMbytes, setMemoryMbytes] = useState<number | ''>(
+    actor.defaultRunOptions?.memoryMbytes ?? ''
+  );
+  const [maxRetries, setMaxRetries] = useState<number | ''>(actor.maxRetries ?? '');
+  const [retryDelaySecs, setRetryDelaySecs] = useState<number | ''>(actor.retryDelaySecs ?? '');
+  const [envVars, setEnvVars] = useState<{ key: string; value: string }[]>(
+    Object.entries(actor.defaultRunOptions?.envVars ?? {}).map(([key, value]) => ({ key, value }))
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  async function handleSave() {
+    setSaving(true);
+    setError(null);
+    try {
+      const env: Record<string, string> = {};
+      for (const { key, value } of envVars) {
+        if (key.trim()) env[key.trim()] = value;
+      }
+      const updated = await updateActor(actor.id, {
+        title: title || undefined,
+        description: description || undefined,
+        defaultRunOptions: {
+          image: image || undefined,
+          build: build || undefined,
+          timeoutSecs: timeoutSecs === '' ? undefined : Number(timeoutSecs),
+          memoryMbytes: memoryMbytes === '' ? undefined : Number(memoryMbytes),
+          envVars: Object.keys(env).length ? env : undefined,
+        },
+        maxRetries: maxRetries === '' ? undefined : Number(maxRetries),
+        retryDelaySecs: retryDelaySecs === '' ? undefined : Number(retryDelaySecs),
+      });
+      onSaved(updated);
+      setSavedAt(Date.now());
+      toast.success('Config saved');
+    } catch (err) {
+      const msg = (err as Error).message;
+      setError(msg);
+      toast.error('Failed to save config', { description: msg });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <section className="panel p-6 lg:col-span-2 space-y-6">
+        <header>
+          <p className="eyebrow">CONFIG · METADATA</p>
+          <h2 className="text-base mt-1">Identity & description</h2>
+        </header>
+
+        <Field label="Title">
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Human-readable title"
+            className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] text-[13px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+          />
+        </Field>
+
+        <Field label="Description">
+          <textarea
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={3}
+            className="w-full px-3 py-2 rounded-sm border border-border bg-[color:var(--background)] text-[13px] text-foreground resize-y focus:outline-none focus:border-[color:var(--signal)]/50"
+          />
+        </Field>
+
+        <header className="pt-4 border-t border-border">
+          <p className="eyebrow">CONFIG · DEFAULT RUN OPTIONS</p>
+          <h2 className="text-base mt-1">Container defaults</h2>
+        </header>
+
+        <Field label="Image" hint="Full image reference. Set by `crc push` — usually leave blank.">
+          <input
+            value={image}
+            onChange={(e) => setImage(e.target.value)}
+            placeholder="ghcr.io/org/repo/actor-foo:latest"
+            className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+          />
+        </Field>
+
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Build tag">
+            <input
+              value={build}
+              onChange={(e) => setBuild(e.target.value)}
+              placeholder="latest"
+              className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+            />
+          </Field>
+          <Field label="Default timeout · seconds">
+            <input
+              type="number"
+              value={timeoutSecs}
+              onChange={(e) => setTimeoutSecs(e.target.value === '' ? '' : Number(e.target.value))}
+              placeholder="3600"
+              className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+            />
+          </Field>
+          <Field label="Default memory · MB">
+            <input
+              type="number"
+              value={memoryMbytes}
+              onChange={(e) => setMemoryMbytes(e.target.value === '' ? '' : Number(e.target.value))}
+              placeholder="1024"
+              className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+            />
+          </Field>
+          <Field label="Max retries">
+            <input
+              type="number"
+              value={maxRetries}
+              onChange={(e) => setMaxRetries(e.target.value === '' ? '' : Number(e.target.value))}
+              placeholder="0"
+              className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+            />
+          </Field>
+          <Field label="Retry delay · seconds">
+            <input
+              type="number"
+              value={retryDelaySecs}
+              onChange={(e) =>
+                setRetryDelaySecs(e.target.value === '' ? '' : Number(e.target.value))
+              }
+              placeholder="60"
+              className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+            />
+          </Field>
+        </div>
+
+        {/* Env vars editor */}
+        <div className="space-y-2">
+          <Label>Environment variables</Label>
+          <div className="space-y-1.5">
+            {envVars.map((row, idx) => (
+              <div key={idx} className="flex items-center gap-1.5">
+                <input
+                  value={row.key}
+                  onChange={(e) =>
+                    setEnvVars((prev) =>
+                      prev.map((r, i) => (i === idx ? { ...r, key: e.target.value } : r))
+                    )
+                  }
+                  placeholder="KEY"
+                  className="w-44 h-8 px-2 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[11px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+                />
+                <span className="text-muted-foreground font-mono text-[11px]">=</span>
+                <input
+                  value={row.value}
+                  onChange={(e) =>
+                    setEnvVars((prev) =>
+                      prev.map((r, i) => (i === idx ? { ...r, value: e.target.value } : r))
+                    )
+                  }
+                  placeholder="value"
+                  className="flex-1 h-8 px-2 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[11px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+                />
+                <button
+                  type="button"
+                  onClick={() => setEnvVars((prev) => prev.filter((_, i) => i !== idx))}
+                  className="h-8 w-8 grid place-items-center text-muted-foreground hover:text-[color:var(--fail)] border border-border rounded-sm"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() => setEnvVars((prev) => [...prev, { key: '', value: '' }])}
+              className="h-8 px-3 inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider border border-dashed border-border text-muted-foreground hover:border-[color:var(--signal)]/50 hover:text-[color:var(--signal)] rounded-sm"
+            >
+              <Plus className="h-3 w-3" /> add var
+            </button>
+          </div>
+        </div>
+
+        {error && (
+          <p className="font-mono text-[11px] text-[color:var(--fail)] border border-[color:var(--fail)]/30 bg-[color:var(--fail)]/5 p-2 rounded-sm">
+            [ERR] {error}
+          </p>
+        )}
+
+        <div className="flex items-center justify-end gap-3 pt-2 border-t border-border">
+          {savedAt && (
+            <span className="font-mono text-[10px] text-[color:var(--signal)] tracking-widest">
+              [SAVED · {new Date(savedAt).toISOString().split('T')[1].slice(0, 8)}]
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => void handleSave()}
+            disabled={saving}
+            className="h-9 px-4 inline-flex items-center gap-2 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 rounded-sm disabled:opacity-50"
+          >
+            {saving ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Save className="h-3.5 w-3.5" />
+            )}
+            Save
+          </button>
+        </div>
+      </section>
+
+      {/* Side panel — operator notes */}
+      <aside className="panel p-6 space-y-4">
+        <p className="eyebrow">NOTES</p>
+        <p className="text-[12px] text-muted-foreground leading-relaxed">
+          Defaults here apply to every run unless overridden at run time (
+          <code className="font-mono text-foreground">crc run -e KEY=val</code>).
+        </p>
+        <p className="text-[12px] text-muted-foreground leading-relaxed">
+          Env precedence:{' '}
+          <span className="font-mono text-foreground">base &lt; actor &lt; runtime</span>.
+        </p>
+        <p className="text-[12px] text-muted-foreground leading-relaxed">
+          Image is set automatically by <code className="font-mono text-foreground">crc push</code>;
+          only override if you&apos;re pulling from an external registry.
+        </p>
+      </aside>
+    </div>
+  );
+}
+
+// ===========================================================================
+// BUILDS
+// ===========================================================================
+
+function BuildsPanel({
+  actor,
+  builds,
+  setBuilds,
+}: {
+  actor: Actor;
+  builds: ActorBuild[];
+  setBuilds: React.Dispatch<React.SetStateAction<ActorBuild[]>>;
+}) {
+  const confirm = useConfirm();
+  const toast = useToast();
+  const [showForm, setShowForm] = useState(false);
+  const [versionNumber, setVersionNumber] = useState('0.0.1');
+  const [sourceUrl, setSourceUrl] = useState('');
+  const [buildTag, setBuildTag] = useState('latest');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleStartBuild() {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const build = await startBuild(actor.id, {
+        versionNumber,
+        sourceType: sourceUrl ? 'GIT' : 'TARBALL',
+        sourceUrl: sourceUrl || undefined,
+        buildTag,
+      });
+      setBuilds((prev) => [build, ...prev]);
+      setShowForm(false);
+      toast.success('Build queued', { description: `${versionNumber} · ${buildTag}` });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleAbort(buildId: string) {
+    const ok = await confirm({
+      tone: 'warn',
+      title: 'Abort this build?',
+      description: 'The build worker will stop after the current step. Image will not be pushed.',
+      confirmLabel: 'abort build',
+    });
+    if (!ok) return;
+    try {
+      const updated = await abortBuild(actor.id, buildId);
+      setBuilds((prev) => prev.map((b) => (b.id === buildId ? updated : b)));
+      toast.success('Build aborted');
+    } catch (err) {
+      toast.error('Failed to abort build', { description: (err as Error).message });
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <section className="panel">
+        <header className="px-5 py-4 border-b border-border flex items-center justify-between">
+          <div>
+            <p className="eyebrow">BUILD · HISTORY</p>
+            <h2 className="text-base mt-1">Image builds</h2>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowForm((v) => !v)}
+            className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-[color:var(--signal)]/50 hover:text-[color:var(--signal)] rounded-sm"
+          >
+            <Plus className="h-3.5 w-3.5" /> new build
+          </button>
+        </header>
+
+        {showForm && (
+          <div className="border-b border-border bg-secondary/30 px-5 py-4 space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <Field label="Version">
+                <input
+                  value={versionNumber}
+                  onChange={(e) => setVersionNumber(e.target.value)}
+                  className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+                />
+              </Field>
+              <Field label="Build tag">
+                <input
+                  value={buildTag}
+                  onChange={(e) => setBuildTag(e.target.value)}
+                  className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+                />
+              </Field>
+              <Field label="Git source URL · optional">
+                <input
+                  value={sourceUrl}
+                  onChange={(e) => setSourceUrl(e.target.value)}
+                  placeholder="https://github.com/org/repo.git"
+                  className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[11px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+                />
+              </Field>
+            </div>
+            {error && (
+              <p className="font-mono text-[11px] text-[color:var(--fail)]">[ERR] {error}</p>
+            )}
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowForm(false)}
+                className="h-8 px-3 text-[12px] font-mono uppercase tracking-wider text-muted-foreground hover:text-foreground"
+              >
+                cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleStartBuild()}
+                disabled={submitting}
+                className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] rounded-sm disabled:opacity-50"
+              >
+                {submitting ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Hammer className="h-3.5 w-3.5" />
+                )}
+                queue build
+              </button>
+            </div>
+          </div>
+        )}
+
+        {builds.length === 0 ? (
+          <div className="grid-bg p-12 text-center">
+            <p className="font-mono text-[11px] tracking-wider text-muted-foreground">
+              [ NO BUILDS YET ]
+            </p>
+            <p className="text-sm text-muted-foreground mt-2">
+              Push an image with <code className="font-mono text-foreground">crc push</code>, or
+              queue one above.
+            </p>
+          </div>
+        ) : (
+          <table className="w-full text-[13px]">
+            <thead>
+              <tr className="text-left font-mono text-[10px] tracking-widest text-muted-foreground uppercase border-b border-border">
+                <th className="px-5 py-2 font-normal">Build</th>
+                <th className="px-5 py-2 font-normal">Status</th>
+                <th className="px-5 py-2 font-normal">Source</th>
+                <th className="px-5 py-2 font-normal">Image</th>
+                <th className="px-5 py-2 font-normal text-right">When</th>
+                <th className="px-5 py-2" />
+              </tr>
+            </thead>
+            <tbody>
+              {builds.map((b) => (
+                <tr
+                  key={b.id}
+                  className="border-b border-border/60 last:border-0 hover:bg-secondary/40 align-top"
+                >
+                  <td className="px-5 py-3">
+                    <p className="font-mono text-foreground">{b.id.slice(0, 12)}</p>
+                    <p className="font-mono text-[10px] text-muted-foreground tracking-wider mt-1">
+                      {b.logCount.toLocaleString()} log lines
+                    </p>
+                  </td>
+                  <td className="px-5 py-3">
+                    <StatusChip status={b.status} />
+                  </td>
+                  <td className="px-5 py-3 font-mono text-[11px]">
+                    {/*
+                      Version + tag: the source-version "0.1" plus the tag
+                      currently pointing at this build (typically "latest").
+                      Only the actor's most-recent build holds the tag —
+                      siblings show no chip — so the chip column also acts
+                      as a "current pointer" indicator.
+                    */}
+                    {b.versionNumber && (
+                      <p className="text-foreground flex items-center gap-1.5">
+                        <span>{b.versionNumber}</span>
+                        {b.buildTag && (
+                          <span className="text-[9px] uppercase tracking-wider px-1 py-0.5 border border-border rounded-sm text-muted-foreground">
+                            {b.buildTag}
+                          </span>
+                        )}
+                      </p>
+                    )}
+                    {b.gitBranch && (
+                      <p className="text-muted-foreground flex items-center gap-1.5 mt-0.5">
+                        <GitBranch className="h-3 w-3" />
+                        {b.gitBranch}
+                      </p>
+                    )}
+                    {b.gitCommit && (
+                      <p className="text-muted-foreground flex items-center gap-1.5 mt-0.5">
+                        <GitCommit className="h-3 w-3" />
+                        {b.gitCommit.slice(0, 9)}
+                      </p>
+                    )}
+                    {!b.versionNumber && !b.gitBranch && !b.gitCommit && (
+                      <span className="text-muted-foreground/40">—</span>
+                    )}
+                  </td>
+                  <td className="px-5 py-3 font-mono text-[11px] text-muted-foreground max-w-[260px]">
+                    {b.imageName ? (
+                      <>
+                        <p className="text-foreground truncate" title={b.imageName}>
+                          {b.imageName}
+                        </p>
+                        {b.imageDigest && (
+                          <p className="truncate" title={b.imageDigest}>
+                            {b.imageDigest.slice(0, 18)}…
+                          </p>
+                        )}
+                        {b.imageSizeBytes && <p className="mt-0.5">{fmtBytes(b.imageSizeBytes)}</p>}
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground/40">—</span>
+                    )}
+                  </td>
+                  <td className="px-5 py-3 font-mono text-[11px] text-muted-foreground tnum text-right">
+                    {timeAgo(b.createdAt)}
+                  </td>
+                  <td className="px-5 py-3 text-right">
+                    {(b.status === 'BUILDING' || b.status === 'PENDING') && (
+                      <button
+                        type="button"
+                        onClick={() => void handleAbort(b.id)}
+                        className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground hover:text-[color:var(--fail)]"
+                      >
+                        abort
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// ===========================================================================
+// WEBHOOKS (scoped to this actor)
+// ===========================================================================
+
+function WebhooksPanel({
+  actor,
+  webhooks,
+  setWebhooks,
+}: {
+  actor: Actor;
+  webhooks: Webhook[];
+  setWebhooks: React.Dispatch<React.SetStateAction<Webhook[]>>;
+}) {
+  const confirm = useConfirm();
+  const toast = useToast();
+  const [showForm, setShowForm] = useState(false);
+  const [requestUrl, setRequestUrl] = useState('https://');
+  const [description, setDescription] = useState('');
+  const [selected, setSelected] = useState<Set<string>>(
+    new Set(['ACTOR.RUN.SUCCEEDED', 'ACTOR.RUN.FAILED'])
+  );
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function toggle(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function handleCreate() {
+    if (selected.size === 0) {
+      setError('select at least one event');
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const created = await createWebhook({
+        eventTypes: Array.from(selected),
+        requestUrl,
+        description: description || undefined,
+        actorId: actor.id,
+      });
+      setWebhooks((prev) => [created, ...prev]);
+      setShowForm(false);
+      setRequestUrl('https://');
+      setDescription('');
+      toast.success('Webhook created', { description: created.requestUrl });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleDelete(id: string) {
+    const ok = await confirm({
+      tone: 'danger',
+      title: 'Delete webhook?',
+      description: 'Future events matching this subscription will no longer be delivered.',
+      confirmLabel: 'delete webhook',
+    });
+    if (!ok) return;
+    try {
+      await deleteWebhook(id);
+      setWebhooks((prev) => prev.filter((w) => w.id !== id));
+      toast.success('Webhook deleted');
+    } catch (err) {
+      toast.error('Failed to delete webhook', { description: (err as Error).message });
+    }
+  }
+
+  return (
+    <section className="panel">
+      <header className="px-5 py-4 border-b border-border flex items-center justify-between">
+        <div>
+          <p className="eyebrow">INTEGRATE · DELIVERY</p>
+          <h2 className="text-base mt-1">
+            Webhooks <span className="text-muted-foreground">· scoped to this actor</span>
+          </h2>
+        </div>
+        <button
+          type="button"
+          onClick={() => setShowForm((v) => !v)}
+          className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-[color:var(--signal)]/50 hover:text-[color:var(--signal)] rounded-sm"
+        >
+          <Plus className="h-3.5 w-3.5" /> new webhook
+        </button>
+      </header>
+
+      {showForm && (
+        <div className="border-b border-border bg-secondary/30 px-5 py-5 space-y-4">
+          <Field label="Request URL">
+            <input
+              value={requestUrl}
+              onChange={(e) => setRequestUrl(e.target.value)}
+              placeholder="https://hooks.example.com/run"
+              className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+            />
+          </Field>
+
+          <Field label="Description · optional">
+            <input
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Posts to #scrapers in Slack"
+              className="w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+            />
+          </Field>
+
+          <div className="space-y-2">
+            <Label>Events</Label>
+            <div className="space-y-3">
+              {WEBHOOK_EVENTS.map((g) => (
+                <div key={g.id}>
+                  <p className="font-mono text-[10px] tracking-widest text-muted-foreground uppercase mb-2">
+                    {g.label}
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
+                    {g.events.map((e) => {
+                      const isOn = selected.has(e.id);
+                      return (
+                        <button
+                          key={e.id}
+                          type="button"
+                          onClick={() => toggle(e.id)}
+                          className={cn(
+                            'text-left px-3 py-2 border rounded-sm transition-colors',
+                            isOn
+                              ? 'border-[color:var(--signal)]/50 bg-[color:var(--signal)]/5'
+                              : 'border-border hover:border-border/80 bg-[color:var(--background)]'
+                          )}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-mono text-[11px] text-foreground">{e.id}</span>
+                            <span
+                              className={cn(
+                                'font-mono text-[10px]',
+                                isOn ? 'text-[color:var(--signal)]' : 'text-muted-foreground/50'
+                              )}
+                            >
+                              {isOn ? '[ON]' : '[ ]'}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-muted-foreground mt-1">{e.blurb}</p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {error && <p className="font-mono text-[11px] text-[color:var(--fail)]">[ERR] {error}</p>}
+
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setShowForm(false)}
+              className="h-8 px-3 text-[12px] font-mono uppercase tracking-wider text-muted-foreground hover:text-foreground"
+            >
+              cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleCreate()}
+              disabled={submitting}
+              className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] rounded-sm disabled:opacity-50"
+            >
+              {submitting ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Save className="h-3.5 w-3.5" />
+              )}
+              create
+            </button>
+          </div>
+        </div>
+      )}
+
+      {webhooks.length === 0 ? (
+        <div className="grid-bg p-12 text-center">
+          <p className="font-mono text-[11px] tracking-wider text-muted-foreground">
+            [ NO WEBHOOKS ]
+          </p>
+        </div>
+      ) : (
+        <ul className="divide-y divide-border">
+          {webhooks.map((w) => (
+            <li key={w.id} className="px-5 py-4 hover:bg-secondary/30 group">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={cn(
+                        'font-mono text-[10px] tracking-widest px-1.5 py-0.5 rounded-sm border',
+                        w.isEnabled
+                          ? 'text-[color:var(--signal)] border-[color:var(--signal)]/40'
+                          : 'text-muted-foreground border-border'
+                      )}
+                    >
+                      {w.isEnabled ? '[LIVE]' : '[OFF]'}
+                    </span>
+                    <p className="font-mono text-[12px] text-foreground truncate">{w.requestUrl}</p>
+                  </div>
+                  {w.description && (
+                    <p className="text-[12px] text-muted-foreground mt-1">{w.description}</p>
+                  )}
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {w.eventTypes.map((e) => (
+                      <span
+                        key={e}
+                        className="font-mono text-[10px] text-muted-foreground border border-border px-1.5 py-0.5 rounded-sm"
+                      >
+                        {e}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void handleDelete(w.id)}
+                  className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-[color:var(--fail)]"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+// ===========================================================================
+// RUNS
+// ===========================================================================
+
+function RunsPanel({ runs }: { runs: Run[] }) {
+  if (runs.length === 0) {
+    return (
+      <div className="panel grid-bg p-12 text-center">
+        <p className="font-mono text-[11px] tracking-wider text-muted-foreground">
+          [ NO RUNS YET ]
+        </p>
+      </div>
+    );
+  }
+  return (
+    <section className="panel">
+      <table className="w-full text-[13px]">
+        <thead>
+          <tr className="text-left font-mono text-[10px] tracking-widest text-muted-foreground uppercase border-b border-border">
+            <th className="px-5 py-2 font-normal">Run</th>
+            <th className="px-5 py-2 font-normal">Status</th>
+            <th className="px-5 py-2 font-normal">Duration</th>
+            <th className="px-5 py-2 font-normal">Dataset</th>
+            <th className="px-5 py-2 font-normal text-right">Started</th>
+          </tr>
+        </thead>
+        <tbody>
+          {runs.slice(0, 50).map((r) => (
+            <tr
+              key={r.id}
+              className="border-b border-border/60 last:border-0 hover:bg-secondary/40"
+            >
+              <td className="px-5 py-3 font-mono">
+                <AppLink
+                  href={`/runs/${r.id}`}
+                  className="text-foreground hover:text-[color:var(--signal)]"
+                >
+                  {r.id.slice(0, 12)}
+                </AppLink>
+              </td>
+              <td className="px-5 py-3">
+                <StatusChip status={r.status} />
+              </td>
+              <td className="px-5 py-3 font-mono text-[11px] text-muted-foreground tnum">
+                {fmtRunDuration(r.startedAt, r.finishedAt)}
+              </td>
+              <td className="px-5 py-3">
+                {r.defaultDatasetId ? (
+                  <AppLink
+                    href={`/datasets/${r.defaultDatasetId}`}
+                    className="font-mono text-[11px] text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+                  >
+                    <Database className="h-3 w-3" />
+                    {r.defaultDatasetId.slice(0, 10)}
+                  </AppLink>
+                ) : (
+                  <span className="text-muted-foreground/40">—</span>
+                )}
+              </td>
+              <td className="px-5 py-3 font-mono text-[11px] text-muted-foreground tnum text-right">
+                {timeAgo(r.createdAt)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+// ===========================================================================
+// SHARED PRIMITIVES
+// ===========================================================================
+
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label>{label}</Label>
+      {children}
+      {hint && <p className="text-[11px] text-muted-foreground">{hint}</p>}
+    </div>
+  );
+}
+
+function Label({ children }: { children: React.ReactNode }) {
+  return (
+    <label className="block font-mono text-[10px] tracking-widest text-muted-foreground uppercase">
+      {children}
+    </label>
+  );
+}
+
+function DefRow({
+  label,
+  children,
+  mono,
+}: {
+  label: string;
+  children: React.ReactNode;
+  mono?: boolean;
+}) {
+  return (
+    <div>
+      <p className="eyebrow mb-1">{label}</p>
+      <p className={cn('text-[12px] text-foreground', mono && 'font-mono')}>{children}</p>
+    </div>
+  );
+}
+
+// ===========================================================================
+// FORMATTERS
+// ===========================================================================
+
+function fmtRunDuration(startedAt?: string, finishedAt?: string): string {
+  if (!startedAt) return '—';
+  const start = new Date(startedAt).getTime();
+  const end = finishedAt ? new Date(finishedAt).getTime() : Date.now();
+  return fmtDuration(Math.floor((end - start) / 1000));
+}
+
+function fmtDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+function fmtBytes(b: number): string {
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  if (b < 1024 * 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MB`;
+  return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function timeAgo(iso: string): string {
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
 }

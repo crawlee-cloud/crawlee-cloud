@@ -1,39 +1,98 @@
 'use client';
 
-import { Bell, Search } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { useEffect, useState } from 'react';
+import dynamic from 'next/dynamic';
+import { usePathname } from 'next/navigation';
+import { Search } from 'lucide-react';
+import { ROUTE_PREFIX } from '@/lib/path-prefix';
+import { MobileNavButton } from '@/components/mobile-nav';
+
+/*
+  Theme toggle reads localStorage to render the correct icon, which the server
+  can't know about. Loading client-only avoids hydration mismatch on every page.
+  Placeholder reserves the same 28px slot to prevent layout shift.
+*/
+const ThemeToggle = dynamic(() => import('@/components/theme-toggle').then((m) => m.ThemeToggle), {
+  ssr: false,
+  loading: () => <div className="h-7 w-[58px] border border-border rounded-sm" />,
+});
+
+/*
+  Operator-style header. A flat 40px strip:
+    [breadcrumb path] · [search]                      [system clock]
+  No avatar, no notification bell, no glass blur. Reads like a console title bar.
+*/
+
+function useClock() {
+  const [time, setTime] = useState<string>('');
+  useEffect(() => {
+    const tick = () => {
+      const d = new Date();
+      const hh = String(d.getUTCHours()).padStart(2, '0');
+      const mm = String(d.getUTCMinutes()).padStart(2, '0');
+      const ss = String(d.getUTCSeconds()).padStart(2, '0');
+      setTime(`${hh}:${mm}:${ss}Z`);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, []);
+  return time;
+}
+
+function useBreadcrumb() {
+  const raw = usePathname();
+  const path =
+    ROUTE_PREFIX && raw.startsWith(ROUTE_PREFIX) ? raw.slice(ROUTE_PREFIX.length) || '/' : raw;
+  if (path === '/') return ['console'];
+  return path.split('/').filter(Boolean);
+}
 
 export function Header() {
-  return (
-    <header className="h-16 px-6 flex items-center justify-between gap-4 sticky top-0 z-10">
-      {/* Glass background separate from content to allow masking/complex effects if needed, or just standard bg */}
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-xl border-b border-white/5 pointer-events-none" />
+  const time = useClock();
+  const crumbs = useBreadcrumb();
 
-      <div className="flex items-center gap-4 flex-1 relative z-20">
-        <div className="relative max-w-md w-full md:w-80 group">
-          <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground group-focus-within:text-indigo-400 transition-colors" />
-          <input
-            type="search"
-            placeholder="Search resources..."
-            className="w-full h-10 rounded-lg border border-white/5 bg-white/5 pl-10 pr-12 py-1 text-sm text-white shadow-sm transition-all placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-indigo-500/50 focus-visible:bg-white/10"
-          />
-          <div className="absolute right-3 top-2.5 flex items-center gap-1 pointer-events-none">
-            <span className="text-[10px] text-muted-foreground bg-white/5 px-1.5 py-0.5 rounded border border-white/5">
-              ⌘ K
+  return (
+    <header className="h-10 shrink-0 px-3 sm:px-4 flex items-center justify-between gap-2 sm:gap-4 border-b border-border bg-[color:var(--surface-2)] sticky top-0 z-10">
+      {/* Mobile nav trigger — hidden on lg+ where the sidebar is visible */}
+      <MobileNavButton />
+
+      {/* Breadcrumb path */}
+      <div className="flex items-center gap-2 font-mono text-[11px] tracking-wide min-w-0 flex-1 lg:flex-initial">
+        <span className="text-muted-foreground">~/</span>
+        {crumbs.map((c, i) => (
+          <span key={`${c}-${i}`} className="flex items-center gap-2 truncate">
+            <span className={i === crumbs.length - 1 ? 'text-foreground' : 'text-muted-foreground'}>
+              {c.length > 24 ? c.slice(0, 8) + '…' + c.slice(-4) : c}
             </span>
-          </div>
-        </div>
+            {i < crumbs.length - 1 && <span className="text-muted-foreground/50">/</span>}
+          </span>
+        ))}
       </div>
 
-      <div className="flex items-center gap-3 relative z-20">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="text-muted-foreground hover:text-white hover:bg-white/5 relative"
-        >
-          <Bell className="h-5 w-5" />
-          <span className="absolute top-2 right-2 w-2 h-2 bg-indigo-500 rounded-full border-2 border-black" />
-        </Button>
+      <div className="flex items-center gap-3">
+        {/* Search — placeholder, kept lean */}
+        <div className="relative hidden md:block">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+          <input
+            type="search"
+            placeholder="search"
+            className="h-7 w-56 pl-7 pr-12 rounded-sm border border-border bg-secondary/40 text-[12px] font-mono text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:border-[color:var(--signal)]/40"
+          />
+          <span className="absolute right-2 top-1/2 -translate-y-1/2 font-mono text-[9px] text-muted-foreground tracking-widest">
+            ⌘K
+          </span>
+        </div>
+
+        {/* Theme cycle */}
+        <ThemeToggle />
+
+        {/* System clock + status */}
+        <div className="flex items-center gap-2 font-mono text-[10px] tracking-wider text-muted-foreground">
+          <span className="live-dot" aria-hidden />
+          <span className="hidden sm:inline">SYS·OK</span>
+          <span className="text-foreground tnum">{time}</span>
+        </div>
       </div>
     </header>
   );

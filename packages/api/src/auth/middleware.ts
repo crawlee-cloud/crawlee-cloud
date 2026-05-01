@@ -23,7 +23,17 @@ declare module 'fastify' {
  * Validates JWT tokens or API keys.
  */
 export async function authenticate(request: FastifyRequest, reply: FastifyReply): Promise<void> {
-  const token = extractToken(request.headers.authorization);
+  // Token from Authorization header is the primary path. As a fallback we
+  // also accept ?token= in the query string so the dashboard can open
+  // download endpoints (raw logs, dataset JSON, presigned record URLs)
+  // directly in a new tab — browsers can't add custom headers to a plain
+  // <a target="_blank"> click. Tokens in URLs are slightly riskier (server
+  // logs, referrer headers), bounded here by the existing JWT TTL.
+  // TODO: replace with short-lived single-use download tokens once we have a
+  // real shared-operator deployment.
+  const headerToken = extractToken(request.headers.authorization);
+  const queryToken = (request.query as { token?: string } | undefined)?.token;
+  const token = headerToken ?? (typeof queryToken === 'string' ? queryToken : null);
 
   if (!token) {
     reply.status(401).send({ error: { message: 'Authentication required' } });

@@ -6,28 +6,30 @@ const publicRoutes = ['/login', '/register'];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  
+
   // Allow public routes
-  if (publicRoutes.some(route => pathname.startsWith(route))) {
+  if (publicRoutes.some((route) => pathname.startsWith(route))) {
     return NextResponse.next();
   }
-  
+
   // Check for auth token in cookies
   const token = request.cookies.get('token')?.value;
-  
+
   // If no token, redirect to login
   if (!token) {
     const loginUrl = new URL('/login', request.url);
     loginUrl.searchParams.set('redirect', pathname);
     return NextResponse.redirect(loginUrl);
   }
-  
+
   return NextResponse.next();
 }
 
 export const config = {
-  // Match all routes except static files and api
+  // Match all routes except static files, api, and brand assets.
+  // Brand assets MUST be excluded so unauthenticated pages (login, 404) can
+  // load the favicon and logo without bouncing through a redirect to /login.
   matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|logo-dark.svg|logo-light.svg).*)',
+    '/((?!_next/static|_next/image|favicon.ico|apple-touch-icon.png|logo-dark.svg|logo-light.svg|logo-icon.svg).*)',
   ],
 };

@@ -28,6 +28,15 @@ export const CreateActorSchema = z.object({
     .optional(),
   maxRetries: z.number().int().min(0).max(10).optional(),
   retryDelaySecs: z.number().int().min(1).max(3600).optional(),
+  // Source version string from .actor/actor.json (e.g. "0.0", "1.2").
+  // When provided, the API upserts an actor_versions row and links the
+  // build to it — so /builds shows version history, not just image names.
+  version: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9._+-]+$/, 'Version must be alphanumeric with . _ + -')
+    .optional(),
 });
 
 export const UpdateActorSchema = CreateActorSchema.partial();

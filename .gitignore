@@ -35,3 +35,7 @@ pnpm-debug.log*
 
 # Docker
 docker-compose.override.yml
+
+# Tool-managed local-only state (never committed)
+.claude/
+.playwright-mcp/

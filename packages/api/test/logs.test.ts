@@ -28,6 +28,7 @@ vi.mock('../src/storage/redis.js', () => ({
     ltrim: vi.fn(),
     publish: vi.fn(),
     lrange: vi.fn(),
+    llen: vi.fn(),
   },
 }));
 
@@ -53,6 +54,7 @@ describe('Logs Routes', () => {
     vi.mocked(redis.ltrim).mockReset();
     vi.mocked(redis.publish).mockReset();
     vi.mocked(redis.lrange).mockReset();
+    vi.mocked(redis.llen).mockReset();
   });
 
   describe('POST /actor-runs/:runId/logs', () => {
@@ -132,6 +134,8 @@ describe('Logs Routes', () => {
     it('should get logs for owned run', async () => {
       // Run exists and belongs to user
       mockQuery.mockResolvedValueOnce({ rows: [{ id: 'run-1' }] });
+      // total of 2 lines stored — both fit in the default page
+      vi.mocked(redis.llen).mockResolvedValue(2);
       vi.mocked(redis.lrange).mockResolvedValue([
         JSON.stringify({ timestamp: '2024-01-01T00:00:00Z', level: 'INFO', message: 'Log 1' }),
         JSON.stringify({ timestamp: '2024-01-01T00:00:01Z', level: 'INFO', message: 'Log 2' }),
@@ -146,6 +150,7 @@ describe('Logs Routes', () => {
       const body = JSON.parse(response.body);
       expect(body.data.items).toHaveLength(2);
       expect(body.data.items[0].message).toBe('Log 1');
+      expect(body.data.total).toBe(2);
     });
 
     it('should return 404 for run owned by another user', async () => {
@@ -158,10 +163,14 @@ describe('Logs Routes', () => {
 
       expect(response.statusCode).toBe(404);
       expect(redis.lrange).not.toHaveBeenCalled();
+      expect(redis.llen).not.toHaveBeenCalled();
     });
 
     it('should support pagination parameters', async () => {
       mockQuery.mockResolvedValueOnce({ rows: [{ id: 'run-1' }] });
+      // 100 stored lines so the requested offset=10,limit=50 page (rows 10-59)
+      // fits inside `stop = min(total - 1, offset + limit - 1)` clamp.
+      vi.mocked(redis.llen).mockResolvedValue(100);
       vi.mocked(redis.lrange).mockResolvedValue([
         JSON.stringify({ timestamp: '2024-01-01T00:00:00Z', level: 'INFO', message: 'Log' }),
       ]);
@@ -172,17 +181,18 @@ describe('Logs Routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
-
-      // Verify Redis was called with correct range
       expect(redis.lrange).toHaveBeenCalledWith('logs:run-1', 10, 59);
 
       const body = JSON.parse(response.body);
       expect(body.data.offset).toBe(10);
       expect(body.data.limit).toBe(50);
+      expect(body.data.total).toBe(100);
     });
 
-    it('should use default pagination values', async () => {
+    it('should default to limit=500 from offset 0', async () => {
       mockQuery.mockResolvedValueOnce({ rows: [{ id: 'run-1' }] });
+      // 600 stored — page slice is rows 0..499
+      vi.mocked(redis.llen).mockResolvedValue(600);
       vi.mocked(redis.lrange).mockResolvedValue([]);
 
       const response = await app.inject({
@@ -191,13 +201,30 @@ describe('Logs Routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
-
-      // Default: offset=0, limit=100
-      expect(redis.lrange).toHaveBeenCalledWith('logs:run-1', 0, 99);
+      // Default: limit=500, offset=0 → stop = min(599, 499) = 499
+      expect(redis.lrange).toHaveBeenCalledWith('logs:run-1', 0, 499);
 
       const body = JSON.parse(response.body);
       expect(body.data.offset).toBe(0);
-      expect(body.data.limit).toBe(100);
+      expect(body.data.limit).toBe(500);
+    });
+
+    it('tail=true returns the LAST `limit` lines', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 'run-1' }] });
+      // 23,481 lines stored — tail with limit=500 should fetch rows 22981..23480
+      vi.mocked(redis.llen).mockResolvedValue(23_481);
+      vi.mocked(redis.lrange).mockResolvedValue([]);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/actor-runs/run-1/logs?tail=true&limit=500',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(redis.lrange).toHaveBeenCalledWith('logs:run-1', 22_981, 23_480);
+      const body = JSON.parse(response.body);
+      expect(body.data.offset).toBe(22_981);
+      expect(body.data.total).toBe(23_481);
     });
   });
 });

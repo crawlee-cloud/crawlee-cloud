@@ -59,7 +59,8 @@ describe('Actors & Runs (integration)', () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(get.statusCode).toBe(200);
-    expect(get.json().data.actorId).toBe(actorId);
+    // Apify v2 returns the parent actor id under `actId` (legacy field name)
+    expect(get.json().data.actId).toBe(actorId);
   });
 
   it('lists only the current user actors (IDOR)', async () => {

@@ -3,14 +3,15 @@
  * Works with AWS S3, MinIO, DigitalOcean Spaces, Cloudflare R2, etc.
  */
 
-import { 
-  S3Client, 
-  PutObjectCommand, 
-  GetObjectCommand, 
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
   DeleteObjectCommand,
   ListObjectsV2Command,
   HeadObjectCommand,
 } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from '../config.js';
 
 export let s3: S3Client;
@@ -25,7 +26,7 @@ export async function initS3(): Promise<void> {
     },
     forcePathStyle: config.s3ForcePathStyle,
   });
-  
+
   console.log('S3 client initialized');
 }
 
@@ -33,18 +34,20 @@ export async function initS3(): Promise<void> {
  * Store a dataset item.
  */
 export async function putDatasetItem(
-  datasetId: string, 
-  itemIndex: number, 
+  datasetId: string,
+  itemIndex: number,
   data: unknown
 ): Promise<void> {
   const key = `datasets/${datasetId}/${String(itemIndex).padStart(9, '0')}.json`;
-  
-  await s3.send(new PutObjectCommand({
-    Bucket: config.s3Bucket,
-    Key: key,
-    Body: JSON.stringify(data),
-    ContentType: 'application/json',
-  }));
+
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: config.s3Bucket,
+      Key: key,
+      Body: JSON.stringify(data),
+      ContentType: 'application/json',
+    })
+  );
 }
 
 /**
@@ -56,30 +59,34 @@ export async function listDatasetItems(
 ): Promise<{ items: unknown[]; total: number }> {
   const { offset = 0, limit = 100 } = options;
   const prefix = `datasets/${datasetId}/`;
-  
+
   // List all objects to get total count
-  const listResult = await s3.send(new ListObjectsV2Command({
-    Bucket: config.s3Bucket,
-    Prefix: prefix,
-  }));
-  
-  const allKeys = listResult.Contents?.map(obj => obj.Key!) || [];
+  const listResult = await s3.send(
+    new ListObjectsV2Command({
+      Bucket: config.s3Bucket,
+      Prefix: prefix,
+    })
+  );
+
+  const allKeys = listResult.Contents?.map((obj) => obj.Key!) || [];
   const total = allKeys.length;
-  
+
   // Get subset based on offset/limit
   const keysToFetch = allKeys.slice(offset, offset + limit);
-  
+
   const items = await Promise.all(
     keysToFetch.map(async (key) => {
-      const result = await s3.send(new GetObjectCommand({
-        Bucket: config.s3Bucket,
-        Key: key,
-      }));
+      const result = await s3.send(
+        new GetObjectCommand({
+          Bucket: config.s3Bucket,
+          Key: key,
+        })
+      );
       const body = await result.Body?.transformToString();
       return body ? JSON.parse(body) : null;
     })
   );
-  
+
   return { items: items.filter(Boolean), total };
 }
 
@@ -93,13 +100,15 @@ export async function putKVRecord(
   contentType: string
 ): Promise<void> {
   const s3Key = `key-value-stores/${storeId}/${encodeURIComponent(key)}`;
-  
-  await s3.send(new PutObjectCommand({
-    Bucket: config.s3Bucket,
-    Key: s3Key,
-    Body: typeof data === 'string' ? data : data,
-    ContentType: contentType,
-  }));
+
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: config.s3Bucket,
+      Key: s3Key,
+      Body: typeof data === 'string' ? data : data,
+      ContentType: contentType,
+    })
+  );
 }
 
 /**
@@ -110,16 +119,18 @@ export async function getKVRecord(
   key: string
 ): Promise<{ value: Buffer; contentType: string } | null> {
   const s3Key = `key-value-stores/${storeId}/${encodeURIComponent(key)}`;
-  
+
   try {
-    const result = await s3.send(new GetObjectCommand({
-      Bucket: config.s3Bucket,
-      Key: s3Key,
-    }));
-    
+    const result = await s3.send(
+      new GetObjectCommand({
+        Bucket: config.s3Bucket,
+        Key: s3Key,
+      })
+    );
+
     const body = await result.Body?.transformToByteArray();
     if (!body) return null;
-    
+
     return {
       value: Buffer.from(body),
       contentType: result.ContentType || 'application/octet-stream',
@@ -131,15 +142,97 @@ export async function getKVRecord(
 }
 
 /**
+ * Async-iterate over every dataset item key, transparently following S3's
+ * continuation token. The existing listDatasetItems silently caps at ~1000
+ * items because ListObjectsV2 returns at most that per call without paging;
+ * downloads must NOT cap silently.
+ */
+export async function* iterateDatasetKeys(datasetId: string): AsyncGenerator<string> {
+  const prefix = `datasets/${datasetId}/`;
+  let continuationToken: string | undefined;
+  do {
+    const result = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: config.s3Bucket,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      })
+    );
+    for (const obj of result.Contents ?? []) {
+      if (obj.Key) yield obj.Key;
+    }
+    continuationToken = result.IsTruncated ? result.NextContinuationToken : undefined;
+  } while (continuationToken);
+}
+
+/**
+ * Fetch one dataset item by S3 key. Used by the streaming download endpoint
+ * which iterates keys, then fetches with bounded concurrency.
+ */
+export async function getDatasetItemByKey(key: string): Promise<unknown> {
+  const result = await s3.send(new GetObjectCommand({ Bucket: config.s3Bucket, Key: key }));
+  const body = await result.Body?.transformToString();
+  return body ? JSON.parse(body) : null;
+}
+
+/**
+ * Generate a time-limited URL the browser can fetch directly from S3 — no
+ * API server pass-through. Used for "View raw" / "Download" buttons on KV
+ * records, where each record is exactly one S3 object.
+ *
+ * Returns null if the record doesn't exist (mirrors getKVRecord's contract).
+ *
+ * The expiresIn ceiling is 7 days per AWS SigV4; we cap at 1 hour to keep
+ * any leaked URL short-lived.
+ */
+export async function presignKVRecord(
+  storeId: string,
+  key: string,
+  expiresIn = 3600
+): Promise<{ url: string; expiresAt: string } | null> {
+  const s3Key = `key-value-stores/${storeId}/${encodeURIComponent(key)}`;
+
+  // HEAD first so we can return null cleanly for missing keys instead of
+  // handing back a presigned URL that 404s.
+  try {
+    await s3.send(new HeadObjectCommand({ Bucket: config.s3Bucket, Key: s3Key }));
+  } catch (err: unknown) {
+    const name = (err as { name?: string }).name;
+    if (name === 'NotFound' || name === 'NoSuchKey') return null;
+    throw err;
+  }
+
+  const ttl = Math.min(3600, Math.max(60, expiresIn));
+  // ResponseContentDisposition becomes the special `response-content-disposition`
+  // query param on the presigned URL — S3/MinIO honours it at GET time.
+  // We force bare `inline` (NO filename hint) so browsers default to rendering
+  // the response in a tab. Any `filename=` parameter — even with `inline` —
+  // triggers download behavior in Chromium/Playwright. Operators wanting to
+  // save can Cmd-S / Ctrl-S from the rendered tab.
+  const url = await getSignedUrl(
+    s3,
+    new GetObjectCommand({
+      Bucket: config.s3Bucket,
+      Key: s3Key,
+      ResponseContentDisposition: 'inline',
+    }),
+    { expiresIn: ttl }
+  );
+  return { url, expiresAt: new Date(Date.now() + ttl * 1000).toISOString() };
+}
+
+/**
  * Delete a key-value record.
  */
 export async function deleteKVRecord(storeId: string, key: string): Promise<void> {
   const s3Key = `key-value-stores/${storeId}/${encodeURIComponent(key)}`;
-  
-  await s3.send(new DeleteObjectCommand({
-    Bucket: config.s3Bucket,
-    Key: s3Key,
-  }));
+
+  await s3.send(
+    new DeleteObjectCommand({
+      Bucket: config.s3Bucket,
+      Key: s3Key,
+    })
+  );
 }
 
 /**
@@ -147,12 +240,14 @@ export async function deleteKVRecord(storeId: string, key: string): Promise<void
  */
 export async function kvRecordExists(storeId: string, key: string): Promise<boolean> {
   const s3Key = `key-value-stores/${storeId}/${encodeURIComponent(key)}`;
-  
+
   try {
-    await s3.send(new HeadObjectCommand({
-      Bucket: config.s3Bucket,
-      Key: s3Key,
-    }));
+    await s3.send(
+      new HeadObjectCommand({
+        Bucket: config.s3Bucket,
+        Key: s3Key,
+      })
+    );
     return true;
   } catch {
     return false;
@@ -165,22 +260,30 @@ export async function kvRecordExists(storeId: string, key: string): Promise<bool
 export async function listKVKeys(
   storeId: string,
   options: { limit?: number; exclusiveStartKey?: string } = {}
-): Promise<{ keys: { key: string; size: number }[]; isTruncated: boolean; nextExclusiveStartKey?: string }> {
+): Promise<{
+  keys: { key: string; size: number }[];
+  isTruncated: boolean;
+  nextExclusiveStartKey?: string;
+}> {
   const { limit = 100, exclusiveStartKey } = options;
   const prefix = `key-value-stores/${storeId}/`;
-  
-  const result = await s3.send(new ListObjectsV2Command({
-    Bucket: config.s3Bucket,
-    Prefix: prefix,
-    MaxKeys: limit,
-    StartAfter: exclusiveStartKey ? `${prefix}${encodeURIComponent(exclusiveStartKey)}` : undefined,
-  }));
-  
-  const keys = (result.Contents || []).map(obj => ({
+
+  const result = await s3.send(
+    new ListObjectsV2Command({
+      Bucket: config.s3Bucket,
+      Prefix: prefix,
+      MaxKeys: limit,
+      StartAfter: exclusiveStartKey
+        ? `${prefix}${encodeURIComponent(exclusiveStartKey)}`
+        : undefined,
+    })
+  );
+
+  const keys = (result.Contents || []).map((obj) => ({
     key: decodeURIComponent(obj.Key!.replace(prefix, '')),
     size: obj.Size || 0,
   }));
-  
+
   return {
     keys,
     isTruncated: result.IsTruncated || false,

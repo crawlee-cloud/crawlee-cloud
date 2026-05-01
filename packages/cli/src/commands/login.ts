@@ -12,6 +12,7 @@ import { saveConfig, getConfig } from '../utils/config.js';
 interface LoginOptions {
   token?: string;
   url?: string;
+  profile?: string;
 }
 
 interface HealthResponse {
@@ -29,6 +30,10 @@ export const loginCommand = new Command('login')
   .description('Authenticate with Crawlee Cloud')
   .option('-t, --token <token>', 'API token')
   .option('-u, --url <url>', 'API base URL')
+  .option(
+    '-p, --profile <name>',
+    'Profile name to save under. Use to manage multiple environments (e.g. local / prod).'
+  )
   .action(async (options: LoginOptions) => {
     console.log(chalk.bold('\n🔐 Login to Crawlee Cloud\n'));
 
@@ -83,13 +88,14 @@ export const loginCommand = new Command('login')
       console.log(chalk.green(`✅ Connected to Crawlee Cloud v${health.version ?? '1.0.0'}`));
       console.log(chalk.dim(`   Authenticated as: ${userData.data.email}`));
 
-      // Save config only after successful validation
-      await saveConfig({
-        apiBaseUrl,
-        token,
-      });
+      // Save config only after successful validation. When --profile is
+      // passed, save into that named profile AND make it active so the
+      // user can immediately run subsequent commands against it without
+      // an extra `profile use` step.
+      await saveConfig({ apiBaseUrl, token }, { profile: options.profile, setActive: true });
 
-      console.log(chalk.dim('\nCredentials saved to ~/.crawlee-cloud/config.json'));
+      const profileName = options.profile ?? 'default';
+      console.log(chalk.dim(`\nSaved to profile "${profileName}" in ~/.crawlee-cloud/config.json`));
       console.log(chalk.green('\n✅ Login successful!\n'));
     } catch (err) {
       const message = (err as Error).message;

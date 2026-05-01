@@ -5,7 +5,13 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { nanoid } from 'nanoid';
 import { query } from '../db/index.js';
-import { putKVRecord, getKVRecord, deleteKVRecord, listKVKeys } from '../storage/s3.js';
+import {
+  putKVRecord,
+  getKVRecord,
+  deleteKVRecord,
+  listKVKeys,
+  presignKVRecord,
+} from '../storage/s3.js';
 import { authenticate } from '../auth/middleware.js';
 import { CreateKeyValueStoreSchema } from '../schemas/key-value-stores.js';
 
@@ -155,34 +161,52 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
    *
    * This is used for Actor.getInput(), Actor.getValue(), etc.
    */
-  fastify.get<{ Params: { storeId: string; key: string } }>(
-    '/key-value-stores/:storeId/records/:key',
-    async (request, reply) => {
-      const { storeId, key } = request.params;
+  fastify.get<{
+    Params: { storeId: string; key: string };
+    Querystring: { presigned?: string };
+  }>('/key-value-stores/:storeId/records/:key', async (request, reply) => {
+    const { storeId, key } = request.params;
 
-      // Get store (user-scoped)
-      const store = await query<KVStoreRow>(
-        'SELECT * FROM key_value_stores WHERE (id = $1 OR name = $2) AND user_id = $3',
-        [storeId, storeId, request.user!.id]
-      );
+    // Get store (user-scoped)
+    const store = await query<KVStoreRow>(
+      'SELECT * FROM key_value_stores WHERE (id = $1 OR name = $2) AND user_id = $3',
+      [storeId, storeId, request.user!.id]
+    );
 
-      if (!store.rows[0]) {
-        reply.status(404);
-        return { error: { type: 'record-not-found', message: 'Key-value store not found' } };
-      }
-
-      const record = await getKVRecord(store.rows[0].id, key);
-
-      if (!record) {
-        // Return 204 No Content for missing records (Apify SDK compatibility)
-        reply.status(204);
-        return;
-      }
-
-      reply.header('content-type', record.contentType);
-      return reply.send(record.value);
+    if (!store.rows[0]) {
+      reply.status(404);
+      return { error: { type: 'record-not-found', message: 'Key-value store not found' } };
     }
-  );
+
+    // ?presigned=1 — return a 1-hour S3 URL the browser can open directly.
+    // Sidesteps the API server entirely for large payloads (binary
+    // screenshots, megabyte-sized JSON, etc.) and matches Apify's UX:
+    // dashboard renders nothing huge, "View raw" opens a static file.
+    if (request.query.presigned === '1' || request.query.presigned === 'true') {
+      const presigned = await presignKVRecord(store.rows[0].id, key);
+      if (!presigned) {
+        reply.status(404);
+        return { error: { type: 'record-not-found', message: 'Record not found' } };
+      }
+      return { data: presigned };
+    }
+
+    const record = await getKVRecord(store.rows[0].id, key);
+
+    if (!record) {
+      // Apify SDK contract: a missing record must be 404 with
+      // error.type='record-not-found'. apify-client's catchNotFoundOrThrow
+      // is what turns this into `undefined` for the caller (Crawlee's
+      // KeyValueStore.getValue, Actor.getInput, etc.). 204 was the wrong
+      // status — the SDK treats it as a successful empty response and
+      // returns a truthy stub instead of falling through.
+      reply.status(404);
+      return { error: { type: 'record-not-found', message: 'Record not found' } };
+    }
+
+    reply.header('content-type', record.contentType);
+    return reply.send(record.value);
+  });
 
   /**
    * PUT /v2/key-value-stores/:storeId/records/:key - Set record
@@ -215,10 +239,13 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       const body = request.body;
-      // Handle different body types (string, Buffer, object)
-      let data: string;
+      // Pass Buffer bodies through unchanged. toString('utf-8') would corrupt
+      // any non-UTF-8 bytes into U+FFFD replacement chars — fatal for binary
+      // payloads (PNG screenshots, gzipped artifacts, etc.) that the Apify
+      // SDK uploads via Actor.setValue(key, buffer, { contentType }).
+      let data: Buffer | string;
       if (Buffer.isBuffer(body)) {
-        data = body.toString('utf-8');
+        data = body;
       } else if (typeof body === 'string') {
         data = body;
       } else {

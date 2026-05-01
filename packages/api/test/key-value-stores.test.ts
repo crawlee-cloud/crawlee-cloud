@@ -179,7 +179,11 @@ describe('Key-Value Store Routes', () => {
       expect(response.headers['content-type']).toContain('application/json');
     });
 
-    it('should return 204 for missing record', async () => {
+    it('should return 404 with record-not-found for a missing record', async () => {
+      // Apify SDK contract: apify-client's catchNotFoundOrThrow only fires
+      // for 404 + error.type='record-not-found'. A 204 is treated as a
+      // successful empty response and yields a truthy stub instead of
+      // undefined, which breaks Crawlee's getValue / Actor.getInput paths.
       mockQuery.mockResolvedValueOnce({
         rows: [
           {
@@ -199,7 +203,8 @@ describe('Key-Value Store Routes', () => {
         url: '/v2/key-value-stores/kv-1/records/MISSING',
       });
 
-      expect(response.statusCode).toBe(204);
+      expect(response.statusCode).toBe(404);
+      expect(response.json().error?.type).toBe('record-not-found');
     });
   });
 

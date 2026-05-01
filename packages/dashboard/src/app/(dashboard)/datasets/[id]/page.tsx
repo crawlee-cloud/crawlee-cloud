@@ -1,322 +1,369 @@
 'use client';
 
-import { useEffect, useState, Suspense } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
+  Database,
   Download,
   FileJson,
   Loader2,
   Trash2,
-  Database,
 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import { getDataset, getDatasetItems, deleteDataset, type Dataset } from '@/lib/api';
 import { AppLink } from '@/components/app-link';
 import { prefixPath } from '@/lib/path-prefix';
+import { useConfirm } from '@/components/ui/confirm';
+import { useToast } from '@/components/ui/toast';
+import {
+  deleteDataset,
+  downloadAsBlob,
+  findProducingRun,
+  getActor,
+  getDataset,
+  getDatasetItems,
+  type Actor,
+  type Dataset,
+  type Run,
+} from '@/lib/api';
 
-function formatCellValue(value: unknown): string {
-  if (value === null || value === undefined) return '';
-  if (typeof value === 'object') return JSON.stringify(value);
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'bigint') return value.toString();
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  // symbol/function — not expected in JSON-derived dataset items.
+function fmtCell(v: unknown): string {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'object') return JSON.stringify(v);
+  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'bigint') return String(v);
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
   return '';
 }
 
 function DatasetDetailContent() {
   const params = useParams();
-  const searchParams = useSearchParams(); // Use useSearchParams for query params
+  const searchParams = useSearchParams();
   const router = useRouter();
+  const confirm = useConfirm();
+  const toast = useToast();
   const id = params.id as string;
-  const pageParam = searchParams.get('page');
-  const limitParam = searchParams.get('limit');
+  const page = Number(searchParams.get('page') ?? '1');
+  const limit = Number(searchParams.get('limit') ?? '50');
 
   const [dataset, setDataset] = useState<Dataset | null>(null);
   const [items, setItems] = useState<Record<string, unknown>[]>([]);
   const [loading, setLoading] = useState(true);
-  const [itemsLoading, setItemsLoading] = useState(true);
-  const [totalItems, setTotalItems] = useState(0);
-
-  // Pagination state
-  const page = pageParam ? parseInt(pageParam, 10) : 1;
-  const limit = limitParam ? parseInt(limitParam, 10) : 50;
+  const [producingRun, setProducingRun] = useState<Run | null>(null);
+  const [producingActor, setProducingActor] = useState<Actor | null>(null);
+  // resolvedKey tracks the page/limit pair we have data for. Loading state
+  // is derived: loading = (current request key !== resolved key). This avoids
+  // calling setState directly in an effect body (React 19 lint rule).
+  const requestKey = `${page}:${limit}`;
+  const [resolvedKey, setResolvedKey] = useState<string | null>(null);
+  const itemsLoading = resolvedKey !== requestKey;
 
   useEffect(() => {
-    async function fetchDataset() {
-      try {
-        const data = await getDataset(id);
-        setDataset(data);
-        setTotalItems(data.itemCount);
-      } catch (err) {
-        console.error('Failed to load dataset:', err);
-        // Handle error (e.g., redirect or show error)
-      } finally {
-        setLoading(false);
-      }
-    }
-    void fetchDataset();
+    let alive = true;
+    getDataset(id)
+      .then((d) => alive && setDataset(d))
+      .catch(() => {})
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
   }, [id]);
 
   useEffect(() => {
-    async function fetchItems() {
-      setItemsLoading(true);
-      try {
-        const offset = (page - 1) * limit;
-        const data = await getDatasetItems(id, { offset, limit });
-        // The API may return scalars or arrays; the table view assumes
-        // object rows (renders by Object.keys), so drop anything else.
-        const objectRows = data.filter(
-          (item): item is Record<string, unknown> =>
-            typeof item === 'object' && item !== null && !Array.isArray(item)
+    if (!dataset) return;
+    let alive = true;
+    findProducingRun('dataset', dataset.id)
+      .then(async (r) => {
+        if (!alive || !r) return;
+        setProducingRun(r);
+        const a = await getActor(r.actId).catch(() => null);
+        if (alive) setProducingActor(a);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [dataset]);
+
+  useEffect(() => {
+    if (!dataset) return;
+    let alive = true;
+    const offset = (page - 1) * limit;
+    getDatasetItems(id, { offset, limit })
+      .then((data) => {
+        if (!alive) return;
+        // The API may return scalars or arrays. Drop non-objects so the
+        // table view's keys/columns assumption holds.
+        const rows = data.filter(
+          (i): i is Record<string, unknown> =>
+            typeof i === 'object' && i !== null && !Array.isArray(i)
         );
-        setItems(objectRows);
-      } catch (err) {
-        console.error('Failed to load items:', err);
-      } finally {
-        setItemsLoading(false);
-      }
-    }
-    if (dataset) {
-      // Only fetch items once dataset info is loaded to confirm existence/count
-      void fetchItems();
-    }
+        setItems(rows);
+        setResolvedKey(`${page}:${limit}`);
+      })
+      .catch(() => {
+        if (alive) setResolvedKey(`${page}:${limit}`);
+      });
+    return () => {
+      alive = false;
+    };
   }, [id, page, limit, dataset]);
 
-  const handleDelete = async () => {
-    if (!confirm('Are you sure you want to delete this dataset? This action cannot be undone.'))
-      return;
+  function updatePage(newPage: number) {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('page', String(newPage));
+    router.push(`?${params.toString()}`);
+  }
+
+  async function handleDelete() {
+    const ok = await confirm({
+      tone: 'danger',
+      title: 'Delete dataset?',
+      description: 'Items and metadata are deleted permanently. Cannot be undone.',
+      confirmLabel: 'delete dataset',
+    });
+    if (!ok) return;
     try {
       await deleteDataset(id);
+      toast.success('Dataset deleted');
       router.push(prefixPath('/datasets'));
     } catch (err) {
-      console.error('Failed to delete dataset:', err);
-      alert('Failed to delete dataset');
+      toast.error('Failed to delete dataset', { description: (err as Error).message });
     }
-  };
+  }
 
-  const handleDownload = () => {
-    const jsonString = JSON.stringify(items, null, 2);
-    const blob = new Blob([jsonString], { type: 'application/json' });
+  /**
+   * Export the currently visible page as a JSON file via a browser blob.
+   * Convenient for spot-checks; bounded by `limit` so it can't blow up the
+   * browser even on huge datasets. For full-dataset export, "download all"
+   * opens the streaming endpoint in a new tab — server-side concatenation
+   * with bounded-concurrency S3 reads, never materialised in browser memory.
+   */
+  function handleDownloadPage() {
+    const blob = new Blob([JSON.stringify(items, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `dataset-${id}.json`;
-    document.body.appendChild(a);
+    a.download = `dataset-${id.slice(0, 8)}-page-${page}.json`;
     a.click();
-    document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  };
-
-  const updatePage = (newPage: number) => {
-    const params = new URLSearchParams(searchParams.toString());
-    params.set('page', newPage.toString());
-    router.push(`?${params.toString()}`);
-  };
+    toast.success('Page exported', { description: `${items.length} items` });
+  }
 
   if (loading) {
     return (
-      <div className="flex h-64 w-full items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      <div className="grid place-items-center min-h-[40vh]">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
       </div>
     );
   }
-
   if (!dataset) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 space-y-4">
-        <p className="text-muted-foreground">Dataset not found</p>
-        <Button variant="outline" asChild>
-          <AppLink href="/datasets">Back to Datasets</AppLink>
-        </Button>
+      <div className="grid place-items-center min-h-[40vh] text-center">
+        <div>
+          <p className="font-mono text-[11px] tracking-widest text-muted-foreground mb-2">
+            [ DATASET NOT FOUND ]
+          </p>
+          <AppLink href="/datasets" className="text-[13px] hover:text-[color:var(--signal)]">
+            ← back to datasets
+          </AppLink>
+        </div>
       </div>
     );
   }
 
-  const totalPages = Math.ceil(totalItems / limit);
+  const totalPages = Math.max(1, Math.ceil(dataset.itemCount / limit));
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500 max-w-7xl mx-auto">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground mb-2">
-            <AppLink
-              href="/datasets"
-              className="hover:text-foreground transition-colors flex items-center gap-1"
-            >
-              <ArrowLeft className="h-3 w-3" /> Datasets
-            </AppLink>
-            <span>/</span>
-            <span className="text-foreground font-medium truncate max-w-[200px]">
-              {dataset.name || dataset.id}
-            </span>
-          </div>
-          <h1 className="text-3xl font-bold tracking-tight bg-linear-to-r from-white to-white/60 bg-clip-text text-transparent break-all">
-            {dataset.name || 'Untitled Dataset'}
+    <div className="space-y-6 max-w-7xl">
+      <AppLink
+        href="/datasets"
+        className="inline-flex items-center gap-1.5 font-mono text-[10px] tracking-widest text-muted-foreground hover:text-foreground uppercase"
+      >
+        <ArrowLeft className="h-3 w-3" /> datasets
+      </AppLink>
+
+      <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4 pb-5 border-b border-border">
+        <div className="space-y-2 min-w-0">
+          <p className="eyebrow">DATASET · {dataset.id.slice(0, 12)}</p>
+          <h1 className="text-[28px] leading-none font-medium tracking-tight truncate">
+            {dataset.name || 'Untitled dataset'}
           </h1>
-          <p className="text-muted-foreground text-sm font-mono">ID: {dataset.id}</p>
+          <p className="font-mono text-[11px] text-muted-foreground">{dataset.id}</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={handleDownload} className="glass-button">
-            <Download className="mr-2 h-4 w-4" />
-            Export JSON
-          </Button>
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={() => void handleDelete()}
-            className="bg-red-500/10 text-red-400 hover:bg-red-500/20 border-red-500/20"
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={handleDownloadPage}
+            disabled={items.length === 0}
+            title="Download just this page as JSON"
+            className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-[color:var(--signal)]/40 hover:text-[color:var(--signal)] rounded-sm disabled:opacity-50"
           >
-            <Trash2 className="mr-2 h-4 w-4" />
-            Delete
-          </Button>
+            <Download className="h-3.5 w-3.5" /> export page
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              void downloadAsBlob(
+                `/v2/datasets/${id}/items?download=1`,
+                `dataset-${id}.json`
+              ).catch((err) =>
+                toast.error('Download failed', { description: (err as Error).message })
+              );
+            }}
+            title="Download the full dataset as JSON"
+            className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-[color:var(--signal)]/40 hover:text-[color:var(--signal)] rounded-sm"
+          >
+            <Download className="h-3.5 w-3.5" /> download all
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleDelete()}
+            className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-border text-muted-foreground hover:border-[color:var(--fail)]/40 hover:text-[color:var(--fail)] rounded-sm"
+          >
+            <Trash2 className="h-3.5 w-3.5" /> delete
+          </button>
         </div>
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Card className="glass-card">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Total Items</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{dataset.itemCount.toLocaleString()}</div>
-          </CardContent>
-        </Card>
-        <Card className="glass-card">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Created</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-base">
-              {new Date(dataset.createdAt).toLocaleString()}
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="glass-card">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Last Modified
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-base">
-              {new Date(dataset.modifiedAt).toLocaleString()}
-            </div>
-          </CardContent>
-        </Card>
+      {/* Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-px bg-border border border-border rounded-md overflow-hidden">
+        <Tile label="Total items">{dataset.itemCount.toLocaleString()}</Tile>
+        <Tile label="Created">{new Date(dataset.createdAt).toLocaleString()}</Tile>
+        <Tile label="Modified">{new Date(dataset.modifiedAt).toLocaleString()}</Tile>
       </div>
 
-      {/* Data Viewer */}
-      <Card className="glass-card overflow-hidden flex flex-col">
-        <div className="p-4 border-b border-white/5 flex items-center justify-between">
-          <div className="font-semibold flex items-center gap-2">
-            <FileJson className="h-4 w-4 text-indigo-400" />
-            Data Preview
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="icon"
-              onClick={() => updatePage(page - 1)}
-              disabled={page <= 1 || itemsLoading}
-              className="h-8 w-8"
+      {/* Producer backlink */}
+      {producingRun && (
+        <section className="panel p-5 space-y-3">
+          <p className="eyebrow">PRODUCED · BY</p>
+          <div className="flex flex-wrap items-center gap-3 text-[13px]">
+            <AppLink
+              href={`/runs/${producingRun.id}`}
+              className="font-mono text-foreground hover:text-[color:var(--signal)]"
             >
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-            <span className="text-sm text-muted-foreground min-w-[100px] text-center">
-              Page {page} of {totalPages || 1}
-            </span>
-            <Button
-              variant="outline"
-              size="icon"
-              onClick={() => updatePage(page + 1)}
-              disabled={page >= totalPages || itemsLoading}
-              className="h-8 w-8"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-
-        <div className="relative min-h-[400px]">
-          {itemsLoading ? (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/20 backdrop-blur-sm z-10">
-              <Loader2 className="h-8 w-8 animate-spin text-indigo-400" />
-            </div>
-          ) : null}
-
-          <div className="overflow-auto max-h-[600px] p-0">
-            {items.length > 0 ? (
-              <Table>
-                <TableHeader className="bg-white/5 sticky top-0 z-10 backdrop-blur-md">
-                  <TableRow className="hover:bg-transparent border-white/5">
-                    <TableHead className="w-[50px]">#</TableHead>
-                    {/* Generate headers dynamically from the first item keys */}
-                    {Object.keys(items[0] || {})
-                      .slice(0, 10)
-                      .map((key) => (
-                        <TableHead
-                          key={key}
-                          className="whitespace-nowrap font-medium text-zinc-300"
-                        >
-                          {key}
-                        </TableHead>
-                      ))}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {items.map((item, idx) => (
-                    <TableRow
-                      key={idx}
-                      className="border-white/5 hover:bg-white/5 transition-colors group"
-                    >
-                      <TableCell className="font-mono text-xs text-muted-foreground w-[50px]">
-                        {(page - 1) * limit + idx + 1}
-                      </TableCell>
-                      {Object.keys(items[0] || {})
-                        .slice(0, 10)
-                        .map((key) => {
-                          const value = item[key];
-                          return (
-                            <TableCell
-                              key={key}
-                              className="max-w-[200px] truncate text-xs text-zinc-400 group-hover:text-zinc-200"
-                            >
-                              {formatCellValue(value)}
-                            </TableCell>
-                          );
-                        })}
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              run · {producingRun.id.slice(0, 12)}
+            </AppLink>
+            <span className="text-muted-foreground">/</span>
+            {producingActor ? (
+              <AppLink
+                href={`/actors/${producingActor.name}`}
+                className="text-foreground hover:text-[color:var(--signal)]"
+              >
+                {producingActor.title || producingActor.name}
+              </AppLink>
             ) : (
-              <div className="flex flex-col items-center justify-center h-[400px] text-muted-foreground animate-in fade-in">
-                <Database className="h-12 w-12 mb-4 opacity-20" />
-                <p>No items found in this dataset.</p>
-              </div>
+              <span className="font-mono text-muted-foreground text-[12px]">
+                actor · {producingRun.actId.slice(0, 12)}
+              </span>
             )}
           </div>
+        </section>
+      )}
+
+      {/* Data viewer */}
+      <section className="panel">
+        <header className="px-5 py-3 border-b border-border flex items-center justify-between">
+          <div className="flex items-center gap-2 text-[13px]">
+            <FileJson className="h-3.5 w-3.5 text-[color:var(--signal)]" />
+            <span className="text-foreground">Records</span>
+            <span className="text-muted-foreground">
+              · page {page} of {totalPages}
+            </span>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => updatePage(page - 1)}
+              disabled={page <= 1 || itemsLoading}
+              className="h-7 w-7 grid place-items-center border border-border rounded-sm text-muted-foreground hover:text-foreground disabled:opacity-30"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => updatePage(page + 1)}
+              disabled={page >= totalPages || itemsLoading}
+              className="h-7 w-7 grid place-items-center border border-border rounded-sm text-muted-foreground hover:text-foreground disabled:opacity-30"
+            >
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </header>
+
+        <div className="relative min-h-[400px] overflow-auto max-h-[640px]">
+          {itemsLoading && (
+            <div className="absolute inset-0 grid place-items-center bg-card/70 backdrop-blur-[1px] z-10">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            </div>
+          )}
+          {items.length === 0 ? (
+            <div className="grid-bg h-[400px] grid place-items-center text-center">
+              <div>
+                <Database className="h-6 w-6 text-muted-foreground/40 mx-auto mb-2" />
+                <p className="font-mono text-[11px] tracking-widest text-muted-foreground">
+                  [ NO RECORDS ]
+                </p>
+              </div>
+            </div>
+          ) : (
+            <table className="w-full text-[12px]">
+              <thead className="bg-secondary/60 sticky top-0 z-10">
+                <tr className="text-left font-mono text-[10px] tracking-widest text-muted-foreground uppercase border-b border-border">
+                  <th className="px-4 py-2 font-normal w-12 tnum">#</th>
+                  {Object.keys(items[0] ?? {})
+                    .slice(0, 10)
+                    .map((k) => (
+                      <th key={k} className="px-4 py-2 font-normal whitespace-nowrap">
+                        {k}
+                      </th>
+                    ))}
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((row, idx) => (
+                  <tr
+                    key={idx}
+                    className="border-b border-border/60 last:border-0 hover:bg-secondary/40 align-top"
+                  >
+                    <td className="px-4 py-2 font-mono text-[10px] text-muted-foreground tnum">
+                      {(page - 1) * limit + idx + 1}
+                    </td>
+                    {Object.keys(items[0] ?? {})
+                      .slice(0, 10)
+                      .map((k) => {
+                        const display = fmtCell(row[k]);
+                        return (
+                          <td
+                            key={k}
+                            title={display}
+                            className="px-4 py-2 font-mono text-[11px] text-foreground max-w-[280px] truncate"
+                          >
+                            {display}
+                          </td>
+                        );
+                      })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
-        <div className="p-2 border-t border-white/5 bg-white/5 text-xs text-center text-muted-foreground">
-          Showing {(page - 1) * limit + 1} - {Math.min(page * limit, totalItems)} of {totalItems}{' '}
-          items
-        </div>
-      </Card>
+
+        <footer className="px-4 py-2 border-t border-border bg-secondary/40 text-center font-mono text-[10px] tracking-widest text-muted-foreground tnum uppercase">
+          showing {(page - 1) * limit + 1} – {Math.min(page * limit, dataset.itemCount)} of{' '}
+          {dataset.itemCount.toLocaleString()}
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+function Tile({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="bg-card px-5 py-4">
+      <p className="eyebrow mb-2">{label}</p>
+      <div className="text-foreground text-[15px] leading-tight tnum truncate">{children}</div>
     </div>
   );
 }
@@ -325,8 +372,8 @@ export default function DatasetDetailPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex items-center justify-center h-screen">
-          <Loader2 className="h-8 w-8 animate-spin" />
+        <div className="grid place-items-center min-h-[40vh]">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
         </div>
       }
     >

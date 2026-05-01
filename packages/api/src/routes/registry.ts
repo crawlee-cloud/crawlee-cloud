@@ -45,6 +45,11 @@ interface BuildRow {
   git_branch: string | null;
   git_commit: string | null;
   created_at: Date;
+  // Joined from actor_versions when available — exposes the source version
+  // ("0.1") and tag ("latest") to the dashboard without requiring a second
+  // request per row.
+  version_number?: string | null;
+  build_tag?: string | null;
 }
 
 export const registryRoutes: FastifyPluginAsync = async (fastify) => {
@@ -161,8 +166,16 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get<{ Params: { actorId: string } }>('/acts/:actorId/builds', async (request) => {
     const { actorId } = request.params;
 
+    // LEFT JOIN actor_versions so the dashboard can show "0.1 (latest)"
+    // alongside the image, without an N+1 lookup per row. LEFT JOIN (not
+    // inner) to keep historical builds whose version_id may have been
+    // SET NULL when a version was deleted.
     const result = await query<BuildRow>(
-      `SELECT * FROM actor_builds WHERE actor_id = $1 ORDER BY created_at DESC`,
+      `SELECT b.*, v.version_number, v.build_tag
+         FROM actor_builds b
+         LEFT JOIN actor_versions v ON v.id = b.version_id
+        WHERE b.actor_id = $1
+        ORDER BY b.created_at DESC`,
       [actorId]
     );
 
@@ -314,6 +327,10 @@ function formatBuild(row: BuildRow) {
     id: row.id,
     actorId: row.actor_id,
     versionId: row.version_id,
+    // versionNumber + buildTag come from a LEFT JOIN on actor_versions in
+    // the list query. They're null for builds whose version was deleted.
+    versionNumber: row.version_number ?? null,
+    buildTag: row.build_tag ?? null,
     status: row.status,
     startedAt: row.started_at,
     finishedAt: row.finished_at,

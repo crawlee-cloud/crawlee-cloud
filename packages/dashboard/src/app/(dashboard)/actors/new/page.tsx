@@ -1,144 +1,151 @@
 'use client';
 
-import { ArrowLeft, Terminal, Copy, Check, Folder, Package, Sparkles } from 'lucide-react';
-import { AppLink } from '@/components/app-link';
 import { useState } from 'react';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { ArrowLeft, Check, Copy, Folder, Package, Sparkles, Terminal } from 'lucide-react';
+import { AppLink } from '@/components/app-link';
+import { useToast } from '@/components/ui/toast';
+import { cn } from '@/lib/utils';
+
+/*
+  "New actor" is documentation, not a form — actor creation happens via `crc push`.
+  This page hosts the quickstart commands and a sample manifest.
+*/
 
 function CopyButton({ text }: { text: string }) {
+  const toast = useToast();
   const [copied, setCopied] = useState(false);
-
-  const handleCopy = async () => {
-    await navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
   return (
     <button
-      onClick={() => void handleCopy()}
-      className="absolute right-3 top-3 p-1.5 rounded-md hover:bg-white/10 transition-colors text-muted-foreground hover:text-white"
-      title="Copy to clipboard"
+      type="button"
+      onClick={() => {
+        void (async () => {
+          try {
+            await navigator.clipboard.writeText(text);
+            setCopied(true);
+            toast.success('Copied to clipboard');
+            setTimeout(() => setCopied(false), 2000);
+          } catch {
+            toast.error('Copy failed');
+          }
+        })();
+      }}
+      title="Copy"
+      className="absolute right-2 top-2 p-1.5 rounded-sm border border-border bg-card text-muted-foreground hover:text-foreground hover:border-[color:var(--signal)]/40"
     >
-      {copied ? <Check className="h-4 w-4 text-green-400" /> : <Copy className="h-4 w-4" />}
+      {copied ? (
+        <Check className="h-3.5 w-3.5 text-[color:var(--signal)]" />
+      ) : (
+        <Copy className="h-3.5 w-3.5" />
+      )}
     </button>
   );
 }
 
-function CodeBlock({ children, copyText }: { children: React.ReactNode; copyText?: string }) {
-  const textToCopy = copyText ?? (typeof children === 'string' ? children : '');
-
+function CodeBlock({
+  caption,
+  copyText,
+  children,
+}: {
+  caption?: string;
+  copyText: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="relative">
-      <pre className="p-4 pr-12 bg-black/60 border border-white/10 rounded-lg overflow-x-auto text-sm font-mono text-zinc-300">
+      {caption && (
+        <p className="font-mono text-[10px] tracking-widest text-muted-foreground mb-1 uppercase">
+          {caption}
+        </p>
+      )}
+      <pre className="panel bg-[color:var(--background)] p-4 pr-12 font-mono text-[12px] text-foreground overflow-x-auto leading-relaxed">
         {children}
       </pre>
-      <CopyButton text={textToCopy} />
+      <CopyButton text={copyText} />
+    </div>
+  );
+}
+
+function Step({ n, label, children }: { n: number; label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <span className="font-mono text-[11px] text-[color:var(--signal)] tracking-wider tnum">
+          [{String(n).padStart(2, '0')}]
+        </span>
+        <span className="text-[14px] text-foreground">{label}</span>
+      </div>
+      {children}
     </div>
   );
 }
 
 export default function NewActorPage() {
   return (
-    <div className="space-y-8 max-w-4xl">
-      <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" asChild>
-          <AppLink href="/actors">
-            <ArrowLeft className="h-4 w-4" />
-          </AppLink>
-        </Button>
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Create New Actor</h1>
-          <p className="text-muted-foreground">Deploy a web scraper to Crawlee Cloud</p>
+    <div className="space-y-8 max-w-3xl">
+      <AppLink
+        href="/actors"
+        className="inline-flex items-center gap-1.5 font-mono text-[10px] tracking-widest text-muted-foreground hover:text-foreground uppercase"
+      >
+        <ArrowLeft className="h-3 w-3" /> actors
+      </AppLink>
+
+      <header className="space-y-2 pb-5 border-b border-border">
+        <p className="eyebrow">BUILD · NEW ACTOR</p>
+        <h1 className="text-[28px] leading-none font-medium tracking-tight">Create an actor</h1>
+        <p className="text-muted-foreground text-[13px]">
+          Actor creation is a CLI workflow. Push from any directory and the platform registers it
+          for you.
+        </p>
+      </header>
+
+      {/* Quickstart */}
+      <section className="space-y-5">
+        <div className="flex items-center gap-2">
+          <Terminal className="h-4 w-4 text-[color:var(--signal)]" />
+          <h2 className="text-[15px] text-foreground">Quickstart</h2>
         </div>
-      </div>
 
-      {/* Quick Start - CLI Push */}
-      <Card className="border-indigo-500/30 bg-gradient-to-br from-indigo-500/5 to-transparent">
-        <CardHeader>
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-indigo-500/10 rounded-lg">
-              <Terminal className="h-5 w-5 text-indigo-400" />
-            </div>
-            <div>
-              <CardTitle className="text-xl">Quick Start</CardTitle>
-              <CardDescription>Create and push an actor in 3 commands</CardDescription>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          {/* Step 1 */}
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <span className="flex items-center justify-center w-6 h-6 rounded-full bg-indigo-500/20 text-indigo-400 text-xs font-bold">
-                1
-              </span>
-              <h4 className="font-medium text-white/90">Create a new actor from template</h4>
-            </div>
-            <CodeBlock copyText="npx apify-cli create my-actor">
-              <span className="text-zinc-500">$</span> npx apify-cli create{' '}
-              <span className="text-amber-400">my-actor</span>
-            </CodeBlock>
-            <p className="text-xs text-muted-foreground ml-8">
-              Uses the official Apify CLI to scaffold from templates (Cheerio, Playwright,
-              Puppeteer, etc.)
-            </p>
-          </div>
+        <Step n={1} label="Scaffold from a template">
+          <CodeBlock copyText="npx apify-cli create my-actor">
+            <span className="text-muted-foreground">$</span> npx apify-cli create{' '}
+            <span className="text-[color:var(--info)]">my-actor</span>
+          </CodeBlock>
+          <p className="text-[12px] text-muted-foreground pl-1">
+            Uses the official Apify CLI — Cheerio, Playwright, Puppeteer templates all work.
+          </p>
+        </Step>
 
-          {/* Step 2 */}
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <span className="flex items-center justify-center w-6 h-6 rounded-full bg-indigo-500/20 text-indigo-400 text-xs font-bold">
-                2
-              </span>
-              <h4 className="font-medium text-white/90">Write your scraper code</h4>
-            </div>
-            <CodeBlock copyText="cd my-actor && code .">
-              <span className="text-zinc-500">$</span> cd my-actor && code .
-            </CodeBlock>
-          </div>
+        <Step n={2} label="Edit the scraper">
+          <CodeBlock copyText="cd my-actor && code .">
+            <span className="text-muted-foreground">$</span> cd my-actor && code .
+          </CodeBlock>
+        </Step>
 
-          {/* Step 3 */}
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <span className="flex items-center justify-center w-6 h-6 rounded-full bg-indigo-500/20 text-indigo-400 text-xs font-bold">
-                3
-              </span>
-              <h4 className="font-medium text-white/90">Push to the platform</h4>
-            </div>
-            <CodeBlock copyText="npx crawlee-cloud push">
-              <span className="text-zinc-500">$</span> npx crawlee-cloud push
-            </CodeBlock>
-            <p className="text-xs text-muted-foreground ml-8">
-              Builds Docker image, registers actor automatically (reads from{' '}
-              <code className="px-1 py-0.5 bg-white/5 rounded text-zinc-400">
-                .actor/actor.json
-              </code>
-              ), and pushes to the platform
-            </p>
-          </div>
-        </CardContent>
-      </Card>
+        <Step n={3} label="Push to the platform">
+          <CodeBlock copyText="npx crawlee-cloud push">
+            <span className="text-muted-foreground">$</span> npx crawlee-cloud push
+          </CodeBlock>
+          <p className="text-[12px] text-muted-foreground pl-1">
+            Builds the Docker image, registers the actor by reading{' '}
+            <code className="font-mono text-foreground">.actor/actor.json</code>, pushes to your
+            registry.
+          </p>
+        </Step>
+      </section>
 
-      {/* Actor Configuration */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-purple-500/10 rounded-lg">
-              <Sparkles className="h-5 w-5 text-purple-400" />
-            </div>
-            <div>
-              <CardTitle>Actor Configuration</CardTitle>
-              <CardDescription>
-                The <code className="text-xs">.actor/actor.json</code> file contains all metadata
-              </CardDescription>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <CodeBlock
-            copyText={`{
+      {/* Manifest */}
+      <section className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-4 w-4 text-[color:var(--signal)]" />
+          <h2 className="text-[15px] text-foreground">Actor manifest</h2>
+        </div>
+        <p className="text-[13px] text-muted-foreground">
+          The <code className="font-mono text-foreground">.actor/actor.json</code> file at your repo
+          root holds all actor metadata.
+        </p>
+        <CodeBlock
+          caption=".actor/actor.json"
+          copyText={`{
   "actorSpecification": 1,
   "name": "my-actor",
   "title": "My Actor",
@@ -150,101 +157,87 @@ export default function NewActorPage() {
     "timeout": 3600
   }
 }`}
-          >
-            <span className="text-zinc-500">.actor/actor.json</span>
-            {'\n'}
-            {'{'}
-            {'\n'}
-            {'  '}
-            <span className="text-cyan-400">{'"actorSpecification"'}</span>:{' '}
-            <span className="text-amber-400">1</span>,{'\n'}
-            {'  '}
-            <span className="text-cyan-400">{'"name"'}</span>:{' '}
-            <span className="text-green-400">{'"my-actor"'}</span>,{'\n'}
-            {'  '}
-            <span className="text-cyan-400">{'"title"'}</span>:{' '}
-            <span className="text-green-400">{'"My Actor"'}</span>,{'\n'}
-            {'  '}
-            <span className="text-cyan-400">{'"description"'}</span>:{' '}
-            <span className="text-green-400">{'"Scrapes data from example.com"'}</span>,{'\n'}
-            {'  '}
-            <span className="text-cyan-400">{'"version"'}</span>:{' '}
-            <span className="text-green-400">{'"1.0.0"'}</span>,{'\n'}
-            {'  '}
-            <span className="text-cyan-400">{'"dockerfile"'}</span>:{' '}
-            <span className="text-green-400">{'"./Dockerfile"'}</span>,{'\n'}
-            {'  '}
-            <span className="text-cyan-400">{'"defaultRunOptions"'}</span>: {'{'}
-            {'\n'}
-            {'    '}
-            <span className="text-cyan-400">{'"memory"'}</span>:{' '}
-            <span className="text-amber-400">1024</span>,{'\n'}
-            {'    '}
-            <span className="text-cyan-400">{'"timeout"'}</span>:{' '}
-            <span className="text-amber-400">3600</span>
-            {'\n'}
-            {'  '}
-            {'}'}
-            {'\n'}
-            {'}'}
-          </CodeBlock>
-        </CardContent>
-      </Card>
+        >
+          {`{
+  `}
+          <span className="text-[color:var(--info)]">&quot;actorSpecification&quot;</span>:{' '}
+          <span className="text-[color:var(--warn)]">1</span>,
+          {`
+  `}
+          <span className="text-[color:var(--info)]">&quot;name&quot;</span>:{' '}
+          <span className="text-[color:var(--signal)]">&quot;my-actor&quot;</span>,
+          {`
+  `}
+          <span className="text-[color:var(--info)]">&quot;title&quot;</span>:{' '}
+          <span className="text-[color:var(--signal)]">&quot;My Actor&quot;</span>,
+          {`
+  `}
+          <span className="text-[color:var(--info)]">&quot;version&quot;</span>:{' '}
+          <span className="text-[color:var(--signal)]">&quot;1.0.0&quot;</span>,
+          {`
+  `}
+          <span className="text-[color:var(--info)]">&quot;dockerfile&quot;</span>:{' '}
+          <span className="text-[color:var(--signal)]">&quot;./Dockerfile&quot;</span>,
+          {`
+  `}
+          <span className="text-[color:var(--info)]">&quot;defaultRunOptions&quot;</span>:{' '}
+          {`{
+    `}
+          <span className="text-[color:var(--info)]">&quot;memory&quot;</span>:{' '}
+          <span className="text-[color:var(--warn)]">1024</span>,
+          {`
+    `}
+          <span className="text-[color:var(--info)]">&quot;timeout&quot;</span>:{' '}
+          <span className="text-[color:var(--warn)]">3600</span>
+          {`
+  }
+}`}
+        </CodeBlock>
+      </section>
 
-      {/* Push existing project */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-green-500/10 rounded-lg">
-              <Folder className="h-5 w-5 text-green-400" />
-            </div>
-            <div>
-              <CardTitle>Push an existing Apify actor</CardTitle>
-              <CardDescription>Already have an Apify actor? Just push it!</CardDescription>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <CodeBlock copyText="cd your-existing-actor && npx crawlee-cloud push">
-            <span className="text-zinc-500">$</span> cd{' '}
-            <span className="text-amber-400">your-existing-actor</span>
-            {'\n'}
-            <span className="text-zinc-500">$</span> npx crawlee-cloud push{'\n'}
-            {'\n'}
-            <span className="text-green-400">✓</span> Reading .actor/actor.json...{'\n'}
-            <span className="text-green-400">✓</span> Building Docker image...{'\n'}
-            <span className="text-green-400">✓</span> Registering actor {'"your-actor"'}...{'\n'}
-            <span className="text-green-400">✓</span> Done! View at
-            http://localhost:3001/actors/your-actor
-          </CodeBlock>
-        </CardContent>
-      </Card>
-
-      {/* Tip */}
-      <div className="p-4 rounded-lg bg-amber-500/10 border border-amber-500/20">
-        <div className="flex gap-3">
-          <Package className="h-5 w-5 text-amber-400 flex-shrink-0 mt-0.5" />
-          <div className="space-y-1">
-            <p className="font-medium text-amber-200">Apify SDK Compatibility</p>
-            <p className="text-sm text-amber-200/70">
-              Your existing Apify actors work without code changes. The CLI reads your existing{' '}
-              <code className="px-1 py-0.5 bg-amber-500/20 rounded text-amber-300 text-xs">
-                .actor/actor.json
-              </code>{' '}
-              and handles everything automatically.
-            </p>
-          </div>
+      {/* Existing actor */}
+      <section className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Folder className="h-4 w-4 text-[color:var(--signal)]" />
+          <h2 className="text-[15px] text-foreground">Push an existing Apify actor</h2>
         </div>
-      </div>
+        <CodeBlock copyText="cd your-existing-actor && npx crawlee-cloud push">
+          <span className="text-muted-foreground">$</span> cd{' '}
+          <span className="text-[color:var(--info)]">your-existing-actor</span>
+          {`
+`}
+          <span className="text-muted-foreground">$</span> npx crawlee-cloud push
+          {`
 
-      <div className="flex justify-start">
-        <Button variant="outline" asChild>
-          <AppLink href="/actors">
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Back to Actors
-          </AppLink>
-        </Button>
-      </div>
+`}
+          <span className="text-[color:var(--signal)]">✓</span> reading .actor/actor.json
+          {`
+`}
+          <span className="text-[color:var(--signal)]">✓</span> building docker image
+          {`
+`}
+          <span className="text-[color:var(--signal)]">✓</span> registering actor
+          {`
+`}
+          <span className="text-[color:var(--signal)]">✓</span> done · /actors/your-actor
+        </CodeBlock>
+      </section>
+
+      {/* Compatibility note */}
+      <aside
+        className={cn('panel p-4 flex items-start gap-3 border-l-2 border-l-[color:var(--info)]')}
+      >
+        <Package className="h-4 w-4 text-[color:var(--info)] mt-0.5 shrink-0" />
+        <div>
+          <p className="font-mono text-[10px] tracking-widest text-[color:var(--info)] uppercase mb-1">
+            APIFY · COMPATIBILITY
+          </p>
+          <p className="text-[13px] text-foreground">
+            Existing Apify actors run unmodified — point{' '}
+            <code className="font-mono">APIFY_API_BASE_URL</code> at this platform and push.
+          </p>
+        </div>
+      </aside>
     </div>
   );
 }

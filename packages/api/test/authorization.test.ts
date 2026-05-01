@@ -274,7 +274,8 @@ describe('Authorization Tests', () => {
 
   describe('Runs - User Isolation', () => {
     it('should only list runs owned by the current user', async () => {
-      mockQuery.mockResolvedValueOnce({
+      // GET /actor-runs runs COUNT + SELECT in parallel; mock both.
+      mockQuery.mockResolvedValueOnce({ rows: [{ total: '1' }] }).mockResolvedValueOnce({
         rows: [{ id: 'run-1', actor_id: 'act-1', user_id: USER_A.id, status: 'SUCCEEDED' }],
       });
 
@@ -284,7 +285,11 @@ describe('Authorization Tests', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('user_id = $1'), [USER_A.id]);
+      // Authorization check: every list query must scope by user_id.
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining('user_id = $1'),
+        expect.arrayContaining([USER_A.id])
+      );
     });
 
     it("should return 404 when User B accesses User A's run", async () => {

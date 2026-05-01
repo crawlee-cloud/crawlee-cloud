@@ -62,8 +62,9 @@ describe('Actor Runs Routes', () => {
   });
 
   describe('GET /v2/actor-runs', () => {
-    it('should list runs', async () => {
-      mockQuery.mockResolvedValueOnce({
+    it('should list runs (with real total via COUNT)', async () => {
+      // Route runs COUNT(*) and the page SELECT in parallel — mock both.
+      mockQuery.mockResolvedValueOnce({ rows: [{ total: '2' }] }).mockResolvedValueOnce({
         rows: [createRunRow(), createRunRow({ id: 'run-2', status: 'SUCCEEDED' })],
       });
 
@@ -75,6 +76,9 @@ describe('Actor Runs Routes', () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body.data.items).toHaveLength(2);
+      expect(body.data.total).toBe(2);
+      expect(body.data.limit).toBe(50);
+      expect(body.data.offset).toBe(0);
     });
   });
 

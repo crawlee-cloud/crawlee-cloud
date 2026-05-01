@@ -17,6 +17,9 @@ export default tseslint.config(
             "scripts/*.ts",
             "vitest.*.ts",
             "packages/*/vitest.config.ts",
+            // Per-package integration runner configs — they live next to
+            // vitest.config.ts and aren't part of the package tsconfigs.
+            "packages/*/vitest.integration.config.ts",
           ],
           maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 20,
         },

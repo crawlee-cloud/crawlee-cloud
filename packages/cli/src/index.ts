@@ -22,6 +22,8 @@ import { logsCommand } from './commands/logs.js';
 import { statusCommand } from './commands/status.js';
 import { loginCommand } from './commands/login.js';
 import { listCommand } from './commands/list.js';
+import { profileCommand } from './commands/profile.js';
+import { infoCommand } from './commands/info.js';
 
 export const program = new Command();
 
@@ -40,6 +42,8 @@ program.addCommand(logsCommand);
 program.addCommand(statusCommand);
 program.addCommand(loginCommand);
 program.addCommand(listCommand);
+program.addCommand(profileCommand);
+program.addCommand(infoCommand);
 
 export { program as cli };
 

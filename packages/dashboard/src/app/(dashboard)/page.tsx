@@ -1,262 +1,372 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import {
-  Activity,
-  Server,
-  Users,
-  Zap,
-  Loader2,
-  ArrowRight,
-  ExternalLink,
-  Plus,
-} from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { ArrowUpRight, Hammer, Plus, Webhook, Zap } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
-import type { Run } from '@/lib/api';
-import { getDashboardStats, getRuns } from '@/lib/api';
+import { StatusChip } from '@/components/ui/badge';
+import type { Actor, Run } from '@/lib/api';
+import { getActors, getDashboardStats, getRuns } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
-export default function Dashboard() {
-  const [stats, setStats] = useState({
+type Stats = Awaited<ReturnType<typeof getDashboardStats>>;
+
+export default function ConsolePage() {
+  const [stats, setStats] = useState<Stats>({
     totalRuns: 0,
     activeActors: 0,
     totalDatasets: 0,
-    successRate: 100,
+    successRate: 0,
+    runningCount: 0,
+    failedLast24h: 0,
   });
-  const [recentRuns, setRecentRuns] = useState<Run[]>([]);
+  const [runs, setRuns] = useState<Run[]>([]);
+  // Actor lookup so we can show names instead of opaque IDs in the feed.
+  const [actorsById, setActorsById] = useState<Record<string, Actor>>({});
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    async function loadData() {
+    let alive = true;
+    async function load() {
       try {
-        const [statsData, runsData] = await Promise.all([getDashboardStats(), getRuns()]);
-        setStats(statsData);
-        setRecentRuns(runsData.slice(0, 5));
-      } catch (error) {
-        console.error('Failed to load dashboard data:', error);
+        const [s, r, a] = await Promise.all([
+          getDashboardStats(),
+          getRuns(),
+          getActors().catch(() => [] as Actor[]),
+        ]);
+        if (!alive) return;
+        setStats(s);
+        setRuns(r);
+        const map: Record<string, Actor> = {};
+        a.forEach((x) => (map[x.id] = x));
+        setActorsById(map);
       } finally {
-        setLoading(false);
+        if (alive) setLoading(false);
       }
     }
-
-    void loadData();
+    void load();
+    const id = setInterval(() => void load(), 10_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
   }, []);
 
-  function formatTimeAgo(dateString: string) {
-    if (!dateString) return '';
-    const date = new Date(dateString);
-    const now = new Date();
-    const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+  /*
+    A 24-bucket hourly histogram of runs over the last 24h.
+    Plain CSS bars — no chart library — keeps the page tiny and the aesthetic crisp.
+  */
+  const histogram = useMemo(() => {
+    const now = Date.now();
+    const buckets = new Array(24).fill(0).map((_, i) => ({
+      hour: i,
+      total: 0,
+      failed: 0,
+    }));
+    for (const r of runs) {
+      const t = new Date(r.createdAt).getTime();
+      const ago = now - t;
+      if (ago < 0 || ago > 24 * 60 * 60 * 1000) continue;
+      const idx = 23 - Math.floor(ago / (60 * 60 * 1000));
+      if (idx < 0 || idx > 23) continue;
+      buckets[idx].total += 1;
+      if (r.status === 'FAILED' || r.status === 'TIMED-OUT') buckets[idx].failed += 1;
+    }
+    const max = Math.max(1, ...buckets.map((b) => b.total));
+    return { buckets, max };
+  }, [runs]);
 
-    if (seconds < 60) return 'just now';
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-    return `${Math.floor(seconds / 86400)}d ago`;
-  }
-
-  if (loading) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-black/20">
-        <Loader2 className="h-10 w-10 animate-spin text-indigo-500" />
-      </div>
-    );
-  }
+  const recent = runs.slice(0, 8);
 
   return (
-    <div className="min-h-screen space-y-8 animate-in fade-in duration-500">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <div className="space-y-8">
+      {/* Page header */}
+      <div className="flex items-end justify-between gap-6 pb-4 border-b border-border">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight bg-linear-to-r from-white to-white/60 bg-clip-text text-transparent">
-            Dashboard
+          <p className="eyebrow mb-2">CONSOLE · OVERVIEW</p>
+          <h1 className="text-[28px] leading-none font-medium tracking-tight">
+            Operator dashboard
           </h1>
-          <p className="text-muted-foreground mt-1 text-sm">Overview of your scraping operations</p>
+          <p className="text-muted-foreground mt-2 text-[13px]">
+            Live state of the Crawlee Cloud cluster — runs, builds, and integrations.
+          </p>
         </div>
-        <div className="flex gap-3">
-          <AppLink href="/actors/new">
-            <Button className="bg-indigo-600 hover:bg-indigo-700 text-white border-0 shadow-lg shadow-indigo-500/20">
-              <Plus className="mr-2 h-4 w-4" /> New Actor
-            </Button>
+        <div className="flex items-center gap-2">
+          <AppLink
+            href="/actors/new"
+            className="inline-flex items-center gap-1.5 px-3 h-8 text-[12px] font-mono uppercase tracking-wider border border-border hover:border-[color:var(--signal)]/50 hover:text-[color:var(--signal)] transition-colors rounded-sm"
+          >
+            <Plus className="h-3.5 w-3.5" /> New actor
+          </AppLink>
+          <AppLink
+            href="/runs/new"
+            className="inline-flex items-center gap-1.5 px-3 h-8 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 rounded-sm"
+          >
+            <Zap className="h-3.5 w-3.5" /> Start run
           </AppLink>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <Card className="border-l-4 border-l-indigo-500">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Active Actors
-            </CardTitle>
-            <Activity className="h-4 w-4 text-indigo-400" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-white">{stats.activeActors}</div>
-            <p className="text-xs text-muted-foreground mt-1">Ready for deployment</p>
-          </CardContent>
-        </Card>
-
-        <Card className="border-l-4 border-l-purple-500">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Total Runs</CardTitle>
-            <Zap className="h-4 w-4 text-purple-400" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-white">{stats.totalRuns}</div>
-            <div className="flex items-center text-xs mt-1">
-              <span
-                className={cn(
-                  'font-medium',
-                  stats.successRate >= 90 ? 'text-emerald-400' : 'text-amber-400'
-                )}
-              >
-                {stats.successRate}% success rate
-              </span>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-l-4 border-l-pink-500">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Datasets</CardTitle>
-            <Server className="h-4 w-4 text-pink-400" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-white">{stats.totalDatasets}</div>
-            <p className="text-xs text-muted-foreground mt-1">Stored collections</p>
-          </CardContent>
-        </Card>
-
-        <Card className="border-l-4 border-l-emerald-500">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              System Status
-            </CardTitle>
-            <Users className="h-4 w-4 text-emerald-400" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-emerald-400">Healthy</div>
-            <div className="flex items-center gap-2 mt-1">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-              </span>
-              <p className="text-xs text-muted-foreground">Operational</p>
-            </div>
-          </CardContent>
-        </Card>
+      {/* Stat strip — six tiles, monospaced numbers, corner brackets */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-px bg-border border border-border rounded-md overflow-hidden">
+        <Stat label="Actors" value={stats.activeActors} loading={loading} />
+        <Stat label="Runs · total" value={stats.totalRuns} loading={loading} />
+        <Stat
+          label="Running now"
+          value={stats.runningCount}
+          loading={loading}
+          tone={stats.runningCount > 0 ? 'signal' : undefined}
+          live={stats.runningCount > 0}
+        />
+        <Stat
+          label="Success · all-time"
+          value={stats.totalRuns ? `${stats.successRate}%` : '—'}
+          loading={loading}
+          tone={
+            stats.totalRuns === 0
+              ? undefined
+              : stats.successRate >= 90
+                ? 'signal'
+                : stats.successRate >= 70
+                  ? 'warn'
+                  : 'fail'
+          }
+        />
+        <Stat
+          label="Failed · 24h"
+          value={stats.failedLast24h}
+          loading={loading}
+          tone={stats.failedLast24h > 0 ? 'fail' : undefined}
+        />
+        <Stat label="Datasets" value={stats.totalDatasets} loading={loading} />
       </div>
 
+      {/* Histogram + recent runs side-by-side */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <Card className="lg:col-span-2">
-          <CardHeader className="flex flex-row items-center justify-between">
+        <section className="panel p-5 lg:col-span-2">
+          <header className="flex items-end justify-between mb-5">
             <div>
-              <CardTitle>Recent Activity</CardTitle>
-              <CardDescription>Latest execution audits</CardDescription>
+              <p className="eyebrow">RUNS · LAST 24H</p>
+              <h2 className="text-base mt-1">Hourly throughput</h2>
             </div>
-            <AppLink href="/runs">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-xs text-muted-foreground hover:text-white"
-              >
-                View All <ArrowRight className="ml-1 h-3 w-3" />
-              </Button>
-            </AppLink>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-1">
-              {recentRuns.length === 0 ? (
-                <div className="py-8 text-center text-muted-foreground bg-white/5 rounded-lg border border-dashed border-white/10">
-                  No recent activity found.
-                </div>
-              ) : (
-                recentRuns.map((run) => (
-                  <div
-                    key={run.id}
-                    className="group flex items-center justify-between p-3 rounded-lg hover:bg-white/5 transition-colors border border-transparent hover:border-white/5"
-                  >
-                    <div className="flex items-center gap-4">
-                      <div
-                        className={cn(
-                          'h-2 w-2 rounded-full',
-                          run.status === 'SUCCEEDED'
-                            ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]'
-                            : run.status === 'RUNNING'
-                              ? 'bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)] animate-pulse'
-                              : run.status === 'READY'
-                                ? 'bg-zinc-500'
-                                : 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.5)]'
-                        )}
-                      />
-                      <div>
-                        <p className="font-medium text-sm text-white/90 group-hover:text-white transition-colors">
-                          {run.actId}
-                        </p>
-                        <p className="text-xs text-muted-foreground flex items-center gap-1">
-                          <code className="px-1 py-0.5 rounded bg-black/30 text-[10px] font-mono border border-white/5">
-                            {run.id.slice(0, 8)}
-                          </code>
-                          • {formatTimeAgo(run.createdAt)}
-                        </p>
-                      </div>
-                    </div>
-                    <Badge
-                      variant={
-                        run.status === 'SUCCEEDED'
-                          ? 'success'
-                          : run.status === 'RUNNING'
-                            ? 'secondary'
-                            : run.status === 'READY'
-                              ? 'outline'
-                              : 'error'
-                      }
-                      className="capitalize"
-                    >
-                      {run.status.toLowerCase()}
-                    </Badge>
-                  </div>
-                ))
-              )}
+            <div className="flex items-center gap-3 font-mono text-[10px] tracking-widest text-muted-foreground">
+              <span className="flex items-center gap-1.5">
+                <span className="inline-block w-2 h-2 rounded-sm bg-[color:var(--signal)]" /> OK
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="inline-block w-2 h-2 rounded-sm bg-[color:var(--fail)]" /> FAIL
+              </span>
             </div>
-          </CardContent>
-        </Card>
+          </header>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Quick Actions</CardTitle>
-            <CardDescription>Common management tasks</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <AppLink href="/actors/new" className="block group">
-              <div className="flex items-center justify-between p-3 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 transition-all cursor-pointer">
-                <span className="text-sm font-medium text-white/90 group-hover:text-white">
-                  New Actor
-                </span>
-                <Plus className="h-4 w-4 text-muted-foreground group-hover:text-indigo-400 transition-colors" />
-              </div>
-            </AppLink>
-            <AppLink href="/datasets" className="block group">
-              <div className="flex items-center justify-between p-3 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 transition-all cursor-pointer">
-                <span className="text-sm font-medium text-white/90 group-hover:text-white">
-                  Browse Datasets
-                </span>
-                <Server className="h-4 w-4 text-muted-foreground group-hover:text-pink-400 transition-colors" />
-              </div>
-            </AppLink>
-            <div className="h-px bg-white/5 my-2" />
-            <AppLink href="/docs" className="block group">
-              <div className="flex items-center justify-between p-3 rounded-lg border border-transparent hover:bg-white/5 transition-all cursor-pointer">
-                <span className="text-sm text-muted-foreground group-hover:text-white">
-                  Documentation
-                </span>
-                <ExternalLink className="h-4 w-4 text-muted-foreground group-hover:text-white transition-colors" />
-              </div>
-            </AppLink>
-          </CardContent>
-        </Card>
+          <div className="h-32 flex items-end gap-[3px]">
+            {histogram.buckets.map((b, i) => {
+              const h =
+                b.total === 0 ? 2 : Math.max(2, Math.round((b.total / histogram.max) * 100));
+              const failedH = b.total === 0 ? 0 : Math.round((b.failed / b.total) * h);
+              return (
+                <div
+                  key={i}
+                  title={`${24 - i}h ago — ${b.total} runs (${b.failed} failed)`}
+                  className="flex-1 flex flex-col-reverse min-w-0 group"
+                >
+                  <div
+                    style={{ height: `${h}%` }}
+                    className="bg-[color:var(--signal)]/30 group-hover:bg-[color:var(--signal)]/60 transition-colors relative"
+                  >
+                    {failedH > 0 && (
+                      <div
+                        style={{ height: `${failedH}%` }}
+                        className="absolute inset-x-0 top-0 bg-[color:var(--fail)]/70"
+                      />
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex justify-between mt-2 font-mono text-[9px] tracking-wider text-muted-foreground">
+            <span>−24H</span>
+            <span>−18H</span>
+            <span>−12H</span>
+            <span>−6H</span>
+            <span>NOW</span>
+          </div>
+        </section>
+
+        {/* Quick actions panel */}
+        <section className="panel p-5">
+          <p className="eyebrow mb-4">QUICK · ACTIONS</p>
+          <ul className="space-y-1.5">
+            <QuickAction href="/actors/new" icon={Plus} label="New actor" hint="define & deploy" />
+            <QuickAction href="/builds" icon={Hammer} label="Recent builds" hint="image · digest" />
+            <QuickAction
+              href="/webhooks"
+              icon={Webhook}
+              label="Manage webhooks"
+              hint="event delivery"
+            />
+            <QuickAction
+              href="/datasets"
+              icon={ArrowUpRight}
+              label="Browse datasets"
+              hint="output records"
+            />
+          </ul>
+        </section>
+      </div>
+
+      {/* Recent runs table */}
+      <section className="panel">
+        <header className="flex items-end justify-between px-5 py-4 border-b border-border">
+          <div>
+            <p className="eyebrow">FEED · RUNS</p>
+            <h2 className="text-base mt-1">Recent activity</h2>
+          </div>
+          <AppLink
+            href="/runs"
+            className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors"
+          >
+            view all →
+          </AppLink>
+        </header>
+
+        {recent.length === 0 ? (
+          <div className="grid-bg p-12 text-center">
+            <p className="font-mono text-[11px] tracking-wider text-muted-foreground">
+              [ NO RUNS YET ]
+            </p>
+            <p className="text-sm text-muted-foreground mt-2">
+              Start a run from an actor page or via{' '}
+              <code className="font-mono text-foreground">crc run</code>.
+            </p>
+          </div>
+        ) : (
+          <table className="w-full text-[13px]">
+            <thead>
+              <tr className="text-left font-mono text-[10px] tracking-widest text-muted-foreground uppercase border-b border-border">
+                <th className="px-5 py-2 font-normal">Run ID</th>
+                <th className="px-5 py-2 font-normal">Actor</th>
+                <th className="px-5 py-2 font-normal">Status</th>
+                <th className="px-5 py-2 font-normal text-right">Started</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recent.map((run) => (
+                <tr
+                  key={run.id}
+                  className="border-b border-border/60 last:border-0 hover:bg-secondary/40 transition-colors"
+                >
+                  <td className="px-5 py-3 font-mono">
+                    <AppLink
+                      href={`/runs/${run.id}`}
+                      className="text-foreground hover:text-[color:var(--signal)] transition-colors"
+                    >
+                      {run.id.slice(0, 12)}
+                    </AppLink>
+                  </td>
+                  <td className="px-5 py-3">
+                    {(() => {
+                      const actor = actorsById[run.actId];
+                      return actor ? (
+                        <AppLink
+                          href={`/actors/${actor.name}`}
+                          className="text-foreground hover:text-[color:var(--signal)] text-[13px]"
+                        >
+                          {actor.title || actor.name}
+                        </AppLink>
+                      ) : (
+                        <span className="text-muted-foreground/50 italic text-[12px]">
+                          deleted actor
+                        </span>
+                      );
+                    })()}
+                  </td>
+                  <td className="px-5 py-3">
+                    <StatusChip status={run.status} />
+                  </td>
+                  <td className="px-5 py-3 font-mono text-[11px] text-muted-foreground tnum text-right">
+                    {timeAgo(run.createdAt)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  loading,
+  tone,
+  live,
+}: {
+  label: string;
+  value: number | string;
+  loading: boolean;
+  tone?: 'signal' | 'warn' | 'fail';
+  live?: boolean;
+}) {
+  const toneClass =
+    tone === 'signal'
+      ? 'text-[color:var(--signal)]'
+      : tone === 'warn'
+        ? 'text-[color:var(--warn)]'
+        : tone === 'fail'
+          ? 'text-[color:var(--fail)]'
+          : 'text-foreground';
+  return (
+    <div className="bg-card px-5 py-4 relative">
+      <div className="flex items-center justify-between mb-2">
+        <span className="eyebrow">{label}</span>
+        {live && <span className="live-dot" />}
+      </div>
+      <div className={cn('text-2xl font-mono tnum tracking-tight leading-none', toneClass)}>
+        {loading ? <span className="text-muted-foreground/40">…</span> : value}
       </div>
     </div>
   );
+}
+
+function QuickAction({
+  href,
+  icon: Icon,
+  label,
+  hint,
+}: {
+  href: string;
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  hint: string;
+}) {
+  return (
+    <li>
+      <AppLink
+        href={href}
+        className="group flex items-center gap-3 px-3 py-2.5 border border-transparent hover:border-border hover:bg-secondary/40 rounded-sm transition-colors"
+      >
+        <Icon className="h-3.5 w-3.5 text-muted-foreground group-hover:text-[color:var(--signal)]" />
+        <div className="flex-1 min-w-0">
+          <p className="text-[13px] text-foreground leading-none">{label}</p>
+          <p className="font-mono text-[10px] text-muted-foreground tracking-wider mt-1 leading-none">
+            {hint}
+          </p>
+        </div>
+        <span className="font-mono text-[10px] text-muted-foreground/60 group-hover:text-foreground">
+          →
+        </span>
+      </AppLink>
+    </li>
+  );
+}
+
+function timeAgo(iso: string): string {
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
 }

@@ -13,7 +13,8 @@
     "build": "tsc",
     "dev": "tsx src/bin.ts",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "keywords": [
     "crawlee",
@@ -38,7 +39,8 @@
     "@types/fs-extra": "^11.0.4",
     "@types/node": "^20.10.0",
     "tsx": "^4.7.0",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.9"
   },
   "files": [
     "dist"

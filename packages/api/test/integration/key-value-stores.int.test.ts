@@ -50,7 +50,8 @@ describe('Key-Value Stores (integration)', () => {
       },
       payload: JSON.stringify({ result: 'hello' }),
     });
-    expect(put.statusCode).toBe(200);
+    // Apify v2 returns 201 Created on PUT record
+    expect(put.statusCode).toBe(201);
 
     // Get value
     const get = await app.inject({

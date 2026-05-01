@@ -1,181 +1,172 @@
-import { Book, ExternalLink, Code, Terminal, Webhook, Database, ArrowUpRight } from "lucide-react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import Link from "next/link";
+import { ArrowUpRight, Book, Code, Database, ExternalLink, Terminal, Webhook } from 'lucide-react';
+import Link from 'next/link';
 
-const GITHUB_REPO = "https://github.com/crawlee-cloud/crawlee-cloud";
-const CRAWLEE_DOCS = "https://crawlee.dev/docs";
-const APIFY_DOCS = "https://docs.apify.com";
+const GITHUB_REPO = 'https://github.com/crawlee-cloud/crawlee-cloud';
+const SITE_DOCS = 'https://crawlee.cloud/docs';
+const CRAWLEE_DOCS = 'https://crawlee.dev/docs';
+const APIFY_DOCS = 'https://docs.apify.com';
 
 interface DocCard {
   title: string;
   description: string;
   icon: React.ElementType;
-  iconColor: string;
   items: string[];
   href: string;
-  external?: boolean;
 }
 
 const docCards: DocCard[] = [
   {
-    title: "Getting Started",
-    description: "Quick introduction to Crawlee Cloud",
+    title: 'Getting started',
+    description: 'Quick introduction to Crawlee Cloud.',
     icon: Book,
-    iconColor: "blue",
-    items: ["Installation & Setup", "Creating your first Actor", "Running locally", "Deploying to production"],
-    href: `${GITHUB_REPO}#quick-start`,
-    external: true,
+    items: [
+      'Installation & setup',
+      'Creating your first actor',
+      'Running locally',
+      'Deploying to production',
+    ],
+    href: `${SITE_DOCS}/quickstart-tutorial`,
   },
   {
-    title: "API Reference",
-    description: "Complete REST API documentation",
+    title: 'API reference',
+    description: 'Complete REST API documentation.',
     icon: Code,
-    iconColor: "purple",
-    items: ["Datasets API", "Key-Value Stores API", "Request Queues API", "Actors & Runs API"],
-    href: "http://localhost:3000/documentation",
-    external: true,
+    items: ['Datasets API', 'Key-Value Stores API', 'Request Queues API', 'Actors & Runs API'],
+    href: `${SITE_DOCS}/api`,
   },
   {
-    title: "CLI Guide",
-    description: "Command-line interface usage",
+    title: 'CLI guide',
+    description: 'Command-line interface usage. Multi-environment profiles + healthcheck.',
     icon: Terminal,
-    iconColor: "green",
-    items: ["crawlee-cloud create", "crawlee-cloud run", "crawlee-cloud push", "crawlee-cloud call"],
-    href: `${GITHUB_REPO}/blob/main/packages/cli/README.md`,
-    external: true,
+    items: [
+      'crc login --profile <env>',
+      'crc profile list / use / rm',
+      'crc info — active profile + server health',
+      'crc push, run, call, logs',
+    ],
+    href: `${SITE_DOCS}/cli`,
   },
   {
-    title: "Crawlee Framework",
-    description: "Learn the underlying framework",
+    title: 'Crawlee framework',
+    description: 'Learn the underlying scraping framework.',
     icon: Webhook,
-    iconColor: "orange",
-    items: ["CheerioCrawler", "PlaywrightCrawler", "Request handling", "Data storage"],
+    items: ['CheerioCrawler', 'PlaywrightCrawler', 'Request handling', 'Data storage'],
     href: CRAWLEE_DOCS,
-    external: true,
   },
   {
-    title: "Self-Hosting",
-    description: "Deploy on your infrastructure",
+    title: 'Self-hosting',
+    description: 'Deploy on your infrastructure.',
     icon: Database,
-    iconColor: "cyan",
-    items: ["Docker deployment", "Kubernetes setup", "Storage configuration", "Scaling guide"],
-    href: `${GITHUB_REPO}/blob/main/docs/deployment.md`,
-    external: true,
+    items: ['Docker deployment', 'Storage configuration', 'Runner setup', 'Production hardening'],
+    href: `${SITE_DOCS}/deployment`,
   },
   {
-    title: "Bring Your Code",
-    description: "Works with your existing Actors",
+    title: 'Bring your code',
+    description: 'Existing Apify actors run unmodified.',
     icon: ExternalLink,
-    iconColor: "pink",
-    items: ["Zero-code migration", "Environment variables", "API compatibility", "Data export/import"],
-    href: `${GITHUB_REPO}/blob/main/docs/README.md#zero-code-migration-from-apify`,
-    external: true,
+    items: [
+      'Apify SDK environment',
+      'Environment variables',
+      'API compatibility',
+      'Zero-code migration',
+    ],
+    href: `${SITE_DOCS}/apify-sdk-environment`,
   },
 ];
 
-function getColorClasses(color: string) {
-  const colors: Record<string, { bg: string; text: string }> = {
-    blue: { bg: "bg-blue-500/10", text: "text-blue-500" },
-    purple: { bg: "bg-purple-500/10", text: "text-purple-500" },
-    green: { bg: "bg-green-500/10", text: "text-green-500" },
-    orange: { bg: "bg-orange-500/10", text: "text-orange-500" },
-    cyan: { bg: "bg-cyan-500/10", text: "text-cyan-500" },
-    pink: { bg: "bg-pink-500/10", text: "text-pink-500" },
-  };
-  return colors[color] ?? colors.blue;
-}
-
 export default function DocsPage() {
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Documentation</h1>
-        <p className="text-muted-foreground">Learn how to use Crawlee Cloud</p>
-      </div>
+    <div className="space-y-8">
+      <header className="pb-4 border-b border-border">
+        <p className="eyebrow mb-2">SYSTEM · DOCUMENTATION</p>
+        <h1 className="text-[28px] leading-none font-medium tracking-tight">Documentation</h1>
+        <p className="text-muted-foreground mt-2 text-[13px]">
+          Operating manual for Crawlee Cloud. External links open in a new tab.
+        </p>
+      </header>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      <ul className="grid gap-3 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
         {docCards.map((card) => {
           const Icon = card.icon;
-          const colors = getColorClasses(card.iconColor);
-          
           return (
-            <Link 
-              key={card.title} 
-              href={card.href}
-              target={card.external ? "_blank" : undefined}
-              rel={card.external ? "noopener noreferrer" : undefined}
-              className="block"
-            >
-              <Card className="h-full hover:border-primary/50 hover:bg-white/5 transition-all cursor-pointer group">
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className={`p-2 ${colors.bg} rounded-lg`}>
-                        <Icon className={`h-5 w-5 ${colors.text}`} />
-                      </div>
-                      <CardTitle className="text-lg">{card.title}</CardTitle>
-                    </div>
-                    {card.external && (
-                      <ArrowUpRight className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
-                    )}
+            <li key={card.title}>
+              <Link
+                href={card.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block panel p-5 h-full hover:border-[color:var(--signal)]/40 transition-colors group"
+              >
+                <div className="flex items-start justify-between mb-3">
+                  <div className="h-8 w-8 rounded-sm border border-border bg-secondary/60 grid place-items-center text-muted-foreground group-hover:text-[color:var(--signal)] group-hover:border-[color:var(--signal)]/40 transition-colors">
+                    <Icon className="h-4 w-4" />
                   </div>
-                  <CardDescription>{card.description}</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <ul className="space-y-2 text-sm text-muted-foreground">
-                    {card.items.map((item) => (
-                      <li key={item}>• {item}</li>
-                    ))}
-                  </ul>
-                </CardContent>
-              </Card>
-            </Link>
+                  <ArrowUpRight className="h-3.5 w-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                </div>
+                <h3 className="text-[15px] text-foreground group-hover:text-[color:var(--signal)] transition-colors">
+                  {card.title}
+                </h3>
+                <p className="text-[12px] text-muted-foreground mt-1">{card.description}</p>
+                <ul className="mt-4 space-y-1 text-[12px] text-muted-foreground font-mono">
+                  {card.items.map((item) => (
+                    <li key={item} className="flex items-center gap-2">
+                      <span className="text-[color:var(--signal)]/60">▸</span>
+                      <span>{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              </Link>
+            </li>
           );
         })}
-      </div>
+      </ul>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Quick Reference</CardTitle>
-          <CardDescription>Common commands and endpoints</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
+      {/* Quick reference */}
+      <section className="panel">
+        <header className="px-5 py-4 border-b border-border">
+          <p className="eyebrow">REFERENCE · CHEAT SHEET</p>
+          <h2 className="text-[15px] mt-1">Common values</h2>
+        </header>
+        <div className="p-5 space-y-4">
           <div>
-            <h4 className="font-medium mb-2">API Base URL</h4>
-            <code className="block p-3 bg-muted rounded-lg text-sm font-mono">
+            <p className="font-mono text-[10px] tracking-widest text-muted-foreground uppercase mb-1.5">
+              API base URL
+            </p>
+            <pre className="panel bg-[color:var(--background)] p-3 font-mono text-[12px] text-foreground">
               http://localhost:3000/v2
-            </code>
+            </pre>
           </div>
           <div>
-            <h4 className="font-medium mb-2">Environment Variables</h4>
-            <code className="block p-3 bg-muted rounded-lg text-sm font-mono whitespace-pre">
-{`APIFY_API_BASE_URL=http://localhost:3000/v2
+            <p className="font-mono text-[10px] tracking-widest text-muted-foreground uppercase mb-1.5">
+              Apify-compat env vars
+            </p>
+            <pre className="panel bg-[color:var(--background)] p-3 font-mono text-[12px] text-foreground whitespace-pre">
+              {`APIFY_API_BASE_URL=http://localhost:3000/v2
 APIFY_TOKEN=your-token
 APIFY_IS_AT_HOME=1`}
-            </code>
+            </pre>
           </div>
-          <div className="pt-2 flex gap-3">
-            <Link 
+          <div className="flex flex-wrap gap-3 pt-2 border-t border-border">
+            <Link
               href={GITHUB_REPO}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
+              className="inline-flex items-center gap-1.5 text-[12px] text-foreground hover:text-[color:var(--signal)] transition-colors"
             >
-              <span>View on GitHub</span>
-              <ArrowUpRight className="h-3.5 w-3.5" />
+              <span>github.com/crawlee-cloud</span>
+              <ArrowUpRight className="h-3 w-3" />
             </Link>
-            <Link 
+            <Link
               href={APIFY_DOCS}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
+              className="inline-flex items-center gap-1.5 text-[12px] text-foreground hover:text-[color:var(--signal)] transition-colors"
             >
-              <span>Apify SDK Docs</span>
-              <ArrowUpRight className="h-3.5 w-3.5" />
+              <span>Apify SDK docs</span>
+              <ArrowUpRight className="h-3 w-3" />
             </Link>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
     </div>
   );
 }

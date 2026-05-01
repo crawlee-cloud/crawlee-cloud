@@ -1,345 +1,404 @@
 'use client';
 
-import { useEffect, useState, useRef, Suspense } from 'react';
+import { useEffect, useRef, useState, Suspense } from 'react';
 import { useParams } from 'next/navigation';
-import { ArrowLeft, Clock, Terminal, Loader2, Database, Ban, FileInput } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import { getRun, getRunLogs, getRunInput, getRunDatasetItems, abortRun, type Run } from '@/lib/api';
-import { cn } from '@/lib/utils';
+  ArrowLeft,
+  Ban,
+  Boxes,
+  Clock,
+  Cpu,
+  Database,
+  FileInput,
+  ListOrdered,
+  Loader2,
+  Terminal,
+} from 'lucide-react';
 import { AppLink } from '@/components/app-link';
+import { StatusChip } from '@/components/ui/badge';
+import {
+  abortRun,
+  downloadAsBlob,
+  getActor,
+  getRun,
+  getRunDatasetItems,
+  getRunInput,
+  getRunLogs,
+  openInTabAsBlob,
+  type Actor,
+  type Run,
+} from '@/lib/api';
+import { cn } from '@/lib/utils';
+import { useConfirm } from '@/components/ui/confirm';
+import { useToast } from '@/components/ui/toast';
 
-type TabType = 'logs' | 'input' | 'output';
+type Tab = 'logs' | 'input' | 'output';
 
-function RunDetailContent() {
+const TERMINAL = new Set<Run['status']>(['SUCCEEDED', 'FAILED', 'TIMED-OUT', 'ABORTED']);
+
+function RunDetail() {
   const params = useParams();
   const id = params.id as string;
+  const confirm = useConfirm();
+  const toast = useToast();
 
   const [run, setRun] = useState<Run | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<TabType>('logs');
-
-  // Logs state
+  // Resolved actor for display name. Loaded once when run is first known.
+  const [actor, setActor] = useState<Actor | null>(null);
   const [logs, setLogs] = useState<{ timestamp: string; level: string; message: string }[]>([]);
-  const logsEndRef = useRef<HTMLDivElement>(null);
+  // Total log lines stored server-side (Redis llen). May exceed `logs.length`
+  // (we only render the tail 500). Surfaced in UI so operators see "showing
+  // 500 of N" honestly — and prompts them to click "View raw" for full log.
+  const [logTotal, setLogTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState<Tab>('logs');
 
-  // Input state - use undefined to indicate "not fetched yet", null for "fetched but empty"
-  const [input, setInput] = useState<unknown>(undefined);
+  const [input, setInput] = useState<unknown>(undefined); // undefined = not fetched
   const [inputLoading, setInputLoading] = useState(false);
-
-  // Output/Dataset state - use null to indicate "not fetched yet"
-  const [datasetItems, setDatasetItems] = useState<unknown[] | null>(null);
+  const [dataset, setDataset] = useState<unknown[] | null>(null); // null = not fetched
   const [datasetLoading, setDatasetLoading] = useState(false);
 
-  // Poll for run status and logs
+  const logsEndRef = useRef<HTMLDivElement>(null);
+
+  /*
+    Polling — single self-scheduling chain that:
+    - reschedules itself only while status is non-terminal
+    - cancels cleanly on unmount (timer ref + alive flag)
+    - never stacks intervals, so re-renders don't spawn duplicate fetches
+  */
   useEffect(() => {
-    const intervalId: NodeJS.Timeout = setInterval(() => {
-      void fetchData();
-    }, 2000); // Poll every 2s
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
 
-    async function fetchData() {
+    async function tick() {
       try {
-        const [runData, logsData] = await Promise.all([
-          getRun(id),
-          getRunLogs(id, { limit: 1000 }),
-        ]);
-        setRun(runData);
-        setLogs(logsData.items || []);
+        // tail=true returns the LAST `limit` lines — what operators triaging
+        // a failed run need. The API exposes total separately so we can
+        // surface "showing 500 of 23,481" honestly. For the full log,
+        // operators click "View raw" → streaming download endpoint.
+        const [r, l] = await Promise.all([getRun(id), getRunLogs(id, { limit: 500, tail: true })]);
+        if (!alive) return;
+        setRun(r);
+        setLogs(l.items || []);
+        setLogTotal(l.total ?? l.items.length);
         setLoading(false);
-
-        // Continue polling if running
-        if (runData.status === 'RUNNING' || runData.status === 'READY') {
-          // Short poll interval for active runs
-        } else {
-          clearInterval(intervalId);
+        if (alive && !TERMINAL.has(r.status)) {
+          // tick() returns a Promise — wrap in a void-returning callback
+          // because setTimeout expects () => void.
+          timer = setTimeout(() => {
+            void tick();
+          }, 2000);
         }
       } catch (err) {
-        console.error('Failed to load run data:', err);
-        setLoading(false);
+        console.error('Failed to load run', err);
+        if (alive) setLoading(false);
       }
     }
 
-    void fetchData();
-
-    return () => clearInterval(intervalId);
+    void tick();
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+    };
   }, [id]);
 
-  // TODO: refactor tab-data fetching to an onTabChange handler instead of
-  // an effect. The set-state-in-effect rule (React 19) is silenced for
-  // this file via an override in eslint.config.mjs — see comment there.
-  // Tracked as a follow-up after the lint cleanup unblocks CI.
-
-  // Fetch input when tab changes to input (only if not fetched yet)
+  // Resolve the actor lazily once we know which one this run targeted.
   useEffect(() => {
-    if (activeTab === 'input' && input === undefined && !inputLoading) {
+    if (!run) return;
+    let alive = true;
+    getActor(run.actId)
+      .then((a) => alive && setActor(a))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [run]);
+
+  // Lazy-load tab data on demand
+  useEffect(() => {
+    if (tab === 'input' && input === undefined && !inputLoading) {
       setInputLoading(true);
       getRunInput(id)
-        .then((data) => {
-          setInput(data ?? null); // Convert undefined/null to null (meaning "fetched but empty")
-          setInputLoading(false);
-        })
-        .catch(() => {
-          setInput(null); // Mark as fetched (with no data)
-          setInputLoading(false);
-        });
+        .then((d) => setInput(d ?? null))
+        .catch(() => setInput(null))
+        .finally(() => setInputLoading(false));
     }
-  }, [activeTab, id, input, inputLoading]);
-
-  // Fetch dataset items when tab changes to output (only if not fetched yet)
-  useEffect(() => {
-    if (activeTab === 'output' && datasetItems === null && !datasetLoading) {
+    if (tab === 'output' && dataset === null && !datasetLoading) {
       setDatasetLoading(true);
-      getRunDatasetItems(id, { limit: 100 })
-        .then((data) => {
-          setDatasetItems(data || []); // Empty array means "fetched but empty"
-          setDatasetLoading(false);
-        })
-        .catch(() => {
-          setDatasetItems([]); // Mark as fetched (with no data)
-          setDatasetLoading(false);
-        });
+      getRunDatasetItems(id, { limit: 200 })
+        .then((d) => setDataset(d || []))
+        .catch(() => setDataset([]))
+        .finally(() => setDatasetLoading(false));
     }
-  }, [activeTab, id, datasetItems, datasetLoading]);
+  }, [tab, id, input, inputLoading, dataset, datasetLoading]);
 
-  // Auto-scroll to bottom of logs
+  // Auto-scroll log tail
   useEffect(() => {
-    if (activeTab === 'logs') {
+    if (tab === 'logs' && run && !TERMINAL.has(run.status)) {
       logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [logs, activeTab]);
+  }, [logs, tab, run]);
 
-  const handleAbort = async () => {
-    if (!confirm('Are you sure you want to abort this run?')) return;
+  async function handleAbort() {
+    const ok = await confirm({
+      tone: 'warn',
+      title: 'Abort this run?',
+      description:
+        'The container will be sent SIGTERM and given a short grace period before being killed. Data already written stays.',
+      confirmLabel: 'abort run',
+    });
+    if (!ok) return;
     try {
       await abortRun(id);
+      toast.success('Run aborted');
     } catch (err) {
-      console.error('Failed to abort run:', err);
-      alert('Failed to abort run');
+      toast.error('Failed to abort run', { description: (err as Error).message });
     }
-  };
+  }
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-screen">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      <div className="grid place-items-center min-h-[60vh]">
+        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
       </div>
     );
   }
-
   if (!run) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen space-y-4">
-        <p className="text-muted-foreground">Run not found</p>
-        <Button variant="outline" asChild>
-          <AppLink href="/runs">Back to Runs</AppLink>
-        </Button>
+      <div className="grid place-items-center min-h-[60vh] text-center">
+        <div>
+          <p className="font-mono text-[11px] tracking-widest text-muted-foreground mb-3">
+            [ RUN NOT FOUND ]
+          </p>
+          <p className="text-[13px] text-muted-foreground mb-4">
+            ID <code className="font-mono text-foreground">{id.slice(0, 16)}</code> doesn&apos;t map
+            to any run on this cluster.
+          </p>
+          <AppLink
+            href="/runs"
+            className="inline-flex items-center gap-1.5 h-8 px-3 text-[11px] font-mono uppercase tracking-wider border border-border text-muted-foreground hover:text-foreground hover:border-[color:var(--signal)]/40 rounded-sm"
+          >
+            ← back to runs
+          </AppLink>
+        </div>
       </div>
     );
   }
 
-  const getStatusBadgeVariant = (status: string) => {
-    switch (status) {
-      case 'SUCCEEDED':
-        return 'success';
-      case 'FAILED':
-        return 'destructive';
-      case 'RUNNING':
-        return 'default';
-      case 'ABORTED':
-        return 'warning';
-      default:
-        return 'secondary';
-    }
-  };
-
-  const badgeVariant = run
-    ? (getStatusBadgeVariant(run.status) as
-        | 'default'
-        | 'secondary'
-        | 'destructive'
-        | 'outline'
-        | 'success'
-        | 'warning')
-    : 'secondary';
-
-  const tabs: { id: TabType; label: string; icon: React.ReactNode }[] = [
-    { id: 'logs', label: 'Logs', icon: <Terminal className="h-4 w-4" /> },
-    { id: 'input', label: 'Input', icon: <FileInput className="h-4 w-4" /> },
-    { id: 'output', label: 'Output', icon: <Database className="h-4 w-4" /> },
+  const isLive = !TERMINAL.has(run.status);
+  const tabs: { id: Tab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+    { id: 'logs', label: 'Logs', icon: Terminal },
+    { id: 'input', label: 'Input', icon: FileInput },
+    { id: 'output', label: 'Output', icon: Database },
   ];
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500 max-w-7xl mx-auto">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground mb-2">
-            <AppLink
-              href="/runs"
-              className="hover:text-foreground transition-colors flex items-center gap-1"
-            >
-              <ArrowLeft className="h-3 w-3" /> Runs
-            </AppLink>
-            <span>/</span>
-            <span className="text-foreground font-medium">{run.id.slice(0, 8)}...</span>
-          </div>
+    <div className="space-y-6">
+      {/* Crumb */}
+      <AppLink
+        href="/runs"
+        className="inline-flex items-center gap-1.5 font-mono text-[10px] tracking-widest text-muted-foreground hover:text-foreground transition-colors uppercase"
+      >
+        <ArrowLeft className="h-3 w-3" /> runs
+      </AppLink>
+
+      {/* Header strip */}
+      <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4 pb-5 border-b border-border">
+        <div className="space-y-2 min-w-0">
+          <p className="eyebrow">RUN · {run.id.slice(0, 12)}</p>
           <div className="flex items-center gap-3">
-            <h1 className="text-3xl font-bold tracking-tight bg-linear-to-r from-white to-white/60 bg-clip-text text-transparent">
-              Run Details
-            </h1>
-            <Badge variant={badgeVariant} className="text-sm px-3 py-1">
-              {run.status}
-            </Badge>
+            <h1 className="text-[28px] leading-none font-medium tracking-tight">Execution</h1>
+            <StatusChip status={run.status} />
           </div>
+          <p className="font-mono text-[11px] text-muted-foreground">
+            actor ·{' '}
+            {actor ? (
+              <AppLink
+                href={`/actors/${actor.name}`}
+                className="text-foreground hover:text-[color:var(--signal)]"
+              >
+                {actor.title || actor.name}
+              </AppLink>
+            ) : (
+              <AppLink
+                href={`/actors/${run.actId}`}
+                className="text-foreground hover:text-[color:var(--signal)]"
+              >
+                {run.actId}
+              </AppLink>
+            )}
+          </p>
         </div>
-        <div className="flex items-center gap-2">
-          {run.status === 'RUNNING' && (
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => void handleAbort()}
-              className="bg-rose-500/10 text-rose-400 border-rose-500/20 hover:bg-rose-500/20"
-            >
-              <Ban className="mr-2 h-4 w-4" />
-              Abort Run
-            </Button>
-          )}
-        </div>
+        {isLive && (
+          <button
+            type="button"
+            onClick={() => void handleAbort()}
+            className="h-8 px-3 self-start md:self-auto inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-[color:var(--fail)]/40 text-[color:var(--fail)] hover:bg-[color:var(--fail)]/10 rounded-sm"
+          >
+            <Ban className="h-3.5 w-3.5" /> Abort
+          </button>
+        )}
       </div>
 
+      {/* Two-column: meta + console */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        {/* Info Card */}
-        <Card className="glass-card md:col-span-1 h-fit">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Clock className="h-4 w-4 text-indigo-400" />
-              Run Info
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            <div>
-              <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
-                Actor ID
-              </p>
-              <p className="font-mono text-xs text-white truncate">{run.actId}</p>
-            </div>
-            <div>
-              <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
-                Started At
-              </p>
-              <p className="text-xs text-white">
-                {run.startedAt ? new Date(run.startedAt).toLocaleString() : '-'}
-              </p>
-            </div>
-            <div>
-              <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
-                Finished At
-              </p>
-              <p className="text-xs text-white">
-                {run.finishedAt ? new Date(run.finishedAt).toLocaleString() : '-'}
-              </p>
-            </div>
-            <div className="grid grid-cols-2 gap-2 pt-2 border-t border-white/5">
-              <div>
-                <p className="text-[10px] text-muted-foreground uppercase">Memory</p>
-                <p className="text-xs text-white font-medium">{run.memoryMbytes} MB</p>
-              </div>
-              <div>
-                <p className="text-[10px] text-muted-foreground uppercase">Timeout</p>
-                <p className="text-xs text-white font-medium">{run.timeoutSecs}s</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Tabbed Content */}
-        <Card className="glass-card md:col-span-3 flex flex-col h-[600px] overflow-hidden">
-          {/* Tabs Header */}
-          <div className="flex border-b border-white/5 bg-white/5">
-            {tabs.map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={cn(
-                  'flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 -mb-px',
-                  activeTab === tab.id
-                    ? 'border-indigo-500 text-white bg-white/5'
-                    : 'border-transparent text-muted-foreground hover:text-white hover:bg-white/5'
-                )}
+        <aside className="panel p-5 md:col-span-1 space-y-4 h-fit">
+          <p className="eyebrow">RUNTIME</p>
+          <DefRow icon={Clock} label="Started">
+            {run.startedAt ? new Date(run.startedAt).toLocaleString() : '—'}
+          </DefRow>
+          <DefRow icon={Clock} label="Finished">
+            {run.finishedAt ? new Date(run.finishedAt).toLocaleString() : '—'}
+          </DefRow>
+          <DefRow icon={Cpu} label="Memory">
+            {run.options?.memoryMbytes ? `${run.options.memoryMbytes} MB` : '—'}
+          </DefRow>
+          <DefRow icon={Clock} label="Timeout">
+            {run.options?.timeoutSecs ? `${run.options.timeoutSecs}s` : '—'}
+          </DefRow>
+          {run.defaultDatasetId && (
+            <DefRow icon={Database} label="Dataset">
+              <AppLink
+                href={`/datasets/${run.defaultDatasetId}`}
+                className="font-mono text-[11px] text-foreground hover:text-[color:var(--signal)] break-all"
               >
-                {tab.icon}
-                {tab.label}
-                {tab.id === 'logs' && run.status === 'RUNNING' && (
-                  <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                )}
-              </button>
-            ))}
+                {run.defaultDatasetId}
+              </AppLink>
+            </DefRow>
+          )}
+          {run.defaultKeyValueStoreId && (
+            <DefRow icon={Boxes} label="KV store">
+              <AppLink
+                href={`/key-value-stores/${run.defaultKeyValueStoreId}`}
+                className="font-mono text-[11px] text-foreground hover:text-[color:var(--signal)] break-all"
+              >
+                {run.defaultKeyValueStoreId}
+              </AppLink>
+            </DefRow>
+          )}
+          {run.defaultRequestQueueId && (
+            <DefRow icon={ListOrdered} label="Request queue">
+              <AppLink
+                href={`/request-queues/${run.defaultRequestQueueId}`}
+                className="font-mono text-[11px] text-foreground hover:text-[color:var(--signal)] break-all"
+              >
+                {run.defaultRequestQueueId}
+              </AppLink>
+            </DefRow>
+          )}
+        </aside>
+
+        <section className="panel md:col-span-3 flex flex-col h-[640px] overflow-hidden">
+          <div className="flex border-b border-border bg-secondary/40">
+            {tabs.map((t) => {
+              const Icon = t.icon;
+              const isActive = tab === t.id;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setTab(t.id)}
+                  className={cn(
+                    'inline-flex items-center gap-2 px-4 h-10 text-[12px] font-mono uppercase tracking-wider transition-colors -mb-px border-b',
+                    isActive
+                      ? 'text-[color:var(--signal)] border-[color:var(--signal)]'
+                      : 'text-muted-foreground border-transparent hover:text-foreground'
+                  )}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {t.label}
+                  {t.id === 'logs' && isLive && <span className="live-dot ml-1" />}
+                </button>
+              );
+            })}
           </div>
 
-          {/* Tab Content */}
-          <CardContent className="flex-1 p-0 overflow-hidden relative">
-            {/* Logs Tab */}
-            {activeTab === 'logs' && (
-              <div className="absolute inset-0 overflow-auto p-4 space-y-1 bg-black/50 font-mono text-xs scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
-                {logs.length > 0 ? (
-                  logs.map((log, i) => (
-                    <div key={i} className="flex gap-2 hover:bg-white/5 px-1 py-0.5 rounded">
-                      <span className="text-zinc-500 shrink-0 w-[140px]">
-                        {new Date(log.timestamp).toISOString().split('T')[1].slice(0, -1)}
-                      </span>
-                      <span
-                        className={cn(
-                          'shrink-0 w-[60px] font-bold',
-                          log.level === 'INFO' && 'text-blue-400',
-                          log.level === 'WARN' && 'text-amber-400',
-                          log.level === 'ERROR' && 'text-rose-400',
-                          log.level === 'DEBUG' && 'text-purple-400'
-                        )}
-                      >
-                        {log.level}
-                      </span>
-                      <span className="text-zinc-300 break-all whitespace-pre-wrap">
-                        {log.message}
-                      </span>
-                    </div>
-                  ))
-                ) : (
-                  <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50">
-                    <Terminal className="h-12 w-12 mb-2" />
-                    <p>No logs available</p>
+          <div className="flex-1 overflow-hidden relative">
+            {tab === 'logs' && (
+              <div className="absolute inset-0 overflow-auto p-4 font-mono text-[11px] bg-[color:var(--background)]/60">
+                {/*
+                  Tail viewport header: shows what fraction of the full log is
+                  currently rendered, plus a "view raw" link that opens the
+                  streaming download endpoint in a new tab — same pattern as
+                  Apify. Avoids ever rendering 50K+ lines in the DOM.
+                */}
+                {logTotal > 0 && (
+                  <div className="flex items-center justify-between mb-2 pb-2 border-b border-border/40 text-[10px] tracking-wider text-muted-foreground">
+                    <span>
+                      {logs.length < logTotal
+                        ? `showing last ${logs.length.toLocaleString()} of ${logTotal.toLocaleString()} lines`
+                        : `${logTotal.toLocaleString()} lines`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void openInTabAsBlob(
+                          `/v2/actor-runs/${id}/logs/raw`,
+                          'text/plain; charset=utf-8'
+                        ).catch((err) =>
+                          toast.error('Could not open raw log', {
+                            description: (err as Error).message,
+                          })
+                        );
+                      }}
+                      className="inline-flex items-center gap-1 hover:text-[color:var(--signal)]"
+                    >
+                      view raw ↗
+                    </button>
                   </div>
                 )}
-                <div ref={logsEndRef} />
+                {logs.length === 0 ? (
+                  <div className="h-full grid place-items-center text-muted-foreground/60">
+                    [ NO LOG OUTPUT ]
+                  </div>
+                ) : (
+                  <div className="space-y-0.5">
+                    {logs.map((log, i) => (
+                      <div
+                        key={i}
+                        className="flex gap-3 hover:bg-secondary/40 px-1 py-0.5 rounded-sm"
+                      >
+                        <span className="text-muted-foreground/60 shrink-0 w-[80px] tnum">
+                          {new Date(log.timestamp).toISOString().split('T')[1].slice(0, 8)}
+                        </span>
+                        <span
+                          className={cn(
+                            'shrink-0 w-[52px] tracking-wider',
+                            log.level === 'INFO' && 'text-[color:var(--info)]',
+                            log.level === 'WARN' && 'text-[color:var(--warn)]',
+                            log.level === 'ERROR' && 'text-[color:var(--fail)]',
+                            log.level === 'DEBUG' && 'text-muted-foreground'
+                          )}
+                        >
+                          {log.level}
+                        </span>
+                        <span className="text-foreground whitespace-pre-wrap break-all">
+                          {log.message}
+                        </span>
+                      </div>
+                    ))}
+                    <div ref={logsEndRef} />
+                  </div>
+                )}
               </div>
             )}
 
-            {/* Input Tab */}
-            {activeTab === 'input' && (
-              <div className="absolute inset-0 overflow-auto p-4 bg-black/50">
+            {tab === 'input' && (
+              <div className="absolute inset-0 overflow-auto p-4">
                 {inputLoading ? (
-                  <div className="h-full flex items-center justify-center">
-                    <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                  <div className="h-full grid place-items-center">
+                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
                   </div>
                 ) : input && Object.keys(input as object).length > 0 ? (
-                  <pre className="font-mono text-xs text-zinc-300 whitespace-pre-wrap bg-white/5 p-4 rounded-lg border border-white/5">
+                  <pre className="font-mono text-[12px] text-foreground whitespace-pre-wrap p-4 border border-border rounded-sm bg-[color:var(--background)]/60">
                     {JSON.stringify(input, null, 2)}
                   </pre>
                 ) : (
-                  <div className="h-full flex flex-col items-center justify-center">
-                    <div className="bg-white/5 rounded-2xl p-8 border border-white/10 text-center">
-                      <FileInput className="h-12 w-12 mb-3 text-muted-foreground/50 mx-auto" />
-                      <p className="text-muted-foreground font-medium mb-1">No Input Data</p>
-                      <p className="text-muted-foreground/60 text-sm">
-                        This run was started without any input parameters.
+                  <div className="h-full grid place-items-center text-center">
+                    <div>
+                      <FileInput className="h-6 w-6 text-muted-foreground/40 mx-auto mb-2" />
+                      <p className="font-mono text-[11px] tracking-wider text-muted-foreground">
+                        [ NO INPUT ]
                       </p>
                     </div>
                   </div>
@@ -347,99 +406,137 @@ function RunDetailContent() {
               </div>
             )}
 
-            {/* Output Tab */}
-            {activeTab === 'output' && (
+            {tab === 'output' && (
               <div className="absolute inset-0 overflow-auto">
-                {datasetLoading || datasetItems === null ? (
-                  <div className="h-full flex items-center justify-center">
-                    <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                {datasetLoading || dataset === null ? (
+                  <div className="h-full grid place-items-center">
+                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
                   </div>
-                ) : datasetItems.length > 0 ? (
-                  <Table>
-                    <TableHeader className="bg-white/5 sticky top-0 z-10 backdrop-blur-md">
-                      <TableRow className="hover:bg-transparent border-white/5">
-                        <TableHead className="w-[50px]">#</TableHead>
-                        {Object.keys((datasetItems[0] as object) || {})
-                          .slice(0, 8)
-                          .map((key) => (
-                            <TableHead
-                              key={key}
-                              className="whitespace-nowrap font-medium text-zinc-300 text-xs"
-                            >
-                              {key}
-                            </TableHead>
-                          ))}
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {datasetItems.map((item, idx) => (
-                        <TableRow
-                          key={idx}
-                          className="border-white/5 hover:bg-white/5 transition-colors group"
-                        >
-                          <TableCell className="font-mono text-xs text-muted-foreground w-[50px]">
-                            {idx + 1}
-                          </TableCell>
-                          {Object.keys((datasetItems[0] as object) || {})
-                            .slice(0, 8)
-                            .map((key) => {
-                              const value = (item as Record<string, unknown>)[key];
-                              return (
-                                <TableCell
-                                  key={key}
-                                  className="max-w-[200px] truncate text-xs text-zinc-400 group-hover:text-zinc-200"
-                                >
-                                  {typeof value === 'object'
-                                    ? JSON.stringify(value)
-                                    : String((value as string | number | boolean) ?? '')}
-                                </TableCell>
-                              );
-                            })}
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                ) : (
-                  <div className="h-full flex flex-col items-center justify-center p-4">
-                    <div className="bg-white/5 rounded-2xl p-8 border border-white/10 text-center">
-                      <Database className="h-12 w-12 mb-3 text-muted-foreground/50 mx-auto" />
-                      <p className="text-muted-foreground font-medium mb-1">No Output Data</p>
-                      <p className="text-muted-foreground/60 text-sm mb-3">
-                        {run.status === 'RUNNING'
-                          ? 'The run is still in progress. Data will appear here once the actor produces output.'
-                          : 'This run did not produce any output data.'}
+                ) : dataset.length === 0 ? (
+                  <div className="h-full grid place-items-center text-center">
+                    <div>
+                      <Database className="h-6 w-6 text-muted-foreground/40 mx-auto mb-2" />
+                      <p className="font-mono text-[11px] tracking-wider text-muted-foreground">
+                        [ NO OUTPUT ]
                       </p>
-                      {run.defaultDatasetId && (
-                        <AppLink
-                          href={`/datasets/${run.defaultDatasetId}`}
-                          className="text-indigo-400 hover:underline text-sm"
-                        >
-                          View Full Dataset →
-                        </AppLink>
-                      )}
+                      <p className="text-[12px] text-muted-foreground mt-1">
+                        {isLive
+                          ? 'Run is in progress. Records will appear once produced.'
+                          : 'This run did not write to the default dataset.'}
+                      </p>
                     </div>
                   </div>
+                ) : (
+                  <DatasetTable items={dataset} />
                 )}
               </div>
             )}
-          </CardContent>
+          </div>
 
-          {/* Footer with dataset link */}
-          {activeTab === 'output' &&
-            run.defaultDatasetId &&
-            datasetItems &&
-            datasetItems.length > 0 && (
-              <div className="p-2 border-t border-white/5 bg-white/5 text-center">
-                <AppLink
-                  href={`/datasets/${run.defaultDatasetId}`}
-                  className="text-xs text-indigo-400 hover:underline"
-                >
-                  View Full Dataset ({datasetItems.length} items shown) →
-                </AppLink>
-              </div>
-            )}
-        </Card>
+          {tab === 'output' && run.defaultDatasetId && dataset && dataset.length > 0 && (
+            <div className="px-4 py-2 border-t border-border bg-secondary/40 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!run.defaultDatasetId) return;
+                  void downloadAsBlob(
+                    `/v2/datasets/${run.defaultDatasetId}/items?download=1`,
+                    `dataset-${run.defaultDatasetId}.json`
+                  ).catch((err) =>
+                    toast.error('Download failed', {
+                      description: (err as Error).message,
+                    })
+                  );
+                }}
+                className="font-mono text-[10px] tracking-widest text-muted-foreground hover:text-[color:var(--signal)] uppercase"
+              >
+                ↓ download all
+              </button>
+              <AppLink
+                href={`/datasets/${run.defaultDatasetId}`}
+                className="font-mono text-[10px] tracking-widest text-muted-foreground hover:text-foreground uppercase"
+              >
+                view full dataset · {dataset.length} shown →
+              </AppLink>
+            </div>
+          )}
+        </section>
       </div>
+    </div>
+  );
+}
+
+function DatasetTable({ items }: { items: unknown[] }) {
+  // Pull keys from the first object — pragmatic; matches Apify's dataset shape conventions.
+  const sample = (items[0] ?? {}) as Record<string, unknown>;
+  const keys = Object.keys(sample).slice(0, 8);
+  if (keys.length === 0) {
+    // Items aren't objects — render as JSON list
+    return (
+      <pre className="p-4 font-mono text-[11px] text-foreground whitespace-pre-wrap">
+        {JSON.stringify(items, null, 2)}
+      </pre>
+    );
+  }
+  return (
+    <table className="w-full text-[12px]">
+      <thead className="bg-secondary/60 sticky top-0 z-10">
+        <tr className="text-left font-mono text-[10px] tracking-widest text-muted-foreground uppercase border-b border-border">
+          <th className="px-4 py-2 font-normal w-12 tnum">#</th>
+          {keys.map((k) => (
+            <th key={k} className="px-4 py-2 font-normal whitespace-nowrap">
+              {k}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {items.map((it, i) => (
+          <tr
+            key={i}
+            className="border-b border-border/60 last:border-0 hover:bg-secondary/40 align-top"
+          >
+            <td className="px-4 py-2 font-mono text-[10px] text-muted-foreground tnum">{i + 1}</td>
+            {keys.map((k) => {
+              const v = (it as Record<string, unknown>)[k];
+              const display =
+                typeof v === 'object' && v !== null
+                  ? JSON.stringify(v)
+                  : v === null || v === undefined
+                    ? ''
+                    : String(v as string | number | boolean | bigint);
+              return (
+                <td
+                  key={k}
+                  className="px-4 py-2 font-mono text-[11px] text-foreground max-w-[280px] truncate"
+                  title={display}
+                >
+                  {display}
+                </td>
+              );
+            })}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function DefRow({
+  icon: Icon,
+  label,
+  children,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <p className="eyebrow flex items-center gap-1.5 mb-1">
+        <Icon className="h-3 w-3" /> {label}
+      </p>
+      <p className="text-[12px] text-foreground">{children}</p>
     </div>
   );
 }
@@ -448,12 +545,12 @@ export default function RunDetailPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex items-center justify-center h-screen">
-          <Loader2 className="h-8 w-8 animate-spin" />
+        <div className="grid place-items-center min-h-[60vh]">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
         </div>
       }
     >
-      <RunDetailContent />
+      <RunDetail />
     </Suspense>
   );
 }

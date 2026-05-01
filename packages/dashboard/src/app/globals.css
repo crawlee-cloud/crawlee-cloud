@@ -1,11 +1,33 @@
 @import 'tailwindcss';
 
+/*
+  ============================================================================
+  CRAWLEE CLOUD — OPERATOR CONSOLE
+  ----------------------------------------------------------------------------
+  Aesthetic: terminal-inspired, monospace-forward, single signal accent.
+  No gradients. No glow. One load-bearing color (signal green).
+  Status carries meaning: amber = warn, vermillion = fail, blue = info.
+  Density wins; a developer reads this dashboard for hours.
+
+  Themes:
+    .dark   → warm off-black + phosphor green (operator at the console)
+    :root   → warm cream paper + moss green (operator at the workbench)
+  System default is followed via next-themes (defaultTheme="system").
+  ============================================================================
+*/
+
 @theme {
-  --color-border: var(--border);
-  --color-input: var(--input);
-  --color-ring: var(--ring);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
 
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
@@ -13,135 +35,255 @@
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
 
-  --color-destructive: var(--destructive);
-  --color-destructive-foreground: var(--destructive-foreground);
-
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
 
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
 
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
 
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
 
-  --radius-lg: var(--radius);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-sm: calc(var(--radius) - 4px);
+  --color-signal: var(--signal);
+  --color-warn: var(--warn);
+  --color-fail: var(--fail);
+  --color-info: var(--info);
 
-  --animate-accordion-down: accordion-down 0.2s ease-out;
-  --animate-accordion-up: accordion-up 0.2s ease-out;
+  --font-sans: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-mono), ui-monospace, 'JetBrains Mono', monospace;
 
-  @keyframes accordion-down {
-    from {
-      height: 0;
-    }
-    to {
-      height: var(--radix-accordion-content-height);
-    }
-  }
-  @keyframes accordion-up {
-    from {
-      height: var(--radix-accordion-content-height);
-    }
-    to {
-      height: 0;
-    }
-  }
+  --radius-lg: 6px;
+  --radius-md: 4px;
+  --radius-sm: 2px;
 }
 
-/*
-  Tailwind v4 CSS Variables
-  We use full color values (hsl(...)) so that Tailwind can use them directly.
-  Opacity modifiers work automatically via color-mix / relative color syntax.
-*/
+/* -------------------------------------------------------------------------- */
+/* LIGHT — neutral cool gray, white panels stand forward                      */
+/* -------------------------------------------------------------------------- */
 :root {
-  --background: hsl(0 0% 100%);
-  --foreground: hsl(240 10% 3.9%);
-  
-  --card: hsl(0 0% 100%);
-  --card-foreground: hsl(240 10% 3.9%);
-  
-  --popover: hsl(0 0% 100%);
-  --popover-foreground: hsl(240 10% 3.9%);
-  
-  --primary: hsl(240 5.9% 10%);
-  --primary-foreground: hsl(0 0% 98%);
-  
-  --secondary: hsl(240 4.8% 95.9%);
-  --secondary-foreground: hsl(240 5.9% 10%);
-  
-  --muted: hsl(240 4.8% 95.9%);
-  --muted-foreground: hsl(240 3.8% 46.1%);
-  
-  --accent: hsl(240 4.8% 95.9%);
-  --accent-foreground: hsl(240 5.9% 10%);
-  
-  --destructive: hsl(0 84.2% 60.2%);
-  --destructive-foreground: hsl(0 0% 98%);
-  
-  --border: hsl(240 5.9% 90%);
-  --input: hsl(240 5.9% 90%);
-  --ring: hsl(240 5.9% 10%);
-  
-  --radius: 0.5rem;
+  /*
+    Three-tone palette for visual hierarchy without shadows:
+      background  = page (neutral light gray, recedes)
+      surface-2   = sidebar / chrome (cool gray, frames the work area)
+      card        = panels (pure white, sits forward)
+  */
+  --background: #f5f6f7;
+  --foreground: #0c0d0f;
+
+  --surface: #eef0f3;
+  --surface-2: #e8eaee;
+
+  --card: #ffffff;
+  --card-foreground: #0c0d0f;
+
+  --popover: #ffffff;
+  --popover-foreground: #0c0d0f;
+
+  --primary: #F98618;
+  --primary-foreground: #ffffff;
+
+  --secondary: #ebedf1;
+  --secondary-foreground: #0c0d0f;
+
+  --muted: #ebedf1;
+  --muted-foreground: #6b6e76;
+
+  --accent: #F98618;
+  --accent-foreground: #ffffff;
+
+  --destructive: #cf222e;
+  --destructive-foreground: #ffffff;
+
+  --border: #d3d6dc;
+  --input: #ffffff;
+  --ring: #F98618;
+
+  --signal: #F98618;
+  --warn: #9a6700;
+  --fail: #cf222e;
+  --info: #1f6feb;
+
+  /* No ambient glow on light — keep the page clean */
+  --glow: transparent;
+
+  /* No grain on light — neutrality requires it. Empty data URL. */
+  --grain: none;
+
+  --grid-line: rgb(12 13 15 / 0.05);
 }
 
+/* -------------------------------------------------------------------------- */
+/* DARK — operator at the console                                             */
+/* -------------------------------------------------------------------------- */
 .dark {
-  --background: hsl(240 10% 3.9%);
-  --foreground: hsl(0 0% 98%);
-  
-  --card: hsl(240 10% 3.9%);
-  --card-foreground: hsl(0 0% 98%);
-  
-  --popover: hsl(240 10% 3.9%);
-  --popover-foreground: hsl(0 0% 98%);
-  
-  --primary: hsl(0 0% 98%);
-  --primary-foreground: hsl(240 5.9% 10%);
-  
-  --secondary: hsl(240 3.7% 15.9%);
-  --secondary-foreground: hsl(0 0% 98%);
-  
-  --muted: hsl(240 3.7% 15.9%);
-  --muted-foreground: hsl(240 5% 64.9%);
-  
-  --accent: hsl(240 3.7% 15.9%);
-  --accent-foreground: hsl(0 0% 98%);
-  
-  --destructive: hsl(0 62.8% 30.6%);
-  --destructive-foreground: hsl(0 0% 98%);
-  
-  --border: hsl(240 3.7% 15.9%);
-  --input: hsl(240 3.7% 15.9%);
-  --ring: hsl(240 4.9% 83.9%);
+  --background: #0e0e0c;
+  --foreground: #e8e6df;
+
+  --surface: #15151200;
+  --surface-2: #1a1a17;
+
+  --card: #131310;
+  --card-foreground: #e8e6df;
+
+  --popover: #1a1a17;
+  --popover-foreground: #e8e6df;
+
+  --primary: #9eff8a;
+  --primary-foreground: #0e0e0c;
+
+  --secondary: #1d1d19;
+  --secondary-foreground: #e8e6df;
+
+  --muted: #1d1d19;
+  --muted-foreground: #8a877d;
+
+  --accent: #9eff8a;
+  --accent-foreground: #0e0e0c;
+
+  --destructive: #ff5f48;
+  --destructive-foreground: #ffffff;
+
+  --border: #25251f;
+  --input: #1d1d19;
+  --ring: #9eff8a;
+
+  --signal: #9eff8a;
+  --warn: #ffb840;
+  --fail: #ff5f48;
+  --info: #7ec5ff;
+
+  --glow: rgb(158 255 138 / 0.025);
+
+  /* SVG noise — soft warm tones for dark surface */
+  --grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.92  0 0 0 0 0.91  0 0 0 0 0.87  0 0 0 0.04 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+
+  --grid-line: rgb(255 255 255 / 0.025);
 }
 
 @layer base {
   * {
-    @apply border-border;
+    border-color: var(--color-border);
   }
+
+  html {
+    background-color: var(--background);
+    background-image:
+      radial-gradient(circle at 100% 0%, var(--glow), transparent 50%),
+      var(--grain);
+    background-attachment: fixed;
+  }
+
   body {
-    @apply bg-background text-foreground;
-    font-feature-settings:
-      'rlig' 1,
-      'calt' 1;
+    background: transparent;
+    color: var(--color-foreground);
+    font-feature-settings: 'ss01', 'cv11', 'rlig' 1, 'calt' 1;
+    letter-spacing: -0.005em;
+  }
+
+  ::selection {
+    background: var(--signal);
+    color: var(--background);
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--muted-foreground);
+    background-clip: padding-box;
+    opacity: 0.5;
   }
 }
 
 @layer utilities {
-  .glass-panel {
-    @apply bg-card/40 backdrop-blur-xl border border-border shadow-2xl;
+  /*
+    Corner brackets — wraps any element with four monospace-style corner ticks.
+    Uses currentColor / muted-foreground so it adapts to either theme.
+  */
+  .bracket {
+    position: relative;
   }
-  
-  .glass-card {
-    @apply bg-card/50 backdrop-blur-lg border border-border hover:border-primary/20 transition-all duration-300;
+  .bracket::before,
+  .bracket::after {
+    content: '';
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    border-color: var(--color-muted-foreground);
+    pointer-events: none;
+    opacity: 0.6;
+  }
+  .bracket::before {
+    top: 0;
+    left: 0;
+    border-top: 1px solid;
+    border-left: 1px solid;
+  }
+  .bracket::after {
+    bottom: 0;
+    right: 0;
+    border-bottom: 1px solid;
+    border-right: 1px solid;
   }
 
-  .text-gradient {
-    @apply bg-linear-to-r from-foreground to-foreground/60 bg-clip-text text-transparent;
+  .panel {
+    background: color-mix(in oklab, var(--card) 92%, transparent);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+  }
+
+  .grid-bg {
+    background-image:
+      linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .live-dot {
+    position: relative;
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--signal);
+  }
+  .live-dot::after {
+    content: '';
+    position: absolute;
+    inset: -3px;
+    border-radius: 999px;
+    border: 1px solid var(--signal);
+    opacity: 0.5;
+    animation: live-ping 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+  }
+  @keyframes live-ping {
+    0% { transform: scale(0.7); opacity: 0.6; }
+    80%, 100% { transform: scale(1.6); opacity: 0; }
+  }
+
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
   }
 }

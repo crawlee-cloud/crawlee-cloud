@@ -120,6 +120,17 @@ CREATE TABLE IF NOT EXISTS runs (
   modified_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Runs list/triage indexes. Without these, the dashboard's runs page does
+-- a seq scan over the entire table on every load — at 280 runs/day that's
+-- thousands of rows per month per user. Composite indexes are ordered to
+-- match the GET /v2/actor-runs query: WHERE user_id = ? AND ... ORDER BY created_at DESC.
+CREATE INDEX IF NOT EXISTS idx_runs_user_created
+  ON runs(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_runs_user_status_created
+  ON runs(user_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_runs_user_actor_created
+  ON runs(user_id, actor_id, created_at DESC);
+
 -- Webhooks
 CREATE TABLE IF NOT EXISTS webhooks (
   id VARCHAR(21) PRIMARY KEY,

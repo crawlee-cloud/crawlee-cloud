@@ -6,6 +6,7 @@
  *   import { createTestApp, runMigrations, createTestUser } from './setup.js';
  */
 import Fastify, { type FastifyInstance } from 'fastify';
+import { ZodError } from 'zod';
 import { S3Client, CreateBucketCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
 
 export const TEST_CONFIG = {
@@ -54,6 +55,39 @@ export async function createTestApp(): Promise<FastifyInstance> {
   await initRedis();
 
   const app = Fastify({ logger: false });
+
+  // Mirror the content-type parsers registered in src/index.ts so the test
+  // app accepts the same payloads as production (binary uploads, form bodies).
+  app.addContentTypeParser(
+    'application/x-www-form-urlencoded',
+    { parseAs: 'string' },
+    (_req, body, done) => done(null, body || {})
+  );
+  app.addContentTypeParser('text/plain', { parseAs: 'buffer' }, (_req, body, done) => {
+    done(null, body);
+  });
+  app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (_req, body, done) =>
+    done(null, body)
+  );
+
+  // Mirror production's ZodError → 400 handler (src/index.ts). Without this,
+  // validation failures bubble up as 500s and tests can't tell a real bug from
+  // a malformed request.
+  app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof ZodError) {
+      return reply.status(400).send({
+        error: {
+          type: 'validation_error',
+          message: 'Validation failed',
+          details: error.errors,
+        },
+      });
+    }
+    const statusCode = error.statusCode ?? 500;
+    return reply.status(statusCode).send({
+      error: { type: error.name, message: error.message },
+    });
+  });
 
   await authRoutes(app);
   await app.register(actorsRoutes, { prefix: '/v2' });
@@ -104,17 +138,22 @@ export async function createTestUser(
  */
 export async function cleanDatabase(): Promise<void> {
   const { pool } = await import('../../src/db/index.js');
+  // Order matters: child rows before parents.
+  // runs references actors/datasets/key_value_stores/request_queues with default RESTRICT,
+  // so those parents must be deleted AFTER runs, not before.
   await pool.query(`
+    DELETE FROM webhook_deliveries;
+    DELETE FROM schedules;
+    DELETE FROM webhooks;
+    DELETE FROM runs;
+    DELETE FROM actor_builds;
+    DELETE FROM actor_versions;
     DELETE FROM requests;
     DELETE FROM request_queues;
     DELETE FROM key_value_stores;
     DELETE FROM datasets;
-    DELETE FROM runs;
-    DELETE FROM actor_builds;
-    DELETE FROM actor_versions;
     DELETE FROM actors;
     DELETE FROM api_keys;
-    DELETE FROM webhooks;
     DELETE FROM users;
   `);
 }

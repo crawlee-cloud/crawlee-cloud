@@ -1,413 +1,356 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
-  Copy,
-  RefreshCw,
   CheckCircle2,
-  Shield,
-  HardDrive,
-  Settings2,
-  Plus,
-  Trash2,
+  Copy,
   Eye,
   EyeOff,
+  HardDrive,
+  Loader2,
+  Plus,
+  Settings2,
+  Shield,
+  Trash2,
+  X,
 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { useConfirm } from '@/components/ui/confirm';
+import { useToast } from '@/components/ui/toast';
 import { Badge } from '@/components/ui/badge';
+import { createApiKey, getApiKeys, revokeApiKey, type ApiKey } from '@/lib/api';
+import { cn } from '@/lib/utils';
 
-interface ApiKey {
-  id: string;
-  name: string;
-  key_preview: string;
-  created_at: string;
-  last_used_at: string | null;
-  is_active: boolean;
-}
-
-interface ApiKeysResponse {
-  data: ApiKey[];
-}
-
-interface CreateKeyResponse {
-  data: {
-    id: string;
-    name: string;
-    key: string;
-    message: string;
-  };
-}
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
 
 export default function SettingsPage() {
+  const confirm = useConfirm();
+  const toast = useToast();
+
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
-  const [newKeyName, setNewKeyName] = useState('');
-  const [newlyCreatedKey, setNewlyCreatedKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [newKeyName, setNewKeyName] = useState('');
+  const [newlyCreatedKey, setNewlyCreatedKey] = useState<string | null>(null);
   const [showNewKey, setShowNewKey] = useState(false);
-  const [copied, setCopied] = useState(false);
 
-  const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
-
-  const getAuthToken = useCallback((): string | null => {
-    const cookies = document.cookie.split(';');
-    const tokenCookie = cookies.find((c) => c.trim().startsWith('token='));
-    return tokenCookie ? tokenCookie.split('=')[1] : null;
-  }, []);
-
-  const fetchApiKeys = useCallback(async () => {
+  const loadKeys = useCallback(async () => {
     try {
-      const token = getAuthToken();
-      if (!token) return;
-
-      const response = await fetch(`${API_BASE}/v2/auth/api-keys`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
-      if (response.ok) {
-        const data = (await response.json()) as ApiKeysResponse;
-        setApiKeys(data.data);
-      }
-    } catch (error) {
-      console.error('Failed to fetch API keys:', error);
+      const keys = await getApiKeys();
+      setApiKeys(keys);
+    } catch {
+      // Empty list on failure; the API may simply be unreachable.
     } finally {
       setLoading(false);
     }
-  }, [API_BASE, getAuthToken]);
+  }, []);
 
-  const createApiKey = useCallback(async () => {
+  useEffect(() => {
+    void loadKeys();
+  }, [loadKeys]);
+
+  async function handleCreate() {
     if (!newKeyName.trim()) return;
-
     setCreating(true);
     try {
-      const token = getAuthToken();
-      if (!token) return;
-
-      const response = await fetch(`${API_BASE}/v2/auth/api-keys`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ name: newKeyName }),
-      });
-
-      if (response.ok) {
-        const data = (await response.json()) as CreateKeyResponse;
-        setNewlyCreatedKey(data.data.key);
-        setNewKeyName('');
-        await fetchApiKeys();
-      }
-    } catch (error) {
-      console.error('Failed to create API key:', error);
+      const { key } = await createApiKey(newKeyName.trim());
+      setNewlyCreatedKey(key);
+      setNewKeyName('');
+      await loadKeys();
+      toast.success('API key created', { description: 'Copy it now — visible only once.' });
+    } catch (err) {
+      toast.error('Failed to create key', { description: (err as Error).message });
     } finally {
       setCreating(false);
     }
-  }, [API_BASE, getAuthToken, newKeyName, fetchApiKeys]);
+  }
 
-  const revokeApiKey = useCallback(
-    async (keyId: string) => {
-      try {
-        const token = getAuthToken();
-        if (!token) return;
+  async function handleRevoke(key: ApiKey) {
+    const ok = await confirm({
+      tone: 'danger',
+      title: `Revoke "${key.name}"?`,
+      description: 'Anything using this key — CLI, SDKs, scripts — will stop working immediately.',
+      confirmLabel: 'revoke key',
+    });
+    if (!ok) return;
+    try {
+      await revokeApiKey(key.id);
+      await loadKeys();
+      toast.success('Key revoked');
+    } catch (err) {
+      toast.error('Failed to revoke key', { description: (err as Error).message });
+    }
+  }
 
-        const response = await fetch(`${API_BASE}/v2/auth/api-keys/${keyId}`, {
-          method: 'DELETE',
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        });
-
-        if (response.ok) {
-          await fetchApiKeys();
-        }
-      } catch (error) {
-        console.error('Failed to revoke API key:', error);
-      }
-    },
-    [API_BASE, getAuthToken, fetchApiKeys]
-  );
-
-  const copyToClipboard = useCallback((text: string) => {
-    void navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => {
-      setCopied(false);
-    }, 2000);
-  }, []);
-
-  const handleCreateClick = useCallback(() => {
-    void createApiKey();
-  }, [createApiKey]);
-
-  const handleRevokeClick = useCallback(
-    (keyId: string) => {
-      void revokeApiKey(keyId);
-    },
-    [revokeApiKey]
-  );
-
-  useEffect(() => {
-    void fetchApiKeys();
-  }, [fetchApiKeys]);
+  async function copy(text: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success(`${label} copied`);
+    } catch {
+      toast.error('Copy failed');
+    }
+  }
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 max-w-5xl">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight bg-linear-to-r from-white to-white/60 bg-clip-text text-transparent">
-          Settings
-        </h1>
-        <p className="text-muted-foreground mt-1 text-sm">System configuration and integrations</p>
-      </div>
+    <div className="space-y-8 max-w-4xl">
+      <header className="pb-4 border-b border-border">
+        <p className="eyebrow mb-2">SYSTEM · SETTINGS</p>
+        <h1 className="text-[28px] leading-none font-medium tracking-tight">Settings</h1>
+        <p className="text-muted-foreground mt-2 text-[13px]">
+          API access, storage backends, and execution defaults.
+        </p>
+      </header>
 
-      <div className="grid gap-8">
-        {/* API Configuration */}
-        <Card className="border-white/10 bg-black/20 backdrop-blur-sm">
-          <CardHeader>
-            <div className="flex items-center gap-3 mb-2">
-              <div className="p-2 rounded-lg bg-indigo-500/10 border border-indigo-500/20">
-                <Shield className="h-5 w-5 text-indigo-400" />
-              </div>
-              <div>
-                <CardTitle>API Access</CardTitle>
-                <CardDescription>Connection details for external tools (CLI, SDKs)</CardDescription>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="grid gap-2">
-              <label className="text-sm font-medium text-white/80">API Base URL</label>
-              <Input
+      {/* API ACCESS */}
+      <section className="panel">
+        <header className="px-5 py-4 border-b border-border flex items-center gap-3">
+          <Shield className="h-4 w-4 text-[color:var(--signal)]" />
+          <div>
+            <p className="eyebrow">AUTH · API ACCESS</p>
+            <h2 className="text-[15px] mt-1">Connection details &amp; tokens</h2>
+          </div>
+        </header>
+
+        <div className="p-5 space-y-5">
+          {/* Base URL */}
+          <Field label="API base URL">
+            <div className="flex gap-2">
+              <input
                 value={API_BASE}
                 readOnly
-                className="bg-white/5 border-white/10 text-muted-foreground font-mono"
+                onClick={(e) => e.currentTarget.select()}
+                className="flex-1 h-9 px-3 rounded-sm border border-border bg-[color:var(--input)] font-mono text-[12px] text-foreground"
               />
+              <button
+                type="button"
+                onClick={() => void copy(API_BASE, 'Base URL')}
+                title="Copy"
+                className="h-9 w-9 grid place-items-center border border-border rounded-sm text-muted-foreground hover:text-foreground hover:border-[color:var(--signal)]/40"
+              >
+                <Copy className="h-3.5 w-3.5" />
+              </button>
             </div>
+          </Field>
 
-            {/* New API Key Section */}
-            {newlyCreatedKey && (
-              <div className="p-4 border border-emerald-500/30 rounded-xl bg-emerald-500/10 space-y-3">
-                <div className="flex items-center gap-2 text-emerald-400 text-sm font-medium">
-                  <CheckCircle2 className="h-4 w-4" />
-                  New API Key Created
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Copy this key now. You won&apos;t be able to see it again!
+          {/* Newly created key — show ONCE */}
+          {newlyCreatedKey && (
+            <div className="panel border-l-2 border-l-[color:var(--signal)] p-4 space-y-3 bg-[color:var(--signal)]/5">
+              <div className="flex items-center justify-between">
+                <p className="font-mono text-[10px] tracking-widest text-[color:var(--signal)] uppercase">
+                  [ NEW KEY · COPY NOW ]
                 </p>
-                <div className="flex gap-2">
-                  <Input
-                    type={showNewKey ? 'text' : 'password'}
-                    value={newlyCreatedKey}
-                    readOnly
-                    className="bg-black/30 border-white/10 text-white font-mono flex-1"
-                  />
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="border-white/10 hover:bg-white/5"
-                    onClick={() => {
-                      setShowNewKey(!showNewKey);
-                    }}
-                  >
-                    {showNewKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    className="border-white/10 hover:bg-white/5"
-                    onClick={() => {
-                      copyToClipboard(newlyCreatedKey);
-                    }}
-                  >
-                    {copied ? (
-                      <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-                    ) : (
-                      <Copy className="h-4 w-4" />
-                    )}
-                    {copied ? 'Copied!' : 'Copy'}
-                  </Button>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-muted-foreground"
-                  onClick={() => {
-                    setNewlyCreatedKey(null);
-                  }}
+                <button
+                  type="button"
+                  onClick={() => setNewlyCreatedKey(null)}
+                  className="text-muted-foreground hover:text-foreground"
                 >
-                  Dismiss
-                </Button>
+                  <X className="h-3.5 w-3.5" />
+                </button>
               </div>
-            )}
-
-            {/* Create New Key */}
-            <div className="grid gap-2">
-              <label className="text-sm font-medium text-white/80">Create New API Key</label>
-              <div className="flex gap-3">
-                <Input
-                  placeholder="Key name (e.g., 'CLI Access')"
-                  value={newKeyName}
-                  onChange={(e) => {
-                    setNewKeyName(e.target.value);
-                  }}
-                  className="bg-white/5 border-white/10 text-white flex-1"
+              <p className="text-[12px] text-muted-foreground">
+                This is the only time the key will be shown — store it somewhere safe.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type={showNewKey ? 'text' : 'password'}
+                  value={newlyCreatedKey}
+                  readOnly
+                  onClick={(e) => (e.target as HTMLInputElement).select()}
+                  className="flex-1 h-9 px-3 rounded-sm border border-border bg-[color:var(--background)] font-mono text-[12px] text-foreground"
                 />
-                <Button
-                  onClick={handleCreateClick}
-                  disabled={creating || !newKeyName.trim()}
-                  className="bg-indigo-600 hover:bg-indigo-500 text-white"
+                <button
+                  type="button"
+                  title={showNewKey ? 'Hide' : 'Reveal'}
+                  onClick={() => setShowNewKey((s) => !s)}
+                  className="h-9 w-9 grid place-items-center border border-border rounded-sm text-muted-foreground hover:text-foreground"
                 >
-                  {creating ? (
-                    <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                  {showNewKey ? (
+                    <EyeOff className="h-3.5 w-3.5" />
                   ) : (
-                    <Plus className="mr-2 h-4 w-4" />
+                    <Eye className="h-3.5 w-3.5" />
                   )}
-                  Generate Key
-                </Button>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void copy(newlyCreatedKey, 'API key')}
+                  className="h-9 px-3 inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider border border-border rounded-sm text-muted-foreground hover:text-foreground hover:border-[color:var(--signal)]/40"
+                >
+                  <Copy className="h-3.5 w-3.5" /> copy
+                </button>
               </div>
             </div>
+          )}
 
-            {/* Existing Keys */}
-            <div className="grid gap-2">
-              <label className="text-sm font-medium text-white/80">Active API Keys</label>
-              {loading ? (
-                <div className="p-4 text-center text-muted-foreground text-sm">Loading keys...</div>
-              ) : apiKeys.length === 0 ? (
-                <div className="p-4 border border-white/5 rounded-xl bg-white/5 text-center text-muted-foreground text-sm">
-                  No API keys yet. Create one above to get started.
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {apiKeys
-                    .filter((k) => k.is_active)
-                    .map((key) => (
-                      <div
-                        key={key.id}
-                        className="flex items-center justify-between p-3 border border-white/5 rounded-xl bg-white/5"
-                      >
-                        <div className="space-y-0.5">
-                          <div className="font-medium text-white/90">{key.name}</div>
-                          <div className="text-xs text-muted-foreground font-mono">
-                            {key.key_preview}
-                          </div>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
-                          onClick={() => {
-                            handleRevokeClick(key.id);
-                          }}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+          {/* Create new key */}
+          <Field label="Generate new API key">
+            <div className="flex gap-2">
+              <input
+                value={newKeyName}
+                onChange={(e) => setNewKeyName(e.target.value)}
+                placeholder="key name (e.g. CLI access)"
+                className="flex-1 h-9 px-3 rounded-sm border border-border bg-[color:var(--input)] text-[13px] text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-[color:var(--signal)]/50"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && newKeyName.trim()) {
+                    e.preventDefault();
+                    void handleCreate();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => void handleCreate()}
+                disabled={creating || !newKeyName.trim()}
+                className="h-9 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-[color:var(--signal)] text-[color:var(--background)] hover:brightness-110 rounded-sm disabled:opacity-50"
+              >
+                {creating ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Plus className="h-3.5 w-3.5" />
+                )}
+                generate
+              </button>
+            </div>
+          </Field>
+
+          {/* Existing keys */}
+          <div className="space-y-2">
+            <p className="font-mono text-[10px] tracking-widest text-muted-foreground uppercase">
+              Active keys
+            </p>
+            {loading ? (
+              <p className="text-[12px] text-muted-foreground font-mono">[ loading · · · ]</p>
+            ) : apiKeys.filter((k) => k.isActive).length === 0 ? (
+              <div className="grid-bg p-8 text-center border border-border rounded-sm">
+                <p className="font-mono text-[11px] tracking-widest text-muted-foreground">
+                  [ NO API KEYS ]
+                </p>
+                <p className="text-[12px] text-muted-foreground mt-1">
+                  Generate one above to use the CLI or SDKs.
+                </p>
+              </div>
+            ) : (
+              <ul className="space-y-1.5">
+                {apiKeys
+                  .filter((k) => k.isActive)
+                  .map((key) => (
+                    <li
+                      key={key.id}
+                      className="flex items-center justify-between p-3 panel hover:bg-secondary/30 transition-colors"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-foreground text-[13px]">{key.name}</p>
+                        <p className="font-mono text-[11px] text-muted-foreground mt-0.5">
+                          {key.keyPreview}
+                          {key.lastUsedAt && (
+                            <>
+                              <span className="mx-2">·</span>
+                              last used {timeAgo(key.lastUsedAt)}
+                            </>
+                          )}
+                        </p>
                       </div>
-                    ))}
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+                      <button
+                        type="button"
+                        title="Revoke"
+                        onClick={() => void handleRevoke(key)}
+                        className="h-7 w-7 grid place-items-center text-muted-foreground hover:text-[color:var(--fail)] border border-transparent hover:border-border rounded-sm"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </li>
+                  ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      </section>
 
-        {/* Storage Configuration */}
-        <Card className="border-white/10 bg-black/20 backdrop-blur-sm">
-          <CardHeader>
-            <div className="flex items-center gap-3 mb-2">
-              <div className="p-2 rounded-lg bg-purple-500/10 border border-purple-500/20">
-                <HardDrive className="h-5 w-5 text-purple-400" />
+      {/* STORAGE BACKENDS */}
+      <section className="panel">
+        <header className="px-5 py-4 border-b border-border flex items-center gap-3">
+          <HardDrive className="h-4 w-4 text-[color:var(--signal)]" />
+          <div>
+            <p className="eyebrow">SYSTEM · STORAGE</p>
+            <h2 className="text-[15px] mt-1">Connected backends</h2>
+          </div>
+        </header>
+        <ul className="divide-y divide-border">
+          {STORAGE_BACKENDS.map((b) => (
+            <li key={b.label} className="flex items-center justify-between px-5 py-3">
+              <div className="min-w-0">
+                <p className="text-foreground text-[13px]">{b.label}</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">{b.description}</p>
               </div>
-              <div>
-                <CardTitle>Storage Backends</CardTitle>
-                <CardDescription>Connected data persistence services</CardDescription>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between p-4 border border-white/5 rounded-xl bg-white/5">
-              <div className="space-y-0.5">
-                <div className="font-medium text-white/90">PostgreSQL</div>
-                <div className="text-xs text-muted-foreground">Primary metadata storage</div>
-              </div>
-              <Badge variant="success" className="gap-1.5 pl-1.5 pr-2.5">
-                <CheckCircle2 className="h-3.5 w-3.5" />
-                Connected
+              <Badge variant="success" shape="chip" className="px-2">
+                <CheckCircle2 className="h-3 w-3 mr-1" />
+                <span>connected</span>
               </Badge>
-            </div>
+            </li>
+          ))}
+        </ul>
+      </section>
 
-            <div className="flex items-center justify-between p-4 border border-white/5 rounded-xl bg-white/5">
-              <div className="space-y-0.5">
-                <div className="font-medium text-white/90">Redis</div>
-                <div className="text-xs text-muted-foreground">Job queue & caching layer</div>
-              </div>
-              <Badge variant="success" className="gap-1.5 pl-1.5 pr-2.5">
-                <CheckCircle2 className="h-3.5 w-3.5" />
-                Connected
-              </Badge>
-            </div>
-
-            <div className="flex items-center justify-between p-4 border border-white/5 rounded-xl bg-white/5">
-              <div className="space-y-0.5">
-                <div className="font-medium text-white/90">MinIO / S3</div>
-                <div className="text-xs text-muted-foreground">Dataset & Key-Value storage</div>
-              </div>
-              <Badge variant="success" className="gap-1.5 pl-1.5 pr-2.5">
-                <CheckCircle2 className="h-3.5 w-3.5" />
-                Connected
-              </Badge>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Runner Configuration */}
-        <Card className="border-white/10 bg-black/20 backdrop-blur-sm">
-          <CardHeader>
-            <div className="flex items-center gap-3 mb-2">
-              <div className="p-2 rounded-lg bg-pink-500/10 border border-pink-500/20">
-                <Settings2 className="h-5 w-5 text-pink-400" />
-              </div>
-              <div>
-                <CardTitle>Execution Defaults</CardTitle>
-                <CardDescription>Global configuration for new Actor runs</CardDescription>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-white/80">Concurrency Limit</label>
-                <Input
-                  type="number"
-                  defaultValue={10}
-                  className="bg-white/5 border-white/10 text-white"
-                />
-                <p className="text-[10px] text-muted-foreground">Max simultaneous runs</p>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-white/80">Default Memory (MB)</label>
-                <Input
-                  type="number"
-                  defaultValue={1024}
-                  className="bg-white/5 border-white/10 text-white"
-                />
-                <p className="text-[10px] text-muted-foreground">Container memory limit</p>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-white/80">Default Timeout (s)</label>
-                <Input
-                  type="number"
-                  defaultValue={3600}
-                  className="bg-white/5 border-white/10 text-white"
-                />
-                <p className="text-[10px] text-muted-foreground">Hard execution limit</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      {/* EXECUTION DEFAULTS */}
+      <section className="panel">
+        <header className="px-5 py-4 border-b border-border flex items-center gap-3">
+          <Settings2 className="h-4 w-4 text-[color:var(--signal)]" />
+          <div>
+            <p className="eyebrow">SYSTEM · EXECUTION DEFAULTS</p>
+            <h2 className="text-[15px] mt-1">Used by every new run</h2>
+          </div>
+        </header>
+        <div className="p-5 grid grid-cols-1 md:grid-cols-3 gap-4">
+          <Field label="Concurrency limit" hint="Max simultaneous runs">
+            <input type="number" defaultValue={10} className={INPUT_CLASS} />
+          </Field>
+          <Field label="Default memory · MB" hint="Container memory limit">
+            <input type="number" defaultValue={1024} className={INPUT_CLASS} />
+          </Field>
+          <Field label="Default timeout · sec" hint="Hard execution limit">
+            <input type="number" defaultValue={3600} className={INPUT_CLASS} />
+          </Field>
+        </div>
+        <footer className="px-5 py-3 border-t border-border bg-secondary/30 font-mono text-[10px] tracking-widest text-muted-foreground uppercase">
+          Read-only — server-driven values, edit via env vars on the API.
+        </footer>
+      </section>
     </div>
   );
+}
+
+const INPUT_CLASS = cn(
+  'w-full h-9 px-3 rounded-sm border border-border bg-[color:var(--input)] font-mono text-[12px] text-foreground focus:outline-none focus:border-[color:var(--signal)]/50'
+);
+
+const STORAGE_BACKENDS = [
+  { label: 'PostgreSQL', description: 'Primary metadata store' },
+  { label: 'Redis', description: 'Job queue · log buffer · cache' },
+  { label: 'MinIO / S3', description: 'Dataset items + KV store records' },
+];
+
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <label className="block font-mono text-[10px] tracking-widest text-muted-foreground uppercase">
+        {label}
+      </label>
+      {children}
+      {hint && <p className="text-[11px] text-muted-foreground">{hint}</p>}
+    </div>
+  );
+}
+
+function timeAgo(iso: string): string {
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
 }

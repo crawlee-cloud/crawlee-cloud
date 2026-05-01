@@ -5,7 +5,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { query } from '../db/index.js';
 import { authenticate } from '../auth/middleware.js';
-import { UpdateRunSchema } from '../schemas/runs.js';
+import { UpdateRunSchema, ListRunsQuerySchema } from '../schemas/runs.js';
 
 interface RunRow {
   id: string;
@@ -36,21 +36,73 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.addHook('preHandler', authenticate);
 
   /**
-   * GET /v2/actor-runs - List runs (user-scoped)
+   * GET /v2/actor-runs - List runs (user-scoped, filterable, paginated).
+   *
+   * Query params (all optional):
+   *   status   = READY|RUNNING|SUCCEEDED|FAILED|TIMED-OUT|ABORTED
+   *   actorId  = filter to one actor
+   *   since    = ISO datetime, runs created at >= this
+   *   until    = ISO datetime, runs created at <  this
+   *   limit    = page size, default 50, max 200
+   *   offset   = page offset, default 0
+   *   desc     = sort by created_at desc (default true). 'false' for asc.
+   *
+   * Returns Apify-shaped { data: { total, count, offset, limit, desc, items } }
+   * where total is the *real* count of matching rows (not the page size).
    */
   fastify.get('/actor-runs', async (request) => {
-    const result = await query<RunRow>(
-      'SELECT * FROM runs WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100',
-      [request.user!.id]
-    );
+    const q = ListRunsQuerySchema.parse(request.query);
+    const limit = q.limit ?? 50;
+    const offset = q.offset ?? 0;
+    const desc = q.desc;
+
+    // Build WHERE clause dynamically while keeping queries parameterised.
+    const where: string[] = ['user_id = $1'];
+    const params: unknown[] = [request.user!.id];
+    let p = 2;
+    if (q.status !== undefined) {
+      where.push(`status = $${p++}`);
+      params.push(q.status);
+    }
+    if (q.actorId !== undefined) {
+      where.push(`actor_id = $${p++}`);
+      params.push(q.actorId);
+    }
+    if (q.since !== undefined) {
+      where.push(`created_at >= $${p++}`);
+      params.push(q.since);
+    }
+    if (q.until !== undefined) {
+      where.push(`created_at < $${p++}`);
+      params.push(q.until);
+    }
+    const whereSql = where.join(' AND ');
+
+    // COUNT and SELECT run in parallel — both share the same composite index
+    // so the count query is cheap up to ~hundreds of thousands of rows.
+    const [countResult, pageResult] = await Promise.all([
+      query<{ total: string }>(
+        `SELECT COUNT(*)::text AS total FROM runs WHERE ${whereSql}`,
+        params
+      ),
+      query<RunRow>(
+        `SELECT * FROM runs WHERE ${whereSql}
+         ORDER BY created_at ${desc ? 'DESC' : 'ASC'}
+         LIMIT $${p++} OFFSET $${p++}`,
+        [...params, limit, offset]
+      ),
+    ]);
+
+    const total = parseInt(countResult.rows[0]?.total ?? '0', 10);
 
     return {
       data: {
-        total: result.rows.length,
-        count: result.rows.length,
-        offset: 0,
-        limit: 100,
-        items: result.rows.map(formatRun),
+        total,
+        count: pageResult.rows.length,
+        offset,
+        limit,
+        desc,
+        items: pageResult.rows.map(formatRun),
       },
     };
   });
