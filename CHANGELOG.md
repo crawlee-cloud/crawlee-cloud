@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-05-02
+
+### Fixed
+
+- **`/v2/system/info` execution defaults now reflect what runners actually use, per scaler provider.** v0.8.3 sourced the panel from API-process env, which is wrong in any split deploy (API and runners on different machines): the API host typically doesn't have `MAX_CONCURRENT_RUNS` / `DEFAULT_MEMORY_MB` / `DEFAULT_TIMEOUT_SECS` set at all, so the dashboard quietly returned the fallback defaults. Now keyed on `SCALER_ENABLED`:
+  - **Scaler ON** → memory/timeout come from a per-provider table (`PROVIDER_DEFAULTS` in `scaler/index.ts`) that mirrors what each provider's `createRunner` actually injects:
+    - `digitalocean`: 2048 / 3600 (cloud-init writes these explicitly)
+    - `local-docker`: 1024 / 3600 (matches the runner's own config fallbacks since the provider only injects `MAX_CONCURRENT_RUNS`)
+    - `noop`: 1024 / 3600
+    - unknown providers: 1024 / 3600 (honest fallback over a confident lie)
+  - **Scaler OFF** → API env (existing behavior, correct for single-host)
+- The `2048` / `3600` magic numbers in the DigitalOcean cloud-init heredoc are now `CLOUD_INIT_DEFAULT_MEMORY_MB` / `CLOUD_INIT_DEFAULT_TIMEOUT_SECS` exported constants — used in both the cloud-init template and the system route lookup so they can't drift apart.
+- Dashboard "Execution Defaults" footer now reflects the active path (`scaler/cloud-init (split deploy)` vs `API process env (single-host)`) so operators can interpret the values correctly. Field hints simplified — they no longer name specific env vars that may not apply.
+
+### Tests
+
+- 7 system tests now exercise each provider separately: scaler-on + local-docker, scaler-on + digitalocean, scaler-on + unknown provider, scaler-off + single-host. Same bug pattern can't slip back in unnoticed.
+
 ## [0.8.3] - 2026-05-02
 
 ### Added
