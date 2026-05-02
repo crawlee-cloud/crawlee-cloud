@@ -389,6 +389,32 @@ export async function revokeApiKey(id: string): Promise<void> {
   await fetchApi(`/v2/auth/api-keys/${id}`, { method: 'DELETE' });
 }
 
+// System info — aggregate for the Settings page (version, storage health,
+// execution defaults, scaler state). One call, fewer round trips.
+
+export interface StorageCheck {
+  status: 'ok' | 'error';
+  latencyMs?: number;
+  error?: string;
+}
+
+export interface SystemInfo {
+  version: string;
+  nodeVersion: string;
+  storage: { db: StorageCheck; redis: StorageCheck; s3: StorageCheck };
+  executionDefaults: {
+    maxConcurrentRuns: number;
+    defaultMemoryMb: number;
+    defaultTimeoutSecs: number;
+  };
+  scaler: { enabled: boolean; provider: string; minRunners: number; maxRunners: number };
+}
+
+export async function getSystemInfo(): Promise<SystemInfo> {
+  const res = await fetchApi<{ data: SystemInfo }>('/v2/system/info');
+  return res.data;
+}
+
 // Runs
 export interface ListRunsParams {
   status?: Run['status'];

@@ -19,6 +19,7 @@ import { usersRoutes } from './routes/users.js';
 import { webhooksRoutes } from './routes/webhooks.js';
 import { schedulesRoutes } from './routes/schedules.js';
 import { scalerRoutes } from './routes/scaler.js';
+import { systemRoutes } from './routes/system.js';
 import { requireAdmin } from './auth/middleware.js';
 import { setupAdminUser } from './setup.js';
 import { initScheduler } from './scheduler.js';
@@ -142,6 +143,7 @@ await app.register(usersRoutes, { prefix: '/v2' });
 await app.register(webhooksRoutes, { prefix: '/v2' });
 await app.register(schedulesRoutes, { prefix: '/v2' });
 await app.register(scalerRoutes, { prefix: '/v2' });
+await app.register(systemRoutes, { prefix: '/v2' });
 
 // Health check routes (liveness + readiness)
 registerHealthRoutes(app);

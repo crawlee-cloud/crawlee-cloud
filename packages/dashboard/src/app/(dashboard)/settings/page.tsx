@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import {
+  AlertCircle,
   CheckCircle2,
   Copy,
   Eye,
@@ -9,6 +10,7 @@ import {
   HardDrive,
   Loader2,
   Plus,
+  Server,
   Settings2,
   Shield,
   Trash2,
@@ -17,7 +19,14 @@ import {
 import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
 import { Badge } from '@/components/ui/badge';
-import { createApiKey, getApiKeys, revokeApiKey, type ApiKey } from '@/lib/api';
+import {
+  createApiKey,
+  getApiKeys,
+  getSystemInfo,
+  revokeApiKey,
+  type ApiKey,
+  type SystemInfo,
+} from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
@@ -32,6 +41,8 @@ export default function SettingsPage() {
   const [newKeyName, setNewKeyName] = useState('');
   const [newlyCreatedKey, setNewlyCreatedKey] = useState<string | null>(null);
   const [showNewKey, setShowNewKey] = useState(false);
+  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
+  const [systemError, setSystemError] = useState<string | null>(null);
 
   const loadKeys = useCallback(async () => {
     try {
@@ -44,9 +55,23 @@ export default function SettingsPage() {
     }
   }, []);
 
+  const loadSystem = useCallback(async () => {
+    try {
+      const info = await getSystemInfo();
+      setSystemInfo(info);
+      setSystemError(null);
+    } catch (err) {
+      // Don't blow up the whole page; show the error inline so the operator
+      // knows the data they're looking at is stale rather than seeing fake
+      // "all green" badges from before the rewire.
+      setSystemError((err as Error).message);
+    }
+  }, []);
+
   useEffect(() => {
     void loadKeys();
-  }, [loadKeys]);
+    void loadSystem();
+  }, [loadKeys, loadSystem]);
 
   async function handleCreate() {
     if (!newKeyName.trim()) return;
@@ -99,6 +124,43 @@ export default function SettingsPage() {
           API access, storage backends, and execution defaults.
         </p>
       </header>
+
+      {/* SERVER */}
+      <section className="panel">
+        <header className="px-5 py-4 border-b border-border flex items-center gap-3">
+          <Server className="h-4 w-4 text-signal" />
+          <div>
+            <p className="eyebrow">SYSTEM · SERVER</p>
+            <h2 className="text-[15px] mt-1">Live state from the API process</h2>
+          </div>
+        </header>
+        {systemError ? (
+          <div className="px-5 py-3 text-[12px] text-fail flex items-center gap-2">
+            <AlertCircle className="h-3.5 w-3.5" />
+            <span>Failed to load: {systemError}</span>
+          </div>
+        ) : !systemInfo ? (
+          <p className="px-5 py-3 text-[12px] text-muted-foreground font-mono">[ loading · · · ]</p>
+        ) : (
+          <dl className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-2 px-5 py-4 text-[12px]">
+            <ServerStat label="version" value={`v${systemInfo.version}`} />
+            <ServerStat label="node" value={systemInfo.nodeVersion} />
+            <ServerStat
+              label="scaler"
+              value={
+                systemInfo.scaler.enabled
+                  ? `${systemInfo.scaler.provider} · ${systemInfo.scaler.minRunners}–${systemInfo.scaler.maxRunners}`
+                  : 'disabled'
+              }
+              tone={systemInfo.scaler.enabled ? 'signal' : 'muted'}
+            />
+            <ServerStat
+              label="queue"
+              value={`max ${systemInfo.executionDefaults.maxConcurrentRuns} concurrent`}
+            />
+          </dl>
+        )}
+      </section>
 
       {/* API ACCESS */}
       <section className="panel">
@@ -264,32 +326,55 @@ export default function SettingsPage() {
         </div>
       </section>
 
-      {/* STORAGE BACKENDS */}
+      {/* STORAGE BACKENDS — real probes from /v2/system/info */}
       <section className="panel">
         <header className="px-5 py-4 border-b border-border flex items-center gap-3">
           <HardDrive className="h-4 w-4 text-signal" />
           <div>
             <p className="eyebrow">SYSTEM · STORAGE</p>
-            <h2 className="text-[15px] mt-1">Connected backends</h2>
+            <h2 className="text-[15px] mt-1">Live connectivity probes</h2>
           </div>
         </header>
         <ul className="divide-y divide-border">
-          {STORAGE_BACKENDS.map((b) => (
-            <li key={b.label} className="flex items-center justify-between px-5 py-3">
-              <div className="min-w-0">
-                <p className="text-foreground text-[13px]">{b.label}</p>
-                <p className="text-[11px] text-muted-foreground mt-0.5">{b.description}</p>
-              </div>
-              <Badge variant="success" shape="chip" className="px-2">
-                <CheckCircle2 className="h-3 w-3 mr-1" />
-                <span>connected</span>
-              </Badge>
-            </li>
-          ))}
+          {STORAGE_BACKENDS.map((b) => {
+            const check = systemInfo?.storage[b.key];
+            return (
+              <li key={b.label} className="flex items-center justify-between px-5 py-3">
+                <div className="min-w-0">
+                  <p className="text-foreground text-[13px]">{b.label}</p>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    {b.description}
+                    {check?.latencyMs !== undefined && (
+                      <>
+                        <span className="mx-2">·</span>
+                        <span className="font-mono">{check.latencyMs}ms</span>
+                      </>
+                    )}
+                  </p>
+                </div>
+                {!systemInfo ? (
+                  <Badge variant="outline" shape="chip" className="px-2">
+                    <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                    <span>checking</span>
+                  </Badge>
+                ) : check?.status === 'ok' ? (
+                  <Badge variant="success" shape="chip" className="px-2">
+                    <CheckCircle2 className="h-3 w-3 mr-1" />
+                    <span>connected</span>
+                  </Badge>
+                ) : (
+                  <Badge variant="destructive" shape="chip" className="px-2" title={check?.error}>
+                    <AlertCircle className="h-3 w-3 mr-1" />
+                    <span>down</span>
+                  </Badge>
+                )}
+              </li>
+            );
+          })}
         </ul>
       </section>
 
-      {/* EXECUTION DEFAULTS */}
+      {/* EXECUTION DEFAULTS — read from API, not literals */}
       <section className="panel">
         <header className="px-5 py-4 border-b border-border flex items-center gap-3">
           <Settings2 className="h-4 w-4 text-signal" />
@@ -299,18 +384,18 @@ export default function SettingsPage() {
           </div>
         </header>
         <div className="p-5 grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Field label="Concurrency limit" hint="Max simultaneous runs">
-            <input type="number" defaultValue={10} className={INPUT_CLASS} />
+          <Field label="Concurrency limit" hint="Max simultaneous runs (MAX_CONCURRENT_RUNS)">
+            <ReadonlyValue value={systemInfo?.executionDefaults.maxConcurrentRuns} />
           </Field>
-          <Field label="Default memory · MB" hint="Container memory limit">
-            <input type="number" defaultValue={1024} className={INPUT_CLASS} />
+          <Field label="Default memory · MB" hint="Container memory limit (DEFAULT_MEMORY_MB)">
+            <ReadonlyValue value={systemInfo?.executionDefaults.defaultMemoryMb} />
           </Field>
-          <Field label="Default timeout · sec" hint="Hard execution limit">
-            <input type="number" defaultValue={3600} className={INPUT_CLASS} />
+          <Field label="Default timeout · sec" hint="Hard execution limit (DEFAULT_TIMEOUT_SECS)">
+            <ReadonlyValue value={systemInfo?.executionDefaults.defaultTimeoutSecs} />
           </Field>
         </div>
         <footer className="px-5 py-3 border-t border-border bg-secondary/30 font-mono text-[10px] tracking-widest text-muted-foreground uppercase">
-          Read-only — server-driven values, edit via env vars on the API.
+          Read-only — values come from API process env. Edit on the server, restart to apply.
         </footer>
       </section>
     </div>
@@ -321,11 +406,49 @@ const INPUT_CLASS = cn(
   'w-full h-9 px-3 rounded-sm border border-border bg-input font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50'
 );
 
-const STORAGE_BACKENDS = [
-  { label: 'PostgreSQL', description: 'Primary metadata store' },
-  { label: 'Redis', description: 'Job queue · log buffer · cache' },
-  { label: 'MinIO / S3', description: 'Dataset items + KV store records' },
-];
+// Storage backend descriptors — `key` is what the server's StorageHealth
+// shape uses, so the UI can index into systemInfo.storage[b.key] safely.
+const STORAGE_BACKENDS: { key: keyof SystemInfo['storage']; label: string; description: string }[] =
+  [
+    { key: 'db', label: 'PostgreSQL', description: 'Primary metadata store' },
+    { key: 'redis', label: 'Redis', description: 'Job queue · log buffer · cache' },
+    { key: 's3', label: 'MinIO / S3', description: 'Dataset items + KV store records' },
+  ];
+
+function ReadonlyValue({ value }: { value: number | undefined }) {
+  if (value === undefined) {
+    return <p className="font-mono text-[12px] text-muted-foreground">[ · · · ]</p>;
+  }
+  return (
+    <p className={cn(INPUT_CLASS, 'flex items-center bg-secondary/30 select-text')}>{value}</p>
+  );
+}
+
+function ServerStat({
+  label,
+  value,
+  tone = 'signal',
+}: {
+  label: string;
+  value: string;
+  tone?: 'signal' | 'muted';
+}) {
+  return (
+    <div>
+      <dt className="font-mono text-[10px] tracking-widest text-muted-foreground uppercase">
+        {label}
+      </dt>
+      <dd
+        className={cn(
+          'mt-1 font-mono text-[12px]',
+          tone === 'signal' ? 'text-signal' : 'text-muted-foreground'
+        )}
+      >
+        {value}
+      </dd>
+    </div>
+  );
+}
 
 function Field({
   label,
