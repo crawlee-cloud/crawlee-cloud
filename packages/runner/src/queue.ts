@@ -325,10 +325,17 @@ async function triggerWebhooks(runId: string, status: string): Promise<void> {
   for (const webhook of webhooks.rows) {
     const deliveryId = nanoid();
 
-    // Create delivery record
+    // Create delivery record. next_retry_at MUST be NULL on insert — we
+    // call attemptWebhookDelivery synchronously below for the first try.
+    // If we set next_retry_at = NOW() here, processWebhookRetries (running
+    // in parallel every 10s) sees this PENDING row as eligible for retry
+    // and fires a duplicate POST before our immediate attempt finishes the
+    // UPDATE. Net effect was 2-3 webhook.site receives per run, only one
+    // delivery row in the DB (UPDATEs raced and overwrote attempt_count).
+    // scheduleRetry sets next_retry_at forward only on actual failures.
     await pool.query(
       `INSERT INTO webhook_deliveries (id, webhook_id, run_id, event_type, status, attempt_count, max_attempts, next_retry_at)
-       VALUES ($1, $2, $3, $4, 'PENDING', 0, 5, NOW())`,
+       VALUES ($1, $2, $3, $4, 'PENDING', 0, 5, NULL)`,
       [deliveryId, webhook.id, runId, eventType]
     );
 
