@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-05-02
+
+### Fixed
+
+- **API version on the dashboard and `/health` is correct on production deploys.** v0.8.4 and earlier reported `v0.0.0` (or `v1.0.0` on `/health`) when deployed on DigitalOcean App Platform, k8s containers, systemd units, or anywhere `node dist/index.js` is launched directly — `process.env.npm_package_version` is only set by `npm run *` invocations, and the previous fallback masked the missing value as a confidently-wrong version. The API now reads `package.json` from disk at module-load time via a small `version.ts` helper (`dist/version.js → ../package.json`) and serves the result on `/v2/system/info`'s `resource.version` and the legacy `GET /health`. Cached for the process lifetime; falls back to `0.0.0` only if `package.json` is genuinely unreadable (operator-spottable sentinel, not a default for normal operation).
+
+### Documentation
+
+- README now leads with a **Dashboard** section: hero shot of the operator console + a 3×2 grid showcasing Webhooks (test/debug UI), Run detail (live logs, runtime sidebar), Settings (live version, scaler state, storage health probes with latency), KV stores (click-to-expand inline JSON preview), Runs history, and Actors grid. ~900 KB of PNGs under `docs/screenshots/`. Helps prospective adopters evaluate the platform's maturity at a glance from the GitHub page.
+
+### Tests
+
+- New `packages/api/test/version.test.ts` (2 cases): asserts the helper returns the real `package.json` version (not the `0.0.0` fallback), and — using `vi.resetModules()` + dynamic import to actually exercise the load-time codepath — that the value doesn't depend on `process.env.npm_package_version`. Latter test would have caught the production bug at v0.8.0.
+
 ## [0.8.4] - 2026-05-02
 
 ### Fixed
