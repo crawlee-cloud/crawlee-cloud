@@ -14,7 +14,7 @@
 
 <a href="https://www.producthunt.com/products/crawlee-cloud?utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-crawlee-cloud" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1054817&theme=light" alt="Crawlee Cloud - Self-hosted platform for running web scrapers | Product Hunt" width="250" height="54" /></a>
 
-[Documentation](https://crawlee.cloud/docs) · [Quick Start](#quick-start) · [Dashboard](#dashboard) · [Contributing](#contributing)
+[Dashboard](#dashboard) · [Quick Start](#quick-start) · [Documentation](#documentation) · [Contributing](#contributing)
 
 </div>
 
