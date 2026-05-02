@@ -14,9 +14,54 @@
 
 <a href="https://www.producthunt.com/products/crawlee-cloud?utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-crawlee-cloud" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1054817&theme=light" alt="Crawlee Cloud - Self-hosted platform for running web scrapers | Product Hunt" width="250" height="54" /></a>
 
-[Documentation](https://crawlee.cloud/docs) · [Quick Start](#quick-start) · [Contributing](#contributing)
+[Documentation](https://crawlee.cloud/docs) · [Quick Start](#quick-start) · [Dashboard](#dashboard) · [Contributing](#contributing)
 
 </div>
+
+---
+
+## Dashboard
+
+A purpose-built operator console — monitor runs in real time, debug webhook deliveries, browse datasets, and triage failures without leaving the page.
+
+<p align="center">
+  <img src="./docs/screenshots/02-dashboard-home.png" width="900" alt="Operator dashboard — KPIs, throughput, recent activity" />
+  <br/>
+  <em>Operator dashboard — actor count, runs, success rate, hourly throughput, recent activity feed</em>
+</p>
+
+<table>
+<tr>
+<td width="50%">
+<img src="./docs/screenshots/05-webhooks.png" width="100%" alt="Webhooks — test fire, deliveries drawer, last-seen indicator" />
+<p align="center"><em>Webhooks — fire test events per subscription, inline delivery log with HTTP code + body, last-seen status</em></p>
+</td>
+<td width="50%">
+<img src="./docs/screenshots/06-run-detail.png" width="100%" alt="Run detail — logs, runtime, storage IDs" />
+<p align="center"><em>Run detail — live logs, container runtime, dataset / KV / queue IDs, status timeline</em></p>
+</td>
+</tr>
+<tr>
+<td width="50%">
+<img src="./docs/screenshots/04-settings.png" width="100%" alt="Settings — version, scaler state, storage health" />
+<p align="center"><em>Settings — live version, scaler state, storage health probes (PG / Redis / S3) with latency, API keys</em></p>
+</td>
+<td width="50%">
+<img src="./docs/screenshots/08-kv-inline-preview.png" width="100%" alt="KV store inline preview" />
+<p align="center"><em>KV stores — click any record to pretty-print its JSON inline, no new tab needed</em></p>
+</td>
+</tr>
+<tr>
+<td width="50%">
+<img src="./docs/screenshots/03-runs.png" width="100%" alt="Runs — execution history" />
+<p align="center"><em>Runs — full execution history with status filters, durations, dataset links</em></p>
+</td>
+<td width="50%">
+<img src="./docs/screenshots/07-actors.png" width="100%" alt="Actors — deploy and manage" />
+<p align="center"><em>Actors — your deployed scrapers with version + last-modified at a glance</em></p>
+</td>
+</tr>
+</table>
 
 ---
 
