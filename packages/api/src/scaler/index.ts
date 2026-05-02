@@ -48,16 +48,47 @@ async function scanKeys(pattern: string): Promise<string[]> {
 }
 
 /**
- * Per-runner execution defaults baked into cloud-init. Exported so the
- * dashboard's `/v2/system/info` route can surface what runners *actually*
- * use, rather than what the API process happens to have in its own env —
- * in split deploys (auto-scaler enabled, API and runner are different
- * machines), the API never reads MAX_CONCURRENT_RUNS / DEFAULT_MEMORY_MB
- * / DEFAULT_TIMEOUT_SECS, but the dashboard's "Execution Defaults" panel
- * needs to show real per-runner values.
+ * Memory/timeout values the DigitalOcean cloud-init heredoc bakes into
+ * /etc/crawlee-runner.env. These are runner defaults for the digitalocean
+ * provider only — local-docker doesn't inject these and relies on the
+ * runner's own config fallbacks (see PROVIDER_DEFAULTS below).
  */
-export const RUNNER_DEFAULT_MEMORY_MB = 2048;
-export const RUNNER_DEFAULT_TIMEOUT_SECS = 3600;
+export const CLOUD_INIT_DEFAULT_MEMORY_MB = 2048;
+export const CLOUD_INIT_DEFAULT_TIMEOUT_SECS = 3600;
+
+/**
+ * Per-scaler-provider effective execution defaults — what runners actually
+ * use at runtime when SCALER_ENABLED=true. Each entry must match the env
+ * that provider's createRunner injects. When a provider only injects some
+ * of MAX_CONCURRENT_RUNS / DEFAULT_MEMORY_MB / DEFAULT_TIMEOUT_SECS, runners
+ * fall back to packages/runner/src/config.ts (currently 1024 / 3600), so
+ * this table mirrors that fallback explicitly.
+ *
+ * Future work: have runners self-report effective config via heartbeat so
+ * this lookup can go away — that would also catch operator overrides on
+ * the runner host that the API can't see.
+ */
+const PROVIDER_DEFAULTS: Record<string, { defaultMemoryMb: number; defaultTimeoutSecs: number }> = {
+  // Cloud-init writes these values explicitly into /etc/crawlee-runner.env.
+  digitalocean: {
+    defaultMemoryMb: CLOUD_INIT_DEFAULT_MEMORY_MB,
+    defaultTimeoutSecs: CLOUD_INIT_DEFAULT_TIMEOUT_SECS,
+  },
+  // Only injects MAX_CONCURRENT_RUNS — runners fall back to config.ts.
+  'local-docker': { defaultMemoryMb: 1024, defaultTimeoutSecs: 3600 },
+  // No runners actually run, but the dashboard panel still renders.
+  noop: { defaultMemoryMb: 1024, defaultTimeoutSecs: 3600 },
+};
+
+export function getProviderExecutionDefaults(provider: string): {
+  defaultMemoryMb: number;
+  defaultTimeoutSecs: number;
+} {
+  // Unknown provider → mirror the runner's own config-side fallbacks
+  // rather than guessing. Surfaces a wrong-but-honest value over a
+  // confidently-misleading one.
+  return PROVIDER_DEFAULTS[provider] ?? { defaultMemoryMb: 1024, defaultTimeoutSecs: 3600 };
+}
 
 // ---- Cloud-init template for new runners ----
 
@@ -102,8 +133,8 @@ REDIS_URL=${redisUrl}
 API_BASE_URL=${apiBaseUrl}
 DOCKER_NETWORK=bridge
 MAX_CONCURRENT_RUNS=${runsPerRunner}
-DEFAULT_MEMORY_MB=${RUNNER_DEFAULT_MEMORY_MB}
-DEFAULT_TIMEOUT_SECS=${RUNNER_DEFAULT_TIMEOUT_SECS}
+DEFAULT_MEMORY_MB=${CLOUD_INIT_DEFAULT_MEMORY_MB}
+DEFAULT_TIMEOUT_SECS=${CLOUD_INIT_DEFAULT_TIMEOUT_SECS}
 LOG_LEVEL=info
 IMAGE_REGISTRY=${process.env.IMAGE_REGISTRY || ''}
 IMAGE_REGISTRY_USER=${process.env.IMAGE_REGISTRY_USER || ''}

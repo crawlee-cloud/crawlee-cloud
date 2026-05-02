@@ -13,11 +13,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { authenticate } from '../auth/middleware.js';
 import { runStorageHealthChecks, type StorageHealth } from '../health.js';
-import {
-  loadScalerConfig,
-  RUNNER_DEFAULT_MEMORY_MB,
-  RUNNER_DEFAULT_TIMEOUT_SECS,
-} from '../scaler/index.js';
+import { getProviderExecutionDefaults, loadScalerConfig } from '../scaler/index.js';
 
 export interface SystemInfo {
   version: string;
@@ -55,17 +51,18 @@ export const systemRoutes: FastifyPluginAsync = async (fastify) => {
     const scalerCfg = loadScalerConfig();
 
     // When the auto-scaler is enabled, runners are separate machines whose
-    // env is set by cloud-init (scaler/index.ts:getCloudInitScript), not by
-    // the API process. Reading the API-side MAX_CONCURRENT_RUNS in that
-    // case is misleading — the API doesn't run actors. Source from the
-    // values cloud-init writes to /etc/crawlee-runner.env so the dashboard
-    // shows what runners actually use. For single-host (scaler off, API
-    // and runner share env), the API-side env is the right source.
+    // env is set by each provider's createRunner (cloud-init for
+    // digitalocean, container env for local-docker). Reading API-side
+    // MAX_CONCURRENT_RUNS in that case is misleading — the API doesn't
+    // run actors. Source memory/timeout from PROVIDER_DEFAULTS so the
+    // dashboard reports what THAT provider's runners actually use; values
+    // differ (DO bumps memory to 2048, local-docker stays at the runner
+    // default 1024). For single-host (scaler off, API and runner share
+    // env), the API-side env is the right source.
     const executionDefaults = scalerCfg.enabled
       ? {
           maxConcurrentRuns: scalerCfg.runsPerRunner,
-          defaultMemoryMb: RUNNER_DEFAULT_MEMORY_MB,
-          defaultTimeoutSecs: RUNNER_DEFAULT_TIMEOUT_SECS,
+          ...getProviderExecutionDefaults(scalerCfg.provider),
         }
       : {
           maxConcurrentRuns: intEnv('MAX_CONCURRENT_RUNS', 10),

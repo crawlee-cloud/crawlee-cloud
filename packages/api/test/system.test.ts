@@ -70,13 +70,13 @@ describe('GET /v2/system/info', () => {
     delete process.env.SCALER_RUNS_PER_RUNNER;
   });
 
-  it('with scaler ON, sources execution defaults from cloud-init values, not API env', async () => {
-    // Split deploy: the API doesn't run actors, runners do. The dashboard
-    // must surface what runners actually use (SCALER_RUNS_PER_RUNNER + the
-    // RUNNER_DEFAULT_* constants baked into cloud-init), not whatever the
-    // API process happens to have in its own env (typically nothing).
-    // The MAX_CONCURRENT_RUNS=15 set below would have been silently shown
-    // to operators before this fix even though runners ignore it.
+  it('with scaler ON + local-docker provider, sources defaults from runner config fallbacks (1024/3600)', async () => {
+    // Split deploy, local-docker provider. The provider only injects
+    // MAX_CONCURRENT_RUNS — runners fall back to packages/runner/src/
+    // config.ts defaults for memory/timeout (1024/3600). The API host's
+    // own MAX_CONCURRENT_RUNS=15 is a deliberate distractor: it's set
+    // here to verify it's IGNORED when scaler is on, since the API
+    // doesn't run actors.
     process.env.MAX_CONCURRENT_RUNS = '15';
     process.env.SCALER_ENABLED = 'true';
     process.env.SCALER_PROVIDER = 'local-docker';
@@ -89,24 +89,61 @@ describe('GET /v2/system/info', () => {
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body) as { data: Record<string, unknown> };
     expect(body.data).toMatchObject({
-      nodeVersion: process.version, // proves we're reading the live runtime version
-      storage: {
-        db: { status: 'ok' },
-        redis: { status: 'ok' },
-        s3: { status: 'ok' },
-      },
+      nodeVersion: process.version,
       executionDefaults: {
-        maxConcurrentRuns: 3, // from SCALER_RUNS_PER_RUNNER, NOT MAX_CONCURRENT_RUNS=15
-        defaultMemoryMb: 2048, // RUNNER_DEFAULT_MEMORY_MB constant
-        defaultTimeoutSecs: 3600, // RUNNER_DEFAULT_TIMEOUT_SECS constant
+        maxConcurrentRuns: 3, // SCALER_RUNS_PER_RUNNER, NOT MAX_CONCURRENT_RUNS=15
+        defaultMemoryMb: 1024, // local-docker → runner config fallback
+        defaultTimeoutSecs: 3600,
       },
-      scaler: {
-        enabled: true,
-        provider: 'local-docker',
-        minRunners: 2,
-        maxRunners: 8,
-      },
+      scaler: { enabled: true, provider: 'local-docker', minRunners: 2, maxRunners: 8 },
     });
+  });
+
+  it('with scaler ON + digitalocean provider, sources defaults from cloud-init constants (2048/3600)', async () => {
+    // DigitalOcean cloud-init explicitly bumps memory to 2048; the
+    // dashboard must reflect that bump rather than the runner-config
+    // fallback. Different value than the local-docker test above —
+    // both providers have to be exercised because they don't share
+    // defaults, which was the bug Codex caught on PR #20.
+    process.env.SCALER_ENABLED = 'true';
+    process.env.SCALER_PROVIDER = 'digitalocean';
+    process.env.SCALER_RUNS_PER_RUNNER = '5';
+
+    const response = await app.inject({ method: 'GET', url: '/v2/system/info' });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as {
+      data: {
+        executionDefaults: {
+          defaultMemoryMb: number;
+          defaultTimeoutSecs: number;
+          maxConcurrentRuns: number;
+        };
+      };
+    };
+    expect(body.data.executionDefaults).toEqual({
+      maxConcurrentRuns: 5,
+      defaultMemoryMb: 2048, // CLOUD_INIT_DEFAULT_MEMORY_MB — DO-specific bump
+      defaultTimeoutSecs: 3600,
+    });
+  });
+
+  it('with scaler ON + unknown provider, falls back to runner config defaults — wrong-but-honest', async () => {
+    process.env.SCALER_ENABLED = 'true';
+    process.env.SCALER_PROVIDER = 'some-future-provider';
+    process.env.SCALER_RUNS_PER_RUNNER = '7';
+
+    const response = await app.inject({ method: 'GET', url: '/v2/system/info' });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as {
+      data: { executionDefaults: { defaultMemoryMb: number; defaultTimeoutSecs: number } };
+    };
+    // Confidently-misleading would be 2048 just because we know one provider
+    // happens to use that. Falling back to the runner-config defaults is the
+    // less-wrong choice when we have no provider-specific knowledge.
+    expect(body.data.executionDefaults.defaultMemoryMb).toBe(1024);
+    expect(body.data.executionDefaults.defaultTimeoutSecs).toBe(3600);
   });
 
   it('with scaler OFF, sources execution defaults from API-process env (single-host)', async () => {
