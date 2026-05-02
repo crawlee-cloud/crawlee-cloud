@@ -1,14 +1,24 @@
 'use client';
 
-import { use, useEffect, useState } from 'react';
+import { Fragment, use, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Boxes, ExternalLink, FileKey, Loader2, Trash2 } from 'lucide-react';
+import {
+  ArrowLeft,
+  Boxes,
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  FileKey,
+  Loader2,
+  Trash2,
+} from 'lucide-react';
 import { AppLink } from '@/components/app-link';
 import { prefixPath } from '@/lib/path-prefix';
 import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
 import {
   deleteKeyValueStore,
+  fetchKVRecordContent,
   findProducingRun,
   getActor,
   getKeyValueStore,
@@ -34,6 +44,44 @@ export default function KVStoreDetail({ params }: { params: Promise<{ id: string
   // Backlink: which run produced this store (and that run's actor)?
   const [producingRun, setProducingRun] = useState<Run | null>(null);
   const [producingActor, setProducingActor] = useState<Actor | null>(null);
+  // Inline content preview state — keyed by record key. Each value is a
+  // tri-state (loading / loaded with content / error string). Caching here
+  // means re-expanding is instant and we don't refetch on every collapse.
+  const [previewByKey, setPreviewByKey] = useState<
+    Record<
+      string,
+      | { state: 'loading' }
+      | { state: 'loaded'; text: string; truncated: boolean; size: number; contentType: string }
+      | { state: 'error'; message: string }
+    >
+  >({});
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+
+  async function togglePreview(key: string) {
+    if (expandedKey === key) {
+      setExpandedKey(null);
+      return;
+    }
+    setExpandedKey(key);
+    if (previewByKey[key]) return; // cached
+    setPreviewByKey((prev) => ({ ...prev, [key]: { state: 'loading' } }));
+    try {
+      const content = await fetchKVRecordContent(id, key);
+      if (!content) {
+        setPreviewByKey((prev) => ({
+          ...prev,
+          [key]: { state: 'error', message: 'Record not found' },
+        }));
+        return;
+      }
+      setPreviewByKey((prev) => ({ ...prev, [key]: { state: 'loaded', ...content } }));
+    } catch (err) {
+      setPreviewByKey((prev) => ({
+        ...prev,
+        [key]: { state: 'error', message: (err as Error).message },
+      }));
+    }
+  }
 
   useEffect(() => {
     let alive = true;
@@ -206,36 +254,61 @@ export default function KVStoreDetail({ params }: { params: Promise<{ id: string
           <table className="w-full text-[13px]">
             <thead>
               <tr className="text-left font-mono text-[10px] tracking-widest text-muted-foreground uppercase border-b border-border">
+                <th className="px-5 py-2 font-normal w-6"></th>
                 <th className="px-5 py-2 font-normal">Key</th>
                 <th className="px-5 py-2 font-normal text-right">Size</th>
                 <th className="px-5 py-2 font-normal text-right w-24">Raw</th>
               </tr>
             </thead>
             <tbody>
-              {keys.map((k) => (
-                <tr
-                  key={k.key}
-                  className="border-b border-border/60 last:border-0 hover:bg-secondary/40"
-                >
-                  <td className="px-5 py-3 font-mono text-foreground">{k.key}</td>
-                  <td className="px-5 py-3 font-mono text-[11px] text-muted-foreground tnum text-right">
-                    {fmtBytes(k.size)}
-                  </td>
-                  <td className="px-5 py-3 text-right">
-                    {/* "view" → fetches a 1-hour presigned S3 URL and opens it
-                        in a new tab. The dashboard never touches the record
-                        bytes — the browser streams directly from S3, so even
-                        a 50MB binary doesn't dent JS heap. */}
-                    <button
-                      type="button"
-                      onClick={() => void openRawRecord(id, k.key, toast)}
-                      className="inline-flex items-center gap-1 font-mono text-[10px] tracking-wider text-muted-foreground hover:text-signal uppercase"
+              {keys.map((k) => {
+                const isExpanded = expandedKey === k.key;
+                const preview = previewByKey[k.key];
+                return (
+                  <Fragment key={k.key}>
+                    <tr
+                      onClick={() => void togglePreview(k.key)}
+                      className="border-b border-border/60 last:border-0 hover:bg-secondary/40 cursor-pointer"
                     >
-                      view <ExternalLink className="h-3 w-3" />
-                    </button>
-                  </td>
-                </tr>
-              ))}
+                      <td className="px-3 py-3 text-muted-foreground">
+                        {isExpanded ? (
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        ) : (
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        )}
+                      </td>
+                      <td className="px-5 py-3 font-mono text-foreground">{k.key}</td>
+                      <td className="px-5 py-3 font-mono text-[11px] text-muted-foreground tnum text-right">
+                        {fmtBytes(k.size)}
+                      </td>
+                      <td className="px-5 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+                        {/* "view" → fetches a 1-hour presigned S3 URL and opens it
+                            in a new tab. The dashboard never touches the record
+                            bytes — the browser streams directly from S3, so even
+                            a 50MB binary doesn't dent JS heap. Used for binary
+                            records or anything bigger than the inline cap. */}
+                        <button
+                          type="button"
+                          onClick={() => void openRawRecord(id, k.key, toast)}
+                          className="inline-flex items-center gap-1 font-mono text-[10px] tracking-wider text-muted-foreground hover:text-signal uppercase"
+                        >
+                          view <ExternalLink className="h-3 w-3" />
+                        </button>
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr className="border-b border-border/60">
+                        <td colSpan={4} className="px-5 py-3 bg-secondary/30">
+                          <RecordPreview
+                            preview={preview}
+                            onOpenRaw={() => void openRawRecord(id, k.key, toast)}
+                          />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         )}
@@ -288,4 +361,85 @@ function fmtBytes(b: number): string {
   if (b < 1024) return `${b} B`;
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
   return `${(b / 1024 / 1024).toFixed(2)} MB`;
+}
+
+/**
+ * Inline preview for an expanded KV record. Pretty-prints JSON when the
+ * content parses; otherwise renders raw text. Detects binary by looking
+ * for null bytes in the first ~200 chars and short-circuits to "view raw"
+ * — pretty-printing a JPEG inline would just be noise.
+ *
+ * Clamped to maxHeight with `overflow-y: auto` so a 200-line error array
+ * doesn't push the entire keys table off-screen.
+ */
+function RecordPreview({
+  preview,
+  onOpenRaw,
+}: {
+  preview:
+    | { state: 'loading' }
+    | { state: 'loaded'; text: string; truncated: boolean; size: number; contentType: string }
+    | { state: 'error'; message: string }
+    | undefined;
+  onOpenRaw: () => void;
+}) {
+  if (!preview || preview.state === 'loading') {
+    return (
+      <div className="grid place-items-center py-6">
+        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+  if (preview.state === 'error') {
+    return <p className="font-mono text-[11px] text-fail">[ERR] {preview.message}</p>;
+  }
+
+  const { text, truncated, size, contentType } = preview;
+  // Binary heuristic: control chars (excluding tab/newline/CR) in the first
+  // 200 bytes mean it's not text we should pretty-print. Disable the lint
+  // rule — control chars are exactly what we're matching by design.
+  // eslint-disable-next-line no-control-regex
+  const looksBinary = /[\x00-\x08\x0e-\x1f]/.test(text.slice(0, 200));
+
+  let display: string;
+  let parsedAsJson = false;
+  if (looksBinary) {
+    display = '';
+  } else {
+    try {
+      display = JSON.stringify(JSON.parse(text), null, 2);
+      parsedAsJson = true;
+    } catch {
+      display = text;
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between font-mono text-[10px] tracking-widest text-muted-foreground uppercase">
+        <span>
+          {parsedAsJson ? 'JSON' : 'TEXT'} · {fmtBytes(size)} · {contentType}
+          {truncated && ' · truncated'}
+        </span>
+        {(truncated || looksBinary) && (
+          <button
+            type="button"
+            onClick={onOpenRaw}
+            className="inline-flex items-center gap-1 hover:text-signal"
+          >
+            view full <ExternalLink className="h-3 w-3" />
+          </button>
+        )}
+      </div>
+      {looksBinary ? (
+        <p className="font-mono text-[11px] text-muted-foreground">
+          [ Binary record — open in new tab to view ]
+        </p>
+      ) : (
+        <pre className="font-mono text-[11px] text-foreground bg-background border border-border rounded-sm p-3 overflow-auto max-h-96 whitespace-pre-wrap break-all">
+          {display}
+        </pre>
+      )}
+    </div>
+  );
 }
