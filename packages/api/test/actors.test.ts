@@ -223,6 +223,9 @@ describe('Actor Routes', () => {
         .mockResolvedValueOnce({ rows: [] }) // dataset insert
         .mockResolvedValueOnce({ rows: [] }) // kv store insert
         .mockResolvedValueOnce({ rows: [] }) // queue insert
+        // Build lookup: actor has no SUCCEEDED build → null buildId/buildNumber.
+        // Both columns are nullable so the run insert below stays valid.
+        .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({
           rows: [
             {

@@ -329,6 +329,8 @@ describe('Authorization Tests', () => {
       mockQuery.mockResolvedValueOnce({ rows: [] });
       mockQuery.mockResolvedValueOnce({ rows: [] });
       mockQuery.mockResolvedValueOnce({ rows: [] });
+      // Build lookup: actor has no SUCCEEDED build → null buildId/buildNumber.
+      mockQuery.mockResolvedValueOnce({ rows: [] });
       // Mock run creation
       mockQuery.mockResolvedValueOnce({
         rows: [
