@@ -259,14 +259,18 @@ async function processRun(run: RunJob): Promise<void> {
       status = 'FAILED';
     }
 
-    // Update run record
+    // Update run record. Persist exit_code alongside status so receivers
+    // reading the webhook payload (resource.exitCode) and the runs API see
+    // the real exit value rather than null. The catch block below leaves
+    // exit_code as NULL because no container code was produced — the run
+    // failed before/around exec, not from the actor's own exit.
     await pool.query(
       `
-      UPDATE runs 
-      SET status = $1, finished_at = $2, modified_at = NOW()
-      WHERE id = $3
+      UPDATE runs
+      SET status = $1, finished_at = $2, exit_code = $3, modified_at = NOW()
+      WHERE id = $4
     `,
-      [status, result.finishedAt, runId]
+      [status, result.finishedAt, result.exitCode, runId]
     );
 
     console.log(`Run ${runId} completed with status: ${status}`);
