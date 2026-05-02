@@ -14,6 +14,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { authenticate } from '../auth/middleware.js';
 import { runStorageHealthChecks, type StorageHealth } from '../health.js';
 import { getProviderExecutionDefaults, loadScalerConfig } from '../scaler/index.js';
+import { getApiVersion } from '../version.js';
 
 export interface SystemInfo {
   version: string;
@@ -71,7 +72,7 @@ export const systemRoutes: FastifyPluginAsync = async (fastify) => {
         };
 
     const body: SystemInfo = {
-      version: process.env.npm_package_version ?? '0.0.0',
+      version: getApiVersion(),
       nodeVersion: process.version,
       storage,
       executionDefaults,

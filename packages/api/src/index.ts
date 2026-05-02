@@ -26,6 +26,7 @@ import { initScheduler } from './scheduler.js';
 import { initScaler } from './scaler/index.js';
 import { registry, httpRequestsTotal, httpRequestDuration } from './metrics.js';
 import { registerHealthRoutes } from './health.js';
+import { getApiVersion } from './version.js';
 
 // Validate security configuration at startup
 enforceSecurityConfig();
@@ -151,7 +152,7 @@ registerHealthRoutes(app);
 // Legacy health check
 app.get('/health', () => ({
   status: 'ok',
-  version: process.env.npm_package_version ?? '1.0.0',
+  version: getApiVersion(),
 }));
 
 // Prometheus metrics endpoint - admin-only by default to avoid public
