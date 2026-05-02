@@ -261,19 +261,43 @@ async function processRun(run: RunJob): Promise<void> {
 
     // Update run record. Persist exit_code alongside status so receivers
     // reading the webhook payload (resource.exitCode) and the runs API see
-    // the real exit value rather than null. The catch block below leaves
-    // exit_code as NULL because no container code was produced — the run
-    // failed before/around exec, not from the actor's own exit.
-    await pool.query(
+    // the real exit value rather than null.
+    //
+    // The `WHERE status = 'RUNNING'` guard is the lifecycle invariant: if
+    // the actor SDK called Actor.fail() (PUT /v2/actor-runs/:id with
+    // status=FAILED) while the container was alive, the run is already in
+    // a terminal state and we MUST NOT overwrite it from the container's
+    // exit code. Common scenario: actor catches its own error, calls
+    // Actor.fail(), the SDK then cleans up and the process exits 0 — the
+    // pre-fix code would have flipped the run back to SUCCEEDED, hiding
+    // the failure on the dashboard, in webhooks, and in the runs API.
+    //
+    // RETURNING to detect the no-op case so we can log it (operator
+    // signal that some other path won the race — usually Actor.fail()).
+    const updateResult = await pool.query<{ status: string }>(
       `
       UPDATE runs
       SET status = $1, finished_at = $2, exit_code = $3, modified_at = NOW()
-      WHERE id = $4
+      WHERE id = $4 AND status = 'RUNNING'
+      RETURNING status
     `,
       [status, result.finishedAt, result.exitCode, runId]
     );
 
-    console.log(`Run ${runId} completed with status: ${status}`);
+    if (updateResult.rowCount === 0) {
+      // Status was already terminal — re-read what's there so the rest of
+      // the function (webhooks, retry) sees the authoritative status.
+      const cur = await pool.query<{ status: string }>('SELECT status FROM runs WHERE id = $1', [
+        runId,
+      ]);
+      const winning = cur.rows[0]?.status ?? status;
+      console.log(
+        `Run ${runId} container exited ${String(result.exitCode)} but run was already ${winning} (kept that). Likely Actor.fail() or abort.`
+      );
+      status = winning;
+    } else {
+      console.log(`Run ${runId} completed with status: ${status}`);
+    }
 
     // Trigger webhooks
     await triggerWebhooks(runId, status);
