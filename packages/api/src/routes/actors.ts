@@ -416,6 +416,23 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
     const { putKVRecord } = await import('../storage/s3.js');
     await putKVRecord(kvStoreId, 'INPUT', JSON.stringify(input ?? {}), 'application/json');
 
+    // Stamp the run with the actor's most recent SUCCEEDED build so the
+    // run row (and downstream webhook resource block) carries buildId /
+    // buildNumber instead of null. NULL stays valid for actors that have
+    // never been pushed — the runs API and webhook payload both tolerate
+    // it. Joined to actor_versions for the human-readable version_number.
+    const buildLookup = await query<{ build_id: string; version_number: string | null }>(
+      `SELECT b.id AS build_id, v.version_number
+         FROM actor_builds b
+         LEFT JOIN actor_versions v ON v.id = b.version_id
+        WHERE b.actor_id = $1 AND b.status = 'SUCCEEDED'
+        ORDER BY b.created_at DESC
+        LIMIT 1`,
+      [actor.rows[0].id]
+    );
+    const buildId = buildLookup.rows[0]?.build_id ?? null;
+    const buildNumber = buildLookup.rows[0]?.version_number ?? null;
+
     // Create run record with READY status so Runner picks it up (with user ownership)
     const result = await query<{
       id: string;
@@ -430,8 +447,8 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
       created_at: Date;
     }>(
       `
-      INSERT INTO runs (id, actor_id, user_id, status, default_dataset_id, default_key_value_store_id, default_request_queue_id, timeout_secs, memory_mbytes)
-      VALUES ($1, $2, $3, 'READY', $4, $5, $6, $7, $8)
+      INSERT INTO runs (id, actor_id, user_id, status, default_dataset_id, default_key_value_store_id, default_request_queue_id, timeout_secs, memory_mbytes, build_id, build_number)
+      VALUES ($1, $2, $3, 'READY', $4, $5, $6, $7, $8, $9, $10)
       RETURNING *
     `,
       [
@@ -443,6 +460,8 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
         requestQueueId,
         timeout,
         memory,
+        buildId,
+        buildNumber,
       ]
     );
 
