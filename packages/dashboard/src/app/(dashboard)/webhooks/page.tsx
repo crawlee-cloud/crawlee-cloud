@@ -133,22 +133,60 @@ export default function WebhooksPage() {
   async function handleTest(w: Webhook) {
     setTestingId(w.id);
     try {
-      const delivery = await testWebhook(w.id);
-      // Insert the freshly-fired delivery at the top of the cached list so
-      // the drawer (if open) reflects it without a refetch round trip.
-      setDeliveriesByWebhook((prev) => ({
-        ...prev,
-        [w.id]: [delivery, ...(prev[w.id] ?? [])],
-      }));
+      // Multi-event webhooks: fire one delivery per subscribed event in
+      // parallel. Receivers often branch by event (SUCCEEDED → queue,
+      // FAILED → Slack), so testing only the first event hides bugs in the
+      // other branches. allSettled instead of all so a single network
+      // failure doesn't drop the rest of the results.
+      const events = w.eventTypes.length > 0 ? w.eventTypes : [undefined];
+      const settled = await Promise.allSettled(events.map((evt) => testWebhook(w.id, evt)));
+
+      const deliveries: WebhookDelivery[] = [];
+      const errors: string[] = [];
+      let delivered = 0;
+      let failed = 0;
+      for (const r of settled) {
+        if (r.status === 'fulfilled') {
+          deliveries.push(r.value);
+          if (r.value.status === 'DELIVERED') delivered++;
+          else failed++;
+        } else {
+          errors.push((r.reason as Error).message);
+          failed++;
+        }
+      }
+
+      // Newest-first into the cached list so the drawer reflects every
+      // attempt without a refetch round trip.
+      if (deliveries.length > 0) {
+        setDeliveriesByWebhook((prev) => ({
+          ...prev,
+          [w.id]: [...deliveries.slice().reverse(), ...(prev[w.id] ?? [])],
+        }));
+      }
       // Auto-expand on test so the user sees the result immediately.
       setExpandedId(w.id);
-      if (delivery.status === 'DELIVERED') {
-        toast.success('Test delivered', {
-          description: `${String(delivery.responseStatus ?? '???')} from ${w.requestUrl}`,
+
+      const total = events.length;
+      if (failed === 0) {
+        toast.success(
+          total === 1 ? 'Test delivered' : `${String(total)} of ${String(total)} delivered`,
+          {
+            description:
+              total === 1
+                ? `${String(deliveries[0]?.responseStatus ?? '???')} from ${w.requestUrl}`
+                : w.requestUrl,
+          }
+        );
+      } else if (delivered === 0) {
+        toast.error(total === 1 ? 'Test failed' : `${String(failed)} of ${String(total)} failed`, {
+          description: errors[0] ?? deliveries[0]?.responseBody?.slice(0, 200) ?? 'no response',
         });
       } else {
-        toast.error('Test failed', {
-          description: delivery.responseBody?.slice(0, 200) ?? 'no response',
+        // Mixed outcome — surface the count clearly so the operator opens
+        // the drawer to see which event broke.
+        toast.error(`${String(delivered)} delivered · ${String(failed)} failed`, {
+          description: 'Open the log to see per-event results',
         });
       }
     } catch (err) {

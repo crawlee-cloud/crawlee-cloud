@@ -949,14 +949,20 @@ export async function getWebhookDeliveries(id: string): Promise<WebhookDelivery[
  * timeout. The response includes the resulting delivery row so the UI can
  * render the result inline without polling.
  */
-export async function testWebhook(id: string): Promise<WebhookDelivery> {
+/**
+ * Fire a synthetic event at the webhook's URL. When `eventType` is omitted
+ * the API uses the first event the webhook is subscribed to. To exercise
+ * every subscribed event call once per event in parallel — see the Webhooks
+ * page handler for the multi-event flow.
+ */
+export async function testWebhook(id: string, eventType?: string): Promise<WebhookDelivery> {
   // Send an empty JSON object as the body — fetchApi sets
   // `Content-Type: application/json` by default, and Fastify's JSON
   // parser rejects empty bodies under that content-type with
   // "Body cannot be empty when content-type is set to 'application/json'".
   const res = await fetchApi<{ data: WebhookDelivery }>(`/v2/webhooks/${id}/test`, {
     method: 'POST',
-    body: JSON.stringify({}),
+    body: JSON.stringify(eventType ? { eventType } : {}),
   });
   return res.data;
 }

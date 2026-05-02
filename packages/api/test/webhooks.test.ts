@@ -424,5 +424,61 @@ describe('Webhook Routes', () => {
       expect(response.statusCode).toBe(404);
       expect(fetchMock).not.toHaveBeenCalled();
     });
+
+    it('uses the requested eventType from the body when subscribed', async () => {
+      // Multi-event webhook with [SUCCEEDED, FAILED]. Test that requesting
+      // FAILED specifically picks FAILED, not the first event (SUCCEEDED).
+      const subscribed = ['ACTOR.RUN.SUCCEEDED', 'ACTOR.RUN.FAILED'];
+      mockQuery
+        .mockResolvedValueOnce({ rows: [createWebhookRow({ event_types: subscribed })] })
+        .mockResolvedValueOnce({
+          rows: [createDeliveryRow({ status: 'PENDING', event_type: 'ACTOR.RUN.FAILED' })],
+        })
+        .mockResolvedValueOnce({
+          rows: [
+            createDeliveryRow({
+              status: 'DELIVERED',
+              event_type: 'ACTOR.RUN.FAILED',
+              response_status: 200,
+              response_body: 'ok',
+            }),
+          ],
+        });
+      fetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => 'ok' } as Response);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/webhooks/webhook-1/test',
+        payload: { eventType: 'ACTOR.RUN.FAILED' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body) as { data: { eventType: string } };
+      expect(body.data.eventType).toBe('ACTOR.RUN.FAILED');
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      const payload = JSON.parse(init.body as string) as { eventType: string };
+      expect(payload.eventType).toBe('ACTOR.RUN.FAILED');
+    });
+
+    it('rejects an eventType the webhook is not subscribed to', async () => {
+      // Receivers shouldn't have to handle events the platform "promised" not
+      // to send them. The test endpoint enforces subscription scope.
+      mockQuery.mockResolvedValueOnce({
+        rows: [createWebhookRow({ event_types: ['ACTOR.RUN.SUCCEEDED'] })],
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/webhooks/webhook-1/test',
+        payload: { eventType: 'ACTOR.BUILD.FAILED' },
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body = JSON.parse(response.body) as { error: { type: string; message: string } };
+      expect(body.error.type).toBe('invalid-event-type');
+      expect(body.error.message).toContain('ACTOR.BUILD.FAILED');
+      expect(body.error.message).toContain('ACTOR.RUN.SUCCEEDED');
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
   });
 });

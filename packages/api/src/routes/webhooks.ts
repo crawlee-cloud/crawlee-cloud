@@ -262,36 +262,61 @@ export const webhooksRoutes: FastifyPluginAsync = async (fastify) => {
    * displays. The synthetic payload sets `test: true` and uses sentinel run
    * IDs so receivers can opt-out of side effects.
    *
+   * Body (all optional):
+   *   - eventType: string — pick a specific event the webhook is subscribed
+   *     to. Useful when receivers branch by event (e.g. SUCCEEDED routes to
+   *     a queue, FAILED posts to Slack). When omitted, defaults to the
+   *     first configured event. To exercise *every* subscribed event the
+   *     dashboard makes one parallel call per event with this field set.
+   *
    * Synchronous: the response includes the delivery row so the UI can show
    * the result immediately without polling.
    */
-  fastify.post<{ Params: { webhookId: string } }>(
-    '/webhooks/:webhookId/test',
-    async (request, reply) => {
-      const { webhookId } = request.params;
+  fastify.post<{
+    Params: { webhookId: string };
+    Body: { eventType?: string } | undefined;
+  }>('/webhooks/:webhookId/test', async (request, reply) => {
+    const { webhookId } = request.params;
 
-      const webhookResult = await query<WebhookRow>(
-        'SELECT * FROM webhooks WHERE id = $1 AND user_id = $2',
-        [webhookId, request.user!.id]
-      );
-      const webhook = webhookResult.rows[0];
-      if (!webhook) {
-        reply.status(404);
-        return { error: { type: 'record-not-found', message: 'Webhook not found' } };
-      }
-
-      // Pick the first configured event type so the payload matches what the
-      // receiver expects. If somehow none configured, fall back to a common one.
-      const eventType = webhook.event_types[0] ?? 'ACTOR.RUN.SUCCEEDED';
-
-      const deliveryId = nanoid();
-      const result = await deliverTestWebhook(deliveryId, webhook, eventType);
-
-      const formatted = formatDelivery(result);
-      reply.status(result.status === 'DELIVERED' ? 200 : 502);
-      return { data: formatted };
+    const webhookResult = await query<WebhookRow>(
+      'SELECT * FROM webhooks WHERE id = $1 AND user_id = $2',
+      [webhookId, request.user!.id]
+    );
+    const webhook = webhookResult.rows[0];
+    if (!webhook) {
+      reply.status(404);
+      return { error: { type: 'record-not-found', message: 'Webhook not found' } };
     }
-  );
+
+    // Default: first configured event. Override: any event the webhook is
+    // subscribed to. Reject events the webhook isn't subscribed to so test
+    // results match what the receiver would actually see in production —
+    // receivers shouldn't have to handle events the platform "promised" not
+    // to send them.
+    const requestedEvent = request.body?.eventType;
+    let eventType: string;
+    if (requestedEvent) {
+      if (!webhook.event_types.includes(requestedEvent)) {
+        reply.status(400);
+        return {
+          error: {
+            type: 'invalid-event-type',
+            message: `Webhook is not subscribed to "${requestedEvent}". Subscribed: ${webhook.event_types.join(', ')}`,
+          },
+        };
+      }
+      eventType = requestedEvent;
+    } else {
+      eventType = webhook.event_types[0] ?? 'ACTOR.RUN.SUCCEEDED';
+    }
+
+    const deliveryId = nanoid();
+    const result = await deliverTestWebhook(deliveryId, webhook, eventType);
+
+    const formatted = formatDelivery(result);
+    reply.status(result.status === 'DELIVERED' ? 200 : 502);
+    return { data: formatted };
+  });
 };
 
 /**
