@@ -40,9 +40,13 @@ export function translateLocalhostForContainer(
     if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') {
       u.hostname = 'host.docker.internal';
       if (!warnedAboutDarwinTranslate) {
-        console.warn(
+        // process.stderr.write flushes synchronously when stderr is a file
+        // (the long-running runner case under `npm run start > log 2>&1`),
+        // unlike console.warn which line-buffers and only drains at exit.
+        // Operators triaging a stuck dev setup need to see this warning live.
+        process.stderr.write(
           `[Runner] Rewriting actor APIFY_API_BASE_URL host -> host.docker.internal ` +
-            `(macOS dev convenience). Set API_BASE_URL explicitly to silence this.`
+            `(macOS dev convenience). Set API_BASE_URL explicitly to silence this.\n`
         );
         warnedAboutDarwinTranslate = true;
       }

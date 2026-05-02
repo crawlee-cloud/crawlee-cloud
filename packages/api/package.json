@@ -1,6 +1,6 @@
 {
   "name": "@crawlee-cloud/api",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "description": "Self-hosted Apify-compatible REST API server",
   "type": "module",
   "main": "./dist/index.js",

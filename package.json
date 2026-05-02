@@ -1,6 +1,6 @@
 {
   "name": "crawlee-cloud",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "private": true,
   "description": "Open-source self-hosted platform for Crawlee scrapers with Apify-compatible API",
   "repository": {

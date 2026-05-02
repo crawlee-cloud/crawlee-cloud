@@ -71,8 +71,7 @@ async function main() {
     config.maxConcurrentRuns
   );
 
-  // Start processing runs
-  console.log('Starting run processor...');
+  // Start processing runs (startProcessing logs its own banner — no duplicate here)
   await startProcessing();
 }
 
