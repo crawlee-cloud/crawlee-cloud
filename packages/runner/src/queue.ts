@@ -15,6 +15,7 @@ const { Pool } = pg;
 interface RunJob {
   id: string;
   actor_id: string;
+  user_id: string;
   status: string;
   default_dataset_id: string;
   default_key_value_store_id: string;
@@ -24,6 +25,21 @@ interface RunJob {
   retry_count: number;
   origin_run_id: string | null;
   run_after: Date | null;
+  // Optional: present on rows fetched after a run has progressed.
+  // attemptWebhookDelivery uses these to build the Apify-compatible
+  // resource block — null means "not yet" (e.g. run still RUNNING).
+  started_at?: Date | null;
+  finished_at?: Date | null;
+  exit_code?: number | null;
+  build_id?: string | null;
+  build_number?: string | null;
+  stats_json?: {
+    inputBodyLen?: number;
+    restartCount?: number;
+    resurrectCount?: number;
+    runTimeSecs?: number;
+    computeUnits?: number;
+  } | null;
 }
 
 interface ActorRow {
@@ -428,6 +444,11 @@ async function attemptWebhookDelivery(
   const RETRY_DELAYS = [10, 30, 60, 300, 900]; // seconds
 
   try {
+    // Default payload is the Apify-compatible shape with a full `resource`
+    // block. KEEP IN SYNC with packages/api/src/routes/webhooks.ts
+    // buildWebhookPayload — the test endpoint mirrors this shape so
+    // receivers tested with one path don't break in production. The
+    // webhook test snapshot in webhooks.test.ts locks the contract.
     const payload = webhook.payload_template
       ? JSON.parse(
           webhook.payload_template.replace(
@@ -442,9 +463,39 @@ async function attemptWebhookDelivery(
           )
         )
       : {
-          eventType,
-          eventData: { actorId: run.actor_id, actorRunId: run.id, status: run.status },
+          userId: run.user_id,
           createdAt: new Date().toISOString(),
+          eventType,
+          eventData: { actorId: run.actor_id, actorRunId: run.id },
+          resource: {
+            id: run.id,
+            actId: run.actor_id,
+            userId: run.user_id,
+            status: run.status,
+            startedAt: run.started_at?.toISOString() ?? null,
+            finishedAt: run.finished_at?.toISOString() ?? null,
+            defaultDatasetId: run.default_dataset_id,
+            defaultKeyValueStoreId: run.default_key_value_store_id,
+            defaultRequestQueueId: run.default_request_queue_id,
+            options: { timeoutSecs: run.timeout_secs, memoryMbytes: run.memory_mbytes },
+            buildId: run.build_id ?? null,
+            buildNumber: run.build_number ?? null,
+            exitCode: run.exit_code ?? null,
+            stats: {
+              inputBodyLen: run.stats_json?.inputBodyLen ?? 0,
+              restartCount: run.stats_json?.restartCount ?? 0,
+              resurrectCount: run.stats_json?.resurrectCount ?? 0,
+              runTimeSecs:
+                run.stats_json?.runTimeSecs ??
+                (run.finished_at && run.started_at
+                  ? Math.round(
+                      (new Date(run.finished_at).getTime() - new Date(run.started_at).getTime()) /
+                        1000
+                    )
+                  : 0),
+              computeUnits: run.stats_json?.computeUnits ?? 0,
+            },
+          },
         };
 
     const headers: Record<string, string> = {

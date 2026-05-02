@@ -320,6 +320,97 @@ export const webhooksRoutes: FastifyPluginAsync = async (fastify) => {
 };
 
 /**
+ * Apify-compatible webhook payload shape. Receivers reading documentation at
+ * https://docs.apify.com/platform/integrations/webhooks expect this exact
+ * structure, especially the `resource` block — that's where serious receivers
+ * pull the full run context from (ids, status, timestamps, exit code, stats).
+ *
+ * Kept here AND mirrored in the runner's attemptWebhookDelivery default —
+ * the snapshot test in webhooks.test.ts locks the shape so the two stay
+ * aligned. The fields below are the minimum viable rich payload; expand
+ * here when receivers need new fields.
+ */
+export interface WebhookRun {
+  id: string;
+  actorId: string;
+  userId: string;
+  status: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  defaultDatasetId: string | null;
+  defaultKeyValueStoreId: string | null;
+  defaultRequestQueueId: string | null;
+  timeoutSecs: number;
+  memoryMbytes: number;
+  buildId: string | null;
+  buildNumber: string | null;
+  exitCode: number | null;
+  stats: {
+    inputBodyLen: number;
+    restartCount: number;
+    resurrectCount: number;
+    runTimeSecs: number;
+    computeUnits: number;
+  };
+}
+
+export interface WebhookPayload {
+  userId: string;
+  createdAt: string;
+  eventType: string;
+  eventData: { actorId: string; actorRunId: string };
+  resource: {
+    id: string;
+    actId: string; // Apify alias for actorId
+    userId: string;
+    status: string;
+    startedAt: string | null;
+    finishedAt: string | null;
+    defaultDatasetId: string | null;
+    defaultKeyValueStoreId: string | null;
+    defaultRequestQueueId: string | null;
+    options: { timeoutSecs: number; memoryMbytes: number };
+    buildId: string | null;
+    buildNumber: string | null;
+    exitCode: number | null;
+    stats: WebhookRun['stats'];
+  };
+  /** Marker so receivers can no-op side effects on test deliveries. */
+  test?: boolean;
+}
+
+export function buildWebhookPayload(
+  eventType: string,
+  run: WebhookRun,
+  options: { test?: boolean } = {}
+): WebhookPayload {
+  const payload: WebhookPayload = {
+    userId: run.userId,
+    createdAt: new Date().toISOString(),
+    eventType,
+    eventData: { actorId: run.actorId, actorRunId: run.id },
+    resource: {
+      id: run.id,
+      actId: run.actorId,
+      userId: run.userId,
+      status: run.status,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt,
+      defaultDatasetId: run.defaultDatasetId,
+      defaultKeyValueStoreId: run.defaultKeyValueStoreId,
+      defaultRequestQueueId: run.defaultRequestQueueId,
+      options: { timeoutSecs: run.timeoutSecs, memoryMbytes: run.memoryMbytes },
+      buildId: run.buildId,
+      buildNumber: run.buildNumber,
+      exitCode: run.exitCode,
+      stats: run.stats,
+    },
+  };
+  if (options.test) payload.test = true;
+  return payload;
+}
+
+/**
  * Same private-URL guard the runner uses for production deliveries — kept
  * inline because it's small and tied to the test endpoint's threat model.
  * Blocks loopback, link-local / cloud metadata, and RFC 1918 ranges.
@@ -380,12 +471,44 @@ async function deliverTestWebhook(
     return failed.rows[0] ?? initial;
   }
 
-  const payload = {
-    test: true,
-    eventType,
-    eventData: { actorId: 'test-actor', actorRunId: testRunId, status: 'SUCCEEDED' },
-    createdAt: now.toISOString(),
+  // Derive `status` from the eventType so the synthetic run mirrors what
+  // production would produce for a real run reaching this state. Production
+  // event format is `ACTOR.RUN.${status}` (SUCCEEDED, FAILED, TIMED-OUT,
+  // ABORTED), so the last segment is the status. Falls back to SUCCEEDED
+  // for non-ACTOR.RUN events (future-proofing).
+  const statusFromEventType = eventType.split('.').pop() ?? 'SUCCEEDED';
+
+  // Synthetic run with realistic timing/IDs so receivers can exercise their
+  // full parsing path. `test-` prefixed IDs let receivers tell test runs
+  // apart from production at the data layer (in addition to `payload.test`).
+  const startedAt = new Date(now.getTime() - 5 * 60 * 1000); // 5 minutes ago
+  const finishedAt = ['RUNNING', 'READY'].includes(statusFromEventType) ? null : now;
+  const exitCode =
+    statusFromEventType === 'SUCCEEDED' ? 0 : statusFromEventType === 'RUNNING' ? null : 1;
+  const syntheticRun: WebhookRun = {
+    id: testRunId,
+    actorId: `test-${webhook.actor_id ?? 'actor'}`,
+    userId: webhook.user_id,
+    status: statusFromEventType,
+    startedAt: startedAt.toISOString(),
+    finishedAt: finishedAt ? finishedAt.toISOString() : null,
+    defaultDatasetId: `test-dataset-${deliveryId}`,
+    defaultKeyValueStoreId: `test-kv-${deliveryId}`,
+    defaultRequestQueueId: `test-rq-${deliveryId}`,
+    timeoutSecs: 3600,
+    memoryMbytes: 1024,
+    buildId: `test-build-${deliveryId}`,
+    buildNumber: '0.0.1',
+    exitCode,
+    stats: {
+      inputBodyLen: 0,
+      restartCount: 0,
+      resurrectCount: 0,
+      runTimeSecs: finishedAt ? Math.round((finishedAt.getTime() - startedAt.getTime()) / 1000) : 0,
+      computeUnits: 0,
+    },
   };
+  const payload = buildWebhookPayload(eventType, syntheticRun, { test: true });
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(webhook.headers ?? {}),
