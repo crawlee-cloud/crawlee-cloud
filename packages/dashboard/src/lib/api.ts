@@ -950,8 +950,13 @@ export async function getWebhookDeliveries(id: string): Promise<WebhookDelivery[
  * render the result inline without polling.
  */
 export async function testWebhook(id: string): Promise<WebhookDelivery> {
+  // Send an empty JSON object as the body — fetchApi sets
+  // `Content-Type: application/json` by default, and Fastify's JSON
+  // parser rejects empty bodies under that content-type with
+  // "Body cannot be empty when content-type is set to 'application/json'".
   const res = await fetchApi<{ data: WebhookDelivery }>(`/v2/webhooks/${id}/test`, {
     method: 'POST',
+    body: JSON.stringify({}),
   });
   return res.data;
 }
