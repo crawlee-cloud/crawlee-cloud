@@ -210,4 +210,115 @@ describe('Actor Runs Routes', () => {
       expect(body).toHaveLength(1);
     });
   });
+
+  describe('POST /v2/actor-runs/:runId/ingest-crawler-stats', () => {
+    // Locks the SDK file → stats_json normalization. Receivers reading
+    // resource.stats from webhook payloads rely on the field names we
+    // pick here.
+
+    it('returns stats:null and does not UPDATE when SDK_CRAWLER_STATISTICS_0 is missing', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ id: 'run-1', default_key_value_store_id: 'kv-1', user_id: 'test-user-id' }],
+      });
+      const s3 = await import('../src/storage/s3.js');
+      vi.mocked(s3.getKVRecord).mockResolvedValueOnce(null);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/actor-runs/run-1/ingest-crawler-stats',
+        payload: {},
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.data.stats).toBeNull();
+      // Only one query ran (the run-lookup); the UPDATE didn't fire.
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it('parses SDK file and writes a normalized stats_json on UPDATE', async () => {
+      mockQuery
+        .mockResolvedValueOnce({
+          rows: [{ id: 'run-1', default_key_value_store_id: 'kv-1', user_id: 'test-user-id' }],
+        })
+        .mockResolvedValueOnce({ rowCount: 1 }); // UPDATE
+
+      const sdkPayload = {
+        requestsFinished: 42,
+        requestsFailed: 3,
+        requestsTotal: 45,
+        requestsRetries: 7,
+        crawlerRuntimeMillis: 38176,
+        crawlerStartedAt: '2026-05-02T11:24:55.000Z',
+        crawlerFinishedAt: '2026-05-02T11:25:33.000Z',
+      };
+      const s3 = await import('../src/storage/s3.js');
+      vi.mocked(s3.getKVRecord).mockResolvedValueOnce({
+        value: Buffer.from(JSON.stringify(sdkPayload), 'utf8'),
+        contentType: 'application/json',
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/actor-runs/run-1/ingest-crawler-stats',
+        payload: {},
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      // Apify-compat fields the existing webhook payload already promised
+      expect(body.data.stats).toMatchObject({
+        runTimeSecs: 38, // 38176 ms → 38 s
+        computeUnits: 0,
+        inputBodyLen: 0,
+      });
+      // Crawlee extension — receivers reading these get the rich picture
+      expect(body.data.stats).toMatchObject({
+        requestsFinished: 42,
+        requestsFailed: 3,
+        requestsTotal: 45,
+        requestsRetries: 7,
+        crawlerRuntimeMillis: 38176,
+        crawlerStartedAt: '2026-05-02T11:24:55.000Z',
+        crawlerFinishedAt: '2026-05-02T11:25:33.000Z',
+      });
+      // UPDATE was called with the normalized stats
+      const updateCall = mockQuery.mock.calls[1] as [string, unknown[]];
+      expect(updateCall[0]).toMatch(/UPDATE runs SET stats_json/);
+      expect((updateCall[1][0] as Record<string, number>).requestsFailed).toBe(3);
+    });
+
+    it('rejects malformed SDK JSON with 422 — does not silently corrupt stats_json', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ id: 'run-1', default_key_value_store_id: 'kv-1', user_id: 'test-user-id' }],
+      });
+      const s3 = await import('../src/storage/s3.js');
+      vi.mocked(s3.getKVRecord).mockResolvedValueOnce({
+        value: Buffer.from('not json{{{', 'utf8'),
+        contentType: 'application/json',
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/actor-runs/run-1/ingest-crawler-stats',
+        payload: {},
+      });
+
+      expect(response.statusCode).toBe(422);
+      const body = JSON.parse(response.body);
+      expect(body.error.type).toBe('invalid-stats');
+    });
+
+    it('returns 404 when the run is not owned by the caller', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] }); // ownership check fails
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/actor-runs/foreign/ingest-crawler-stats',
+        payload: {},
+      });
+
+      expect(response.statusCode).toBe(404);
+    });
+  });
 });

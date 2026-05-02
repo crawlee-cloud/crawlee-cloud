@@ -241,6 +241,96 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
   );
 
   /**
+   * POST /v2/actor-runs/:runId/ingest-crawler-stats
+   *
+   * Read SDK_CRAWLER_STATISTICS_0 from the run's default KV store and stamp
+   * it onto runs.stats_json so the runs API and webhook payload's
+   * resource.stats carry real numbers (requestsFinished, requestsFailed,
+   * errors, crawlerRuntimeMillis, ...) instead of zero placeholders.
+   *
+   * Called by the runner immediately after a run reaches a terminal state.
+   * Also callable ad-hoc by operators on past runs whose stats file showed
+   * up after the fact (e.g. uploaded manually). No-op (200 with stats=null
+   * in body) when the stats record doesn't exist — that's the normal
+   * outcome for actors that crashed before crawler.run().
+   */
+  fastify.post<{ Params: { runId: string } }>(
+    '/actor-runs/:runId/ingest-crawler-stats',
+    async (request, reply) => {
+      const { runId } = request.params;
+
+      const runResult = await query<{
+        id: string;
+        default_key_value_store_id: string;
+        user_id: string;
+      }>(
+        `SELECT id, default_key_value_store_id, user_id FROM runs WHERE id = $1 AND user_id = $2`,
+        [runId, request.user!.id]
+      );
+      if (!runResult.rows[0]) {
+        reply.status(404);
+        return { error: { type: 'record-not-found', message: 'Run not found' } };
+      }
+
+      const { getKVRecord } = await import('../storage/s3.js');
+      const record = await getKVRecord(
+        runResult.rows[0].default_key_value_store_id,
+        'SDK_CRAWLER_STATISTICS_0'
+      );
+
+      if (!record) {
+        // Normal for runs that crashed before the crawler ran. Don't 404 —
+        // the caller (runner) doesn't need to distinguish "no stats" from
+        // "run missing"; both are quiet outcomes.
+        return { data: { stats: null, message: 'No SDK_CRAWLER_STATISTICS_0 in KV store' } };
+      }
+
+      let raw: Record<string, unknown>;
+      try {
+        raw = JSON.parse(record.value.toString('utf8')) as Record<string, unknown>;
+      } catch (err) {
+        reply.status(422);
+        return {
+          error: {
+            type: 'invalid-stats',
+            message: `Could not parse stats JSON: ${(err as Error).message}`,
+          },
+        };
+      }
+
+      // Normalize Crawlee's keys onto the Apify-compatible shape we already
+      // expose on runs.stats_json. Extra fields are preserved verbatim under
+      // `crawler` so receivers that want the full Crawlee picture have it.
+      const stats = {
+        inputBodyLen: typeof raw.inputBodyLen === 'number' ? raw.inputBodyLen : 0,
+        restartCount: typeof raw.restartCount === 'number' ? raw.restartCount : 0,
+        resurrectCount: typeof raw.resurrectCount === 'number' ? raw.resurrectCount : 0,
+        runTimeSecs:
+          typeof raw.crawlerRuntimeMillis === 'number'
+            ? Math.round(raw.crawlerRuntimeMillis / 1000)
+            : 0,
+        computeUnits: 0,
+        // Crawlee-specific extension — receivers branching on these get richer info.
+        requestsFinished: typeof raw.requestsFinished === 'number' ? raw.requestsFinished : 0,
+        requestsFailed: typeof raw.requestsFailed === 'number' ? raw.requestsFailed : 0,
+        requestsTotal: typeof raw.requestsTotal === 'number' ? raw.requestsTotal : 0,
+        requestsRetries: typeof raw.requestsRetries === 'number' ? raw.requestsRetries : 0,
+        crawlerRuntimeMillis:
+          typeof raw.crawlerRuntimeMillis === 'number' ? raw.crawlerRuntimeMillis : 0,
+        crawlerStartedAt: typeof raw.crawlerStartedAt === 'string' ? raw.crawlerStartedAt : null,
+        crawlerFinishedAt: typeof raw.crawlerFinishedAt === 'string' ? raw.crawlerFinishedAt : null,
+      };
+
+      await query('UPDATE runs SET stats_json = $1, modified_at = NOW() WHERE id = $2', [
+        stats,
+        runId,
+      ]);
+
+      return { data: { stats } };
+    }
+  );
+
+  /**
    * GET /v2/actor-runs/:runId/dataset/items - Get run's dataset items
    * (Convenience endpoint)
    */

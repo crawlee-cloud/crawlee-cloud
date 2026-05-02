@@ -299,6 +299,12 @@ async function processRun(run: RunJob): Promise<void> {
       console.log(`Run ${runId} completed with status: ${status}`);
     }
 
+    // Ingest Crawlee stats (SDK_CRAWLER_STATISTICS_0 from the run's KV
+    // store) so resource.stats in the webhook payload and the runs API
+    // carry real numbers instead of zero placeholders. Quiet no-op when
+    // the file isn't there (actor crashed before crawler.run()).
+    await ingestCrawlerStats(runId);
+
     // Trigger webhooks
     await triggerWebhooks(runId, status);
 
@@ -319,6 +325,51 @@ async function processRun(run: RunJob): Promise<void> {
 
     await triggerWebhooks(runId, 'FAILED');
     await maybeRetryRun(run, runId);
+  }
+}
+
+/**
+ * The runner's own URL for calling the API. config.apiBaseUrl is what we
+ * inject into actor *containers* (translated to host.docker.internal on
+ * macOS). For the runner process itself (running on the host), the
+ * `host.docker.internal` form doesn't resolve back — collapse it to
+ * `localhost`. Linux deploys typically have the API reachable at the same
+ * URL from runner and actor, so this is a no-op there.
+ */
+function selfApiBaseUrl(): string {
+  return config.apiBaseUrl.replace(/(^https?:\/\/)host\.docker\.internal(:|\/|$)/, '$1localhost$2');
+}
+
+/**
+ * After a run completes, fetch SDK_CRAWLER_STATISTICS_0 from the run's KV
+ * store via the API's ingest endpoint and stamp the parsed stats onto
+ * runs.stats_json. This is what makes webhook payload's resource.stats
+ * carry real Crawlee numbers (requestsFinished, requestsFailed, errors,
+ * crawlerRuntimeMillis) instead of zero placeholders.
+ *
+ * Best-effort: any failure is logged and swallowed — webhook delivery
+ * must not be blocked by stats ingestion. The endpoint itself returns 200
+ * with `stats: null` when the SDK file is absent (actor crashed before
+ * crawler.run()), which is the common case.
+ */
+async function ingestCrawlerStats(runId: string): Promise<void> {
+  if (!runnerApiKey) return;
+  try {
+    const url = `${selfApiBaseUrl()}/v2/actor-runs/${runId}/ingest-crawler-stats`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${runnerApiKey}`,
+      },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) {
+      console.warn(`[stats] ingest endpoint returned HTTP ${String(response.status)} for ${runId}`);
+    }
+  } catch (err) {
+    console.warn(`[stats] ingest failed for ${runId}: ${(err as Error).message}`);
   }
 }
 
