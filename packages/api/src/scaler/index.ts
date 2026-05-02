@@ -319,6 +319,7 @@ async function scaleUp(count: number): Promise<void> {
         sshKeyId: config.sshKeyId,
         userData: getCloudInitScript(config.runsPerRunner),
         tags: ['crawlee-runner', 'auto-scaled'],
+        runsPerRunner: config.runsPerRunner,
       });
       console.log(`[Scaler] Created runner ${runner.id} at ${runner.ip}`);
     } catch (err) {

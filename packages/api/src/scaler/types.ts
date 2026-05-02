@@ -47,6 +47,15 @@ export interface RunnerConfig {
   userData: string;
   /** Tags/labels for identification */
   tags: string[];
+  /**
+   * MAX_CONCURRENT_RUNS to inject into the runner. Sourced from
+   * loadScalerConfig().runsPerRunner — single source of truth. Providers
+   * MUST use this value rather than re-reading SCALER_RUNS_PER_RUNNER from
+   * their own env: the loader already applies the documented fallback (5),
+   * and divergent fallbacks would have the dashboard report one value
+   * while runners actually used another.
+   */
+  runsPerRunner: number;
 }
 
 export interface ScalerConfig {

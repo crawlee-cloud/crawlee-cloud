@@ -70,7 +70,7 @@ export class LocalDockerProvider implements RunnerProvider {
     );
   }
 
-  async createRunner(_config: RunnerConfig): Promise<RunnerInfo> {
+  async createRunner(config: RunnerConfig): Promise<RunnerInfo> {
     const runnerId = `local-${nanoid(8)}`;
     const image = process.env.LOCAL_RUNNER_IMAGE || 'crawlee-cloud-runner:local';
     const network = await this.resolveNetwork();
@@ -97,7 +97,11 @@ export class LocalDockerProvider implements RunnerProvider {
       API_TOKEN: process.env.LOCAL_RUNNER_API_TOKEN || 'runner-token',
       DOCKER_SOCKET: '/var/run/docker.sock',
       DOCKER_NETWORK: network,
-      MAX_CONCURRENT_RUNS: String(process.env.SCALER_RUNS_PER_RUNNER || '2'),
+      // Sourced from loadScalerConfig().runsPerRunner (default 5) so this
+      // matches what the dashboard's /v2/system/info reports — the parallel
+      // process.env.SCALER_RUNS_PER_RUNNER read this used to do had a
+      // different fallback (2) and could disagree with the loader.
+      MAX_CONCURRENT_RUNS: String(config.runsPerRunner),
       LOG_LEVEL: 'info',
     };
 
