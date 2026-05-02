@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
+  Pencil,
   Plus,
   Save,
   Send,
@@ -38,6 +39,9 @@ export default function WebhooksPage() {
   const [actors, setActors] = useState<Actor[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  // Edit mode: editingId is the webhook id being edited. The form is shown
+  // either when showForm (create) or editingId (edit) is set; never both.
+  const [editingId, setEditingId] = useState<string | null>(null);
   // Per-row debug state. Drawer is opt-in (lazy-load deliveries when expanded)
   // so the list view stays cheap even with many webhooks. Test/loading flags
   // live on the row so multiple webhooks can be exercised independently.
@@ -63,10 +67,17 @@ export default function WebhooksPage() {
     };
   }, []);
 
-  function handleCreated(w: Webhook) {
-    setWebhooks((prev) => [w, ...prev]);
-    setShowForm(false);
-    toast.success('Webhook created', { description: w.requestUrl });
+  function handleSaved(w: Webhook) {
+    if (editingId) {
+      // Replace in place so the row keeps its position in the list.
+      setWebhooks((prev) => prev.map((x) => (x.id === w.id ? w : x)));
+      setEditingId(null);
+      toast.success('Webhook updated', { description: w.requestUrl });
+    } else {
+      setWebhooks((prev) => [w, ...prev]);
+      setShowForm(false);
+      toast.success('Webhook created', { description: w.requestUrl });
+    }
   }
 
   async function handleToggle(w: Webhook) {
@@ -161,15 +172,20 @@ export default function WebhooksPage() {
         </div>
         <button
           type="button"
-          onClick={() => setShowForm((v) => !v)}
+          onClick={() => {
+            // Opening "new" cancels any in-progress edit so we don't show
+            // two forms simultaneously.
+            setEditingId(null);
+            setShowForm((v) => !v);
+          }}
           className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm"
         >
           <Plus className="h-3.5 w-3.5" /> new webhook
         </button>
       </div>
 
-      {showForm && (
-        <CreateForm actors={actors} onCreated={handleCreated} onCancel={() => setShowForm(false)} />
+      {showForm && !editingId && (
+        <CreateForm actors={actors} onSaved={handleSaved} onCancel={() => setShowForm(false)} />
       )}
 
       {loading ? (
@@ -268,6 +284,24 @@ export default function WebhooksPage() {
                     </button>
                     <button
                       type="button"
+                      onClick={() => {
+                        // Toggle: clicking edit on the already-being-edited
+                        // row collapses the form. Also closes the create form.
+                        setShowForm(false);
+                        setEditingId((cur) => (cur === w.id ? null : w.id));
+                      }}
+                      title="Edit webhook"
+                      className={cn(
+                        'h-7 w-7 grid place-items-center border rounded-sm transition-colors',
+                        editingId === w.id
+                          ? 'border-signal/50 text-signal bg-signal/5'
+                          : 'border-border text-muted-foreground hover:text-foreground hover:border-signal/40'
+                      )}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => void handleDelete(w.id)}
                       className="text-muted-foreground hover:text-fail p-1"
                       title="Delete webhook"
@@ -276,6 +310,17 @@ export default function WebhooksPage() {
                     </button>
                   </div>
                 </div>
+
+                {editingId === w.id && (
+                  <div className="border-t border-border">
+                    <CreateForm
+                      actors={actors}
+                      initial={w}
+                      onSaved={handleSaved}
+                      onCancel={() => setEditingId(null)}
+                    />
+                  </div>
+                )}
 
                 {expanded && (
                   <DeliveriesDrawer
@@ -293,21 +338,30 @@ export default function WebhooksPage() {
   );
 }
 
+/**
+ * Same form, two modes: create (no `initial`) or edit (initial=existing
+ * webhook). When editing, the form pre-populates from the webhook and calls
+ * updateWebhook on save. Keeping a single component avoids drifting fields
+ * between create and edit, which is the usual reason these get out of sync.
+ */
 function CreateForm({
   actors,
-  onCreated,
+  initial,
+  onSaved,
   onCancel,
 }: {
   actors: Actor[];
-  onCreated: (w: Webhook) => void;
+  initial?: Webhook;
+  onSaved: (w: Webhook) => void;
   onCancel: () => void;
 }) {
   const toast = useToast();
-  const [requestUrl, setRequestUrl] = useState('https://');
-  const [description, setDescription] = useState('');
-  const [actorId, setActorId] = useState<string>('');
+  const isEdit = !!initial;
+  const [requestUrl, setRequestUrl] = useState(initial?.requestUrl ?? 'https://');
+  const [description, setDescription] = useState(initial?.description ?? '');
+  const [actorId, setActorId] = useState<string>(initial?.actorId ?? '');
   const [selected, setSelected] = useState<Set<string>>(
-    new Set(['ACTOR.RUN.SUCCEEDED', 'ACTOR.RUN.FAILED'])
+    new Set(initial?.eventTypes ?? ['ACTOR.RUN.SUCCEEDED', 'ACTOR.RUN.FAILED'])
   );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -321,7 +375,7 @@ function CreateForm({
     });
   }
 
-  async function handleCreate() {
+  async function handleSave() {
     if (selected.size === 0) {
       setError('select at least one event');
       return;
@@ -329,17 +383,26 @@ function CreateForm({
     setSubmitting(true);
     setError(null);
     try {
-      const created = await createWebhook({
+      const payload = {
         requestUrl,
+        // Preserve "(no description)" vs "" intent — server treats empty
+        // string and null differently in some payload templates. Send
+        // undefined so the field is omitted from the patch when blank.
         description: description || undefined,
+        // actorId='' means "global" → send undefined to clear in edit mode.
         actorId: actorId || undefined,
         eventTypes: Array.from(selected),
-      });
-      onCreated(created);
+      };
+      const saved = isEdit
+        ? await updateWebhook(initial.id, payload)
+        : await createWebhook(payload);
+      onSaved(saved);
     } catch (err) {
       const msg = (err as Error).message;
       setError(msg);
-      toast.error('Failed to create webhook', { description: msg });
+      toast.error(isEdit ? 'Failed to update webhook' : 'Failed to create webhook', {
+        description: msg,
+      });
     } finally {
       setSubmitting(false);
     }
@@ -443,7 +506,7 @@ function CreateForm({
         </button>
         <button
           type="button"
-          onClick={() => void handleCreate()}
+          onClick={() => void handleSave()}
           disabled={submitting}
           className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-signal text-background rounded-sm disabled:opacity-50"
         >
@@ -452,7 +515,7 @@ function CreateForm({
           ) : (
             <Save className="h-3.5 w-3.5" />
           )}
-          create
+          {isEdit ? 'save changes' : 'create'}
         </button>
       </div>
     </section>
