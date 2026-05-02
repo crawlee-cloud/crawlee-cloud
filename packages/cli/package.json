@@ -15,7 +15,7 @@
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "prepublishOnly": "npm run clean && npm run build"
+    "prepack": "npm run clean && npm run build"
   },
   "keywords": [
     "crawlee",

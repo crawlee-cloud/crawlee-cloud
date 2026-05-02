@@ -56,18 +56,40 @@ jobs:
         run: npm run build --workspace=@crawlee-cloud/cli
 
       - name: Verify the version we're about to publish matches the tag
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
+          # On tag push, github.ref is `refs/tags/vX.Y.Z`. On
+          # workflow_dispatch, github.ref is the BRANCH the workflow
+          # was triggered from (typically `refs/heads/main`), NOT the
+          # user-supplied `inputs.ref` — so we must consult inputs.ref
+          # explicitly to decide which value to validate against. Without
+          # this, a maintainer running `workflow_dispatch` from main
+          # could publish whatever's in package.json with no guard.
           TAG_REF: ${{ github.ref }}
+          DISPATCH_REF: ${{ github.event.inputs.ref }}
         run: |
-          # Strip leading 'refs/tags/v' from the tag and compare against
-          # package.json. The chore(release) PR is responsible for bumping
-          # the version before the tag is pushed; if they're out of sync,
-          # fail loudly rather than publish a confusing version.
-          TAG="${TAG_REF#refs/tags/v}"
+          # Pick the canonical "expected version" from whichever event
+          # triggered us. tag push → strip refs/tags/v from $TAG_REF.
+          # workflow_dispatch → strip leading 'v' from $DISPATCH_REF
+          # and refuse to publish if it doesn't look like a version tag,
+          # because that's the only safe thing to do (publishing from
+          # `main` could ship an arbitrary version with no audit).
+          if [ -n "$DISPATCH_REF" ]; then
+            case "$DISPATCH_REF" in
+              v[0-9]*)
+                EXPECTED="${DISPATCH_REF#v}"
+                ;;
+              *)
+                echo "::error::workflow_dispatch ref must be a tag like v0.8.5 (got: $DISPATCH_REF). Refusing to publish from a branch — would skip the version-match guard."
+                exit 1
+                ;;
+            esac
+          else
+            EXPECTED="${TAG_REF#refs/tags/v}"
+          fi
+
           PKG=$(node -p "require('./packages/cli/package.json').version")
-          if [ "$TAG" != "$PKG" ]; then
-            echo "::error::Tag v$TAG but packages/cli/package.json says $PKG. Bump all 5 workspace package.jsons before tagging."
+          if [ "$EXPECTED" != "$PKG" ]; then
+            echo "::error::Expected version v$EXPECTED but packages/cli/package.json says $PKG. Bump all 5 workspace package.jsons before tagging."
             exit 1
           fi
           echo "Publishing @crawlee-cloud/cli@$PKG"

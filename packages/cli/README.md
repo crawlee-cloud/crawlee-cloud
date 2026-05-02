@@ -127,6 +127,5 @@ Manual publish (escape hatch — only use if the workflow is broken):
 ```bash
 cd packages/cli
 npm login            # interactive
-npm run build        # also runs automatically via prepublishOnly
-npm publish --access public
+npm publish --access public   # `prepack` builds dist/ automatically
 ```
