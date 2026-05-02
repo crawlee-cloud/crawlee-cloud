@@ -13,7 +13,11 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { authenticate } from '../auth/middleware.js';
 import { runStorageHealthChecks, type StorageHealth } from '../health.js';
-import { loadScalerConfig } from '../scaler/index.js';
+import {
+  loadScalerConfig,
+  RUNNER_DEFAULT_MEMORY_MB,
+  RUNNER_DEFAULT_TIMEOUT_SECS,
+} from '../scaler/index.js';
 
 export interface SystemInfo {
   version: string;
@@ -50,18 +54,30 @@ export const systemRoutes: FastifyPluginAsync = async (fastify) => {
     const storage = await runStorageHealthChecks();
     const scalerCfg = loadScalerConfig();
 
+    // When the auto-scaler is enabled, runners are separate machines whose
+    // env is set by cloud-init (scaler/index.ts:getCloudInitScript), not by
+    // the API process. Reading the API-side MAX_CONCURRENT_RUNS in that
+    // case is misleading — the API doesn't run actors. Source from the
+    // values cloud-init writes to /etc/crawlee-runner.env so the dashboard
+    // shows what runners actually use. For single-host (scaler off, API
+    // and runner share env), the API-side env is the right source.
+    const executionDefaults = scalerCfg.enabled
+      ? {
+          maxConcurrentRuns: scalerCfg.runsPerRunner,
+          defaultMemoryMb: RUNNER_DEFAULT_MEMORY_MB,
+          defaultTimeoutSecs: RUNNER_DEFAULT_TIMEOUT_SECS,
+        }
+      : {
+          maxConcurrentRuns: intEnv('MAX_CONCURRENT_RUNS', 10),
+          defaultMemoryMb: intEnv('DEFAULT_MEMORY_MB', 1024),
+          defaultTimeoutSecs: intEnv('DEFAULT_TIMEOUT_SECS', 3600),
+        };
+
     const body: SystemInfo = {
       version: process.env.npm_package_version ?? '0.0.0',
       nodeVersion: process.version,
       storage,
-      executionDefaults: {
-        // Read from the same env vars the runner reads from. In single-host
-        // dev (API + runner share env) this is accurate. In split deploys
-        // these fields reflect API-side env; the runner can drift.
-        maxConcurrentRuns: intEnv('MAX_CONCURRENT_RUNS', 10),
-        defaultMemoryMb: intEnv('DEFAULT_MEMORY_MB', 1024),
-        defaultTimeoutSecs: intEnv('DEFAULT_TIMEOUT_SECS', 3600),
-      },
+      executionDefaults,
       scaler: {
         enabled: scalerCfg.enabled,
         provider: scalerCfg.provider,

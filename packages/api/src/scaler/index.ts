@@ -47,6 +47,18 @@ async function scanKeys(pattern: string): Promise<string[]> {
   return keys;
 }
 
+/**
+ * Per-runner execution defaults baked into cloud-init. Exported so the
+ * dashboard's `/v2/system/info` route can surface what runners *actually*
+ * use, rather than what the API process happens to have in its own env —
+ * in split deploys (auto-scaler enabled, API and runner are different
+ * machines), the API never reads MAX_CONCURRENT_RUNS / DEFAULT_MEMORY_MB
+ * / DEFAULT_TIMEOUT_SECS, but the dashboard's "Execution Defaults" panel
+ * needs to show real per-runner values.
+ */
+export const RUNNER_DEFAULT_MEMORY_MB = 2048;
+export const RUNNER_DEFAULT_TIMEOUT_SECS = 3600;
+
 // ---- Cloud-init template for new runners ----
 
 /**
@@ -90,8 +102,8 @@ REDIS_URL=${redisUrl}
 API_BASE_URL=${apiBaseUrl}
 DOCKER_NETWORK=bridge
 MAX_CONCURRENT_RUNS=${runsPerRunner}
-DEFAULT_MEMORY_MB=2048
-DEFAULT_TIMEOUT_SECS=3600
+DEFAULT_MEMORY_MB=${RUNNER_DEFAULT_MEMORY_MB}
+DEFAULT_TIMEOUT_SECS=${RUNNER_DEFAULT_TIMEOUT_SECS}
 LOG_LEVEL=info
 IMAGE_REGISTRY=${process.env.IMAGE_REGISTRY || ''}
 IMAGE_REGISTRY_USER=${process.env.IMAGE_REGISTRY_USER || ''}

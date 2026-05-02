@@ -384,18 +384,22 @@ export default function SettingsPage() {
           </div>
         </header>
         <div className="p-5 grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Field label="Concurrency limit" hint="Max simultaneous runs (MAX_CONCURRENT_RUNS)">
+          <Field label="Concurrency limit" hint="Max simultaneous runs per runner">
             <ReadonlyValue value={systemInfo?.executionDefaults.maxConcurrentRuns} />
           </Field>
-          <Field label="Default memory · MB" hint="Container memory limit (DEFAULT_MEMORY_MB)">
+          <Field label="Default memory · MB" hint="Container memory limit per actor run">
             <ReadonlyValue value={systemInfo?.executionDefaults.defaultMemoryMb} />
           </Field>
-          <Field label="Default timeout · sec" hint="Hard execution limit (DEFAULT_TIMEOUT_SECS)">
+          <Field label="Default timeout · sec" hint="Hard execution limit per actor run">
             <ReadonlyValue value={systemInfo?.executionDefaults.defaultTimeoutSecs} />
           </Field>
         </div>
         <footer className="px-5 py-3 border-t border-border bg-secondary/30 font-mono text-[10px] tracking-widest text-muted-foreground uppercase">
-          Read-only — values come from API process env. Edit on the server, restart to apply.
+          Read-only — sourced from{' '}
+          {systemInfo?.scaler.enabled
+            ? 'scaler/cloud-init (split deploy)'
+            : 'API process env (single-host)'}
+          . Edit on the server, restart to apply.
         </footer>
       </section>
     </div>

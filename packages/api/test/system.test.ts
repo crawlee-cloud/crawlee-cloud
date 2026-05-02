@@ -67,15 +67,22 @@ describe('GET /v2/system/info', () => {
     delete process.env.SCALER_PROVIDER;
     delete process.env.SCALER_MIN_RUNNERS;
     delete process.env.SCALER_MAX_RUNNERS;
+    delete process.env.SCALER_RUNS_PER_RUNNER;
   });
 
-  it('returns version, node, storage health, execution defaults, and scaler state', async () => {
+  it('with scaler ON, sources execution defaults from cloud-init values, not API env', async () => {
+    // Split deploy: the API doesn't run actors, runners do. The dashboard
+    // must surface what runners actually use (SCALER_RUNS_PER_RUNNER + the
+    // RUNNER_DEFAULT_* constants baked into cloud-init), not whatever the
+    // API process happens to have in its own env (typically nothing).
+    // The MAX_CONCURRENT_RUNS=15 set below would have been silently shown
+    // to operators before this fix even though runners ignore it.
     process.env.MAX_CONCURRENT_RUNS = '15';
-    process.env.DEFAULT_MEMORY_MB = '2048';
     process.env.SCALER_ENABLED = 'true';
     process.env.SCALER_PROVIDER = 'local-docker';
     process.env.SCALER_MIN_RUNNERS = '2';
     process.env.SCALER_MAX_RUNNERS = '8';
+    process.env.SCALER_RUNS_PER_RUNNER = '3';
 
     const response = await app.inject({ method: 'GET', url: '/v2/system/info' });
 
@@ -89,9 +96,9 @@ describe('GET /v2/system/info', () => {
         s3: { status: 'ok' },
       },
       executionDefaults: {
-        maxConcurrentRuns: 15,
-        defaultMemoryMb: 2048,
-        defaultTimeoutSecs: 3600, // default — env var not set in this case
+        maxConcurrentRuns: 3, // from SCALER_RUNS_PER_RUNNER, NOT MAX_CONCURRENT_RUNS=15
+        defaultMemoryMb: 2048, // RUNNER_DEFAULT_MEMORY_MB constant
+        defaultTimeoutSecs: 3600, // RUNNER_DEFAULT_TIMEOUT_SECS constant
       },
       scaler: {
         enabled: true,
@@ -99,6 +106,34 @@ describe('GET /v2/system/info', () => {
         minRunners: 2,
         maxRunners: 8,
       },
+    });
+  });
+
+  it('with scaler OFF, sources execution defaults from API-process env (single-host)', async () => {
+    // Single-host: the API process *is* (or shares env with) the runner,
+    // so MAX_CONCURRENT_RUNS / DEFAULT_MEMORY_MB / DEFAULT_TIMEOUT_SECS on
+    // the API are authoritative.
+    process.env.MAX_CONCURRENT_RUNS = '15';
+    process.env.DEFAULT_MEMORY_MB = '4096';
+    process.env.DEFAULT_TIMEOUT_SECS = '7200';
+    // SCALER_ENABLED unset → loadScalerConfig() reports enabled: false
+
+    const response = await app.inject({ method: 'GET', url: '/v2/system/info' });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as {
+      data: {
+        executionDefaults: {
+          maxConcurrentRuns: number;
+          defaultMemoryMb: number;
+          defaultTimeoutSecs: number;
+        };
+      };
+    };
+    expect(body.data.executionDefaults).toEqual({
+      maxConcurrentRuns: 15,
+      defaultMemoryMb: 4096,
+      defaultTimeoutSecs: 7200,
     });
   });
 
