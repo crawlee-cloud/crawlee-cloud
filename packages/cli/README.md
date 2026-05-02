@@ -110,3 +110,23 @@ crc info --json >/dev/null && crc push
 ## Documentation
 
 For full documentation, visit the [Crawlee Cloud Documentation](https://github.com/crawlee-cloud/crawlee-cloud).
+
+## Publishing (maintainers)
+
+The CLI publishes to npm as `@crawlee-cloud/cli` automatically when a `v*` tag is pushed to the repo, via [`.github/workflows/publish-cli.yml`](../../.github/workflows/publish-cli.yml).
+
+The release flow is:
+
+1. Open a `chore(release): vX.Y.Z` PR that bumps **all 5** workspace `package.json` files (root + api + cli + dashboard + runner) and the lockfile in lockstep.
+2. Merge it.
+3. Tag the merge commit `vX.Y.Z` and push the tag.
+4. The publish workflow validates that the tag matches `packages/cli/package.json`, builds, and publishes with provenance via npm trusted publishing (no `NPM_TOKEN` secret required).
+
+Manual publish (escape hatch — only use if the workflow is broken):
+
+```bash
+cd packages/cli
+npm login            # interactive
+npm run build        # also runs automatically via prepublishOnly
+npm publish --access public
+```

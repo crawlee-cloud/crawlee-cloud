@@ -14,7 +14,8 @@
     "dev": "tsx src/bin.ts",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "test:integration": "vitest run --config vitest.integration.config.ts"
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "prepublishOnly": "npm run clean && npm run build"
   },
   "keywords": [
     "crawlee",
@@ -51,7 +52,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/crawlee-cloud/crawlee-cloud.git"
+    "url": "git+https://github.com/crawlee-cloud/crawlee-cloud.git",
+    "directory": "packages/cli"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "bugs": {
     "url": "https://github.com/crawlee-cloud/crawlee-cloud/issues"

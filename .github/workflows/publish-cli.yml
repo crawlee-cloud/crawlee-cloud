@@ -1,15 +1,34 @@
 name: Publish CLI
 
+# Tag-driven publish. We use a synchronized-version flow across the
+# monorepo (root + api + cli + dashboard + runner all bump in lockstep
+# via a chore(release) PR), so the right trigger is the v* tag we push
+# AFTER that PR merges — not push-to-main, which the previous version
+# of this workflow used and which silently skipped every release commit
+# because the path filter excluded package.json edits.
+#
+# Trusted publishing: this workflow assumes the npm package
+# `@crawlee-cloud/cli` is configured for OIDC trusted publishing from
+# the `crawlee-cloud/crawlee-cloud` repo. No NPM_TOKEN secret needed —
+# `id-token: write` + `--provenance` is what npm verifies. If trusted
+# publishing isn't set up on the npm side, this job fails at the
+# publish step with a clear auth error.
+
 on:
   push:
-    branches:
-      - main
-    paths:
-      - 'packages/cli/**'
-      - '!packages/cli/package.json' # Avoid infinite loop from version bump
+    tags:
+      - 'v*'
+  # Manual fallback: maintainer can re-run the publish for a given tag
+  # without re-tagging (e.g. if trusted-publishing config changed).
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Tag or branch to publish from'
+        required: true
+        default: 'main'
 
 permissions:
-  contents: write
+  contents: read
   id-token: write
 
 jobs:
@@ -19,7 +38,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.event.inputs.ref || github.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -27,38 +46,32 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Install dependencies
+      # Install from the workspace root so the CLI gets its hoisted
+      # devDeps (tsc, etc.). `npm ci` inside packages/cli/ skips the
+      # workspace deduplication and can fail on missing types.
+      - name: Install workspace dependencies
         run: npm ci
-        working-directory: packages/cli
 
-      - name: Build
-        run: npm run build
-        working-directory: packages/cli
+      - name: Build CLI
+        run: npm run build --workspace=@crawlee-cloud/cli
 
-      - name: Bump version
-        id: version
+      - name: Verify the version we're about to publish matches the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG_REF: ${{ github.ref }}
         run: |
-          cd packages/cli
-          # Get current version
-          CURRENT_VERSION=$(node -p "require('./package.json').version")
-          echo "Current version: $CURRENT_VERSION"
+          # Strip leading 'refs/tags/v' from the tag and compare against
+          # package.json. The chore(release) PR is responsible for bumping
+          # the version before the tag is pushed; if they're out of sync,
+          # fail loudly rather than publish a confusing version.
+          TAG="${TAG_REF#refs/tags/v}"
+          PKG=$(node -p "require('./packages/cli/package.json').version")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::Tag v$TAG but packages/cli/package.json says $PKG. Bump all 5 workspace package.jsons before tagging."
+            exit 1
+          fi
+          echo "Publishing @crawlee-cloud/cli@$PKG"
 
-          # Bump patch version
-          npm version patch --no-git-tag-version
-
-          # Get new version
-          NEW_VERSION=$(node -p "require('./package.json').version")
-          echo "New version: $NEW_VERSION"
-          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-
-      - name: Commit version bump
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add packages/cli/package.json
-          git commit -m "chore(cli): bump version to ${{ steps.version.outputs.new_version }}" || echo "No changes to commit"
-          git push
-
-      - name: Publish to npm (trusted publishing)
+      - name: Publish to npm with provenance
         run: npm publish --provenance --access public
         working-directory: packages/cli
