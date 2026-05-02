@@ -252,7 +252,150 @@ export const webhooksRoutes: FastifyPluginAsync = async (fastify) => {
       },
     };
   });
+
+  /**
+   * POST /v2/webhooks/:webhookId/test
+   *
+   * Fire a synthetic event at the webhook's configured URL — one shot, no
+   * retries, 10s timeout. Records a row in `webhook_deliveries` with the
+   * outcome so the test shows up in the same history the dashboard already
+   * displays. The synthetic payload sets `test: true` and uses sentinel run
+   * IDs so receivers can opt-out of side effects.
+   *
+   * Synchronous: the response includes the delivery row so the UI can show
+   * the result immediately without polling.
+   */
+  fastify.post<{ Params: { webhookId: string } }>(
+    '/webhooks/:webhookId/test',
+    async (request, reply) => {
+      const { webhookId } = request.params;
+
+      const webhookResult = await query<WebhookRow>(
+        'SELECT * FROM webhooks WHERE id = $1 AND user_id = $2',
+        [webhookId, request.user!.id]
+      );
+      const webhook = webhookResult.rows[0];
+      if (!webhook) {
+        reply.status(404);
+        return { error: { type: 'record-not-found', message: 'Webhook not found' } };
+      }
+
+      // Pick the first configured event type so the payload matches what the
+      // receiver expects. If somehow none configured, fall back to a common one.
+      const eventType = webhook.event_types[0] ?? 'ACTOR.RUN.SUCCEEDED';
+
+      const deliveryId = nanoid();
+      const result = await deliverTestWebhook(deliveryId, webhook, eventType);
+
+      const formatted = formatDelivery(result);
+      reply.status(result.status === 'DELIVERED' ? 200 : 502);
+      return { data: formatted };
+    }
+  );
 };
+
+/**
+ * Same private-URL guard the runner uses for production deliveries — kept
+ * inline because it's small and tied to the test endpoint's threat model.
+ * Blocks loopback, link-local / cloud metadata, and RFC 1918 ranges.
+ */
+function isPrivateUrl(urlString: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(urlString);
+  } catch {
+    return true;
+  }
+  const hostname = parsed.hostname;
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
+  if (hostname.startsWith('169.254.')) return true;
+  const parts = hostname.split('.').map(Number);
+  if (parts.length === 4 && parts.every((p) => !isNaN(p))) {
+    const [a, b] = parts as [number, number, number, number];
+    if (a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (parts.every((p) => p === 0)) return true;
+  }
+  return false;
+}
+
+/**
+ * One-shot synthetic delivery. Mirrors the runner's production payload
+ * shape so receivers don't need a different parser, but adds `test: true`
+ * and sentinel run IDs so the receiver can no-op side effects if it wants.
+ */
+async function deliverTestWebhook(
+  deliveryId: string,
+  webhook: WebhookRow,
+  eventType: string
+): Promise<DeliveryRow> {
+  const now = new Date();
+  const testRunId = `test-${deliveryId}`;
+
+  const baseInsert = await query<DeliveryRow>(
+    `INSERT INTO webhook_deliveries
+       (id, webhook_id, run_id, event_type, status, attempt_count, max_attempts, next_retry_at, created_at)
+     VALUES ($1, $2, NULL, $3, 'PENDING', 0, 1, NULL, NOW())
+     RETURNING *`,
+    [deliveryId, webhook.id, eventType]
+  );
+  const initial = baseInsert.rows[0]!;
+
+  if (isPrivateUrl(webhook.request_url)) {
+    const failed = await query<DeliveryRow>(
+      `UPDATE webhook_deliveries
+       SET status = 'FAILED', attempt_count = 1,
+           response_body = 'Webhook URL targets a private/internal network address',
+           finished_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [deliveryId]
+    );
+    return failed.rows[0] ?? initial;
+  }
+
+  const payload = {
+    test: true,
+    eventType,
+    eventData: { actorId: 'test-actor', actorRunId: testRunId, status: 'SUCCEEDED' },
+    createdAt: now.toISOString(),
+  };
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(webhook.headers ?? {}),
+  };
+
+  let responseStatus: number | null = null;
+  let responseBody = '';
+  let ok = false;
+
+  try {
+    const response = await fetch(webhook.request_url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10_000),
+    });
+    responseStatus = response.status;
+    responseBody = (await response.text().catch(() => '')).slice(0, 1024);
+    ok = response.ok;
+  } catch (err) {
+    responseBody = (err as Error).message.slice(0, 1024);
+  }
+
+  const finalStatus = ok ? 'DELIVERED' : 'FAILED';
+  const updated = await query<DeliveryRow>(
+    `UPDATE webhook_deliveries
+     SET status = $1, attempt_count = 1,
+         response_status = $2, response_body = $3,
+         finished_at = NOW()
+     WHERE id = $4
+     RETURNING *`,
+    [finalStatus, responseStatus, responseBody, deliveryId]
+  );
+  return updated.rows[0] ?? initial;
+}
 
 function formatWebhook(row: WebhookRow) {
   return {

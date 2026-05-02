@@ -295,4 +295,134 @@ describe('Webhook Routes', () => {
       expect(body.data.limit).toBe(5);
     });
   });
+
+  describe('POST /v2/webhooks/:webhookId/test', () => {
+    // Stub global fetch so we don't actually hit any URL during tests.
+    const originalFetch = global.fetch;
+    let fetchMock: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      fetchMock = vi.fn();
+      global.fetch = fetchMock as unknown as typeof global.fetch;
+    });
+
+    afterAll(() => {
+      global.fetch = originalFetch;
+    });
+
+    it('returns DELIVERED with the response status when receiver accepts the test event', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [createWebhookRow()] }) // ownership lookup
+        .mockResolvedValueOnce({
+          rows: [
+            createDeliveryRow({ status: 'PENDING', response_status: null, response_body: null }),
+          ],
+        }) // INSERT ... RETURNING (initial PENDING row)
+        .mockResolvedValueOnce({
+          rows: [
+            createDeliveryRow({ status: 'DELIVERED', response_status: 200, response_body: 'ok' }),
+          ],
+        }); // UPDATE ... RETURNING (final DELIVERED row)
+
+      fetchMock.mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () => 'ok',
+      } as Response);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/webhooks/webhook-1/test',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body) as {
+        data: { status: string; responseStatus: number };
+      };
+      expect(body.data.status).toBe('DELIVERED');
+      expect(body.data.responseStatus).toBe(200);
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://example.com/hook');
+      const payload = JSON.parse(init.body as string) as { test: boolean; eventType: string };
+      // Test payload must self-identify so receivers can opt out of side effects.
+      expect(payload.test).toBe(true);
+      expect(payload.eventType).toBe('ACTOR.RUN.SUCCEEDED');
+    });
+
+    it('returns FAILED with the receiver error body when delivery returns non-2xx', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [createWebhookRow()] })
+        .mockResolvedValueOnce({ rows: [createDeliveryRow({ status: 'PENDING' })] })
+        .mockResolvedValueOnce({
+          rows: [
+            createDeliveryRow({
+              status: 'FAILED',
+              response_status: 503,
+              response_body: 'service unavailable',
+            }),
+          ],
+        });
+
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 503,
+        text: async () => 'service unavailable',
+      } as Response);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/webhooks/webhook-1/test',
+      });
+
+      // Use 502 to signal "test fired but the receiver rejected it" — distinct
+      // from 200 (success) and 5xx-on-our-side (we didn't even reach them).
+      expect(response.statusCode).toBe(502);
+      const body = JSON.parse(response.body) as {
+        data: { status: string; responseStatus: number; responseBody: string };
+      };
+      expect(body.data.status).toBe('FAILED');
+      expect(body.data.responseStatus).toBe(503);
+      expect(body.data.responseBody).toBe('service unavailable');
+    });
+
+    it('blocks private/loopback URLs without sending the request', async () => {
+      mockQuery
+        .mockResolvedValueOnce({
+          rows: [createWebhookRow({ request_url: 'http://localhost:9999/hook' })],
+        })
+        .mockResolvedValueOnce({ rows: [createDeliveryRow({ status: 'PENDING' })] })
+        .mockResolvedValueOnce({
+          rows: [
+            createDeliveryRow({
+              status: 'FAILED',
+              response_status: null,
+              response_body: 'Webhook URL targets a private/internal network address',
+            }),
+          ],
+        });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/webhooks/webhook-1/test',
+      });
+
+      expect(response.statusCode).toBe(502);
+      // Critical: fetch must NOT be called for private targets — that's what
+      // makes the SSRF guard meaningful, not the resulting status row.
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the webhook is owned by a different user', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] }); // ownership check fails
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/webhooks/foreign/test',
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
 });

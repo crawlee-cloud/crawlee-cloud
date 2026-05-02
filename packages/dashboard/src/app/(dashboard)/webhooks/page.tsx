@@ -1,16 +1,30 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Loader2, Plus, Save, Trash2, Webhook as WebhookIcon } from 'lucide-react';
+import {
+  AlertCircle,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  Plus,
+  Save,
+  Send,
+  Trash2,
+  Webhook as WebhookIcon,
+} from 'lucide-react';
 import { AppLink } from '@/components/app-link';
 import {
   createWebhook,
   deleteWebhook,
   getActors,
+  getWebhookDeliveries,
   getWebhooks,
+  testWebhook,
   updateWebhook,
   type Actor,
   type Webhook,
+  type WebhookDelivery,
 } from '@/lib/api';
 import { WEBHOOK_EVENTS } from '@/lib/webhooks';
 import { cn } from '@/lib/utils';
@@ -24,6 +38,15 @@ export default function WebhooksPage() {
   const [actors, setActors] = useState<Actor[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  // Per-row debug state. Drawer is opt-in (lazy-load deliveries when expanded)
+  // so the list view stays cheap even with many webhooks. Test/loading flags
+  // live on the row so multiple webhooks can be exercised independently.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [deliveriesByWebhook, setDeliveriesByWebhook] = useState<Record<string, WebhookDelivery[]>>(
+    {}
+  );
+  const [loadingDeliveriesId, setLoadingDeliveriesId] = useState<string | null>(null);
+  const [testingId, setTestingId] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -73,6 +96,57 @@ export default function WebhooksPage() {
     }
   }
 
+  async function loadDeliveries(id: string) {
+    setLoadingDeliveriesId(id);
+    try {
+      const items = await getWebhookDeliveries(id);
+      setDeliveriesByWebhook((prev) => ({ ...prev, [id]: items }));
+    } catch (err) {
+      toast.error('Failed to load deliveries', { description: (err as Error).message });
+    } finally {
+      setLoadingDeliveriesId(null);
+    }
+  }
+
+  async function handleToggleDrawer(w: Webhook) {
+    if (expandedId === w.id) {
+      setExpandedId(null);
+      return;
+    }
+    setExpandedId(w.id);
+    if (!deliveriesByWebhook[w.id]) {
+      await loadDeliveries(w.id);
+    }
+  }
+
+  async function handleTest(w: Webhook) {
+    setTestingId(w.id);
+    try {
+      const delivery = await testWebhook(w.id);
+      // Insert the freshly-fired delivery at the top of the cached list so
+      // the drawer (if open) reflects it without a refetch round trip.
+      setDeliveriesByWebhook((prev) => ({
+        ...prev,
+        [w.id]: [delivery, ...(prev[w.id] ?? [])],
+      }));
+      // Auto-expand on test so the user sees the result immediately.
+      setExpandedId(w.id);
+      if (delivery.status === 'DELIVERED') {
+        toast.success('Test delivered', {
+          description: `${String(delivery.responseStatus ?? '???')} from ${w.requestUrl}`,
+        });
+      } else {
+        toast.error('Test failed', {
+          description: delivery.responseBody?.slice(0, 200) ?? 'no response',
+        });
+      }
+    } catch (err) {
+      toast.error('Test failed', { description: (err as Error).message });
+    } finally {
+      setTestingId(null);
+    }
+  }
+
   const actorById = new Map(actors.map((a) => [a.id, a]));
 
   return (
@@ -116,56 +190,100 @@ export default function WebhooksPage() {
         <ul className="space-y-2">
           {webhooks.map((w) => {
             const actor = w.actorId ? actorById.get(w.actorId) : null;
+            const expanded = expandedId === w.id;
+            const cachedDeliveries = deliveriesByWebhook[w.id];
+            const lastDelivery = cachedDeliveries?.[0];
             return (
-              <li key={w.id} className="panel p-4 flex items-start gap-4">
-                <button
-                  type="button"
-                  onClick={() => void handleToggle(w)}
-                  title={w.isEnabled ? 'Disable' : 'Enable'}
-                  className={cn(
-                    'mt-1 shrink-0 font-mono text-[10px] tracking-widest px-1.5 py-0.5 rounded-sm border transition-colors',
-                    w.isEnabled
-                      ? 'text-signal border-signal/40 hover:bg-signal/10'
-                      : 'text-muted-foreground border-border hover:text-foreground'
-                  )}
-                >
-                  {w.isEnabled ? '[LIVE]' : '[OFF]'}
-                </button>
-
-                <div className="flex-1 min-w-0">
-                  <p className="font-mono text-[13px] text-foreground truncate">{w.requestUrl}</p>
-                  {w.description && (
-                    <p className="text-[12px] text-muted-foreground mt-1">{w.description}</p>
-                  )}
-                  <div className="flex flex-wrap gap-1 mt-2">
-                    {w.eventTypes.map((e) => (
-                      <span
-                        key={e}
-                        className="font-mono text-[10px] text-muted-foreground border border-border px-1.5 py-0.5 rounded-sm"
-                      >
-                        {e}
-                      </span>
-                    ))}
-                  </div>
-                  <div className="flex items-center gap-3 mt-2 font-mono text-[10px] text-muted-foreground tracking-wider">
-                    <span>id · {w.id.slice(0, 12)}</span>
-                    {actor ? (
-                      <AppLink href={`/actors/${actor.name}`} className="hover:text-foreground">
-                        scope · {actor.name}
-                      </AppLink>
-                    ) : (
-                      <span>scope · global</span>
+              <li key={w.id} className="panel">
+                <div className="p-4 flex items-start gap-4">
+                  <button
+                    type="button"
+                    onClick={() => void handleToggle(w)}
+                    title={w.isEnabled ? 'Disable' : 'Enable'}
+                    className={cn(
+                      'mt-1 shrink-0 font-mono text-[10px] tracking-widest px-1.5 py-0.5 rounded-sm border transition-colors',
+                      w.isEnabled
+                        ? 'text-signal border-signal/40 hover:bg-signal/10'
+                        : 'text-muted-foreground border-border hover:text-foreground'
                     )}
+                  >
+                    {w.isEnabled ? '[LIVE]' : '[OFF]'}
+                  </button>
+
+                  <div className="flex-1 min-w-0">
+                    <p className="font-mono text-[13px] text-foreground truncate">{w.requestUrl}</p>
+                    {w.description && (
+                      <p className="text-[12px] text-muted-foreground mt-1">{w.description}</p>
+                    )}
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {w.eventTypes.map((e) => (
+                        <span
+                          key={e}
+                          className="font-mono text-[10px] text-muted-foreground border border-border px-1.5 py-0.5 rounded-sm"
+                        >
+                          {e}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-3 mt-2 font-mono text-[10px] text-muted-foreground tracking-wider">
+                      <span>id · {w.id.slice(0, 12)}</span>
+                      {actor ? (
+                        <AppLink href={`/actors/${actor.name}`} className="hover:text-foreground">
+                          scope · {actor.name}
+                        </AppLink>
+                      ) : (
+                        <span>scope · global</span>
+                      )}
+                      <LastSeen delivery={lastDelivery} loaded={cachedDeliveries !== undefined} />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => void handleTest(w)}
+                      disabled={testingId === w.id}
+                      title="Fire a synthetic test event (no retries, 10s timeout)"
+                      className="h-7 px-2 inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider border border-border rounded-sm text-muted-foreground hover:text-foreground hover:border-signal/40 disabled:opacity-50"
+                    >
+                      {testingId === w.id ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Send className="h-3 w-3" />
+                      )}
+                      test
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleToggleDrawer(w)}
+                      title={expanded ? 'Hide deliveries' : 'Show recent deliveries'}
+                      className="h-7 px-2 inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider border border-border rounded-sm text-muted-foreground hover:text-foreground hover:border-signal/40"
+                    >
+                      {expanded ? (
+                        <ChevronDown className="h-3 w-3" />
+                      ) : (
+                        <ChevronRight className="h-3 w-3" />
+                      )}
+                      log
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleDelete(w.id)}
+                      className="text-muted-foreground hover:text-fail p-1"
+                      title="Delete webhook"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => void handleDelete(w.id)}
-                  className="text-muted-foreground hover:text-fail p-1"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
+                {expanded && (
+                  <DeliveriesDrawer
+                    deliveries={cachedDeliveries}
+                    loading={loadingDeliveriesId === w.id}
+                    onRefresh={() => void loadDeliveries(w.id)}
+                  />
+                )}
               </li>
             );
           })}
@@ -339,4 +457,151 @@ function CreateForm({
       </div>
     </section>
   );
+}
+
+/**
+ * Compact "last delivery" indicator on the right of each webhook row.
+ * Three states:
+ *   - not loaded yet (drawer never opened): muted "—"
+ *   - loaded, never delivered: muted "no deliveries"
+ *   - loaded with at least one delivery: colored dot + last status
+ */
+function LastSeen({
+  delivery,
+  loaded,
+}: {
+  delivery: WebhookDelivery | undefined;
+  loaded: boolean;
+}) {
+  if (!loaded) return <span>last · —</span>;
+  if (!delivery) return <span>last · no deliveries</span>;
+
+  const isOk = delivery.status === 'DELIVERED';
+  const isFailed = delivery.status === 'FAILED';
+  return (
+    <span className="inline-flex items-center gap-1">
+      last ·
+      <span
+        className={cn(
+          'inline-block h-1.5 w-1.5 rounded-full',
+          isOk ? 'bg-signal' : isFailed ? 'bg-fail' : 'bg-muted-foreground'
+        )}
+      />
+      <span className={cn(isOk ? 'text-signal' : isFailed ? 'text-fail' : '')}>
+        {delivery.status.toLowerCase()}
+        {delivery.responseStatus !== null && ` · ${String(delivery.responseStatus)}`}
+      </span>
+      <span>· {timeAgo(delivery.createdAt)}</span>
+    </span>
+  );
+}
+
+/**
+ * Expandable panel showing the last N delivery attempts for one webhook.
+ * Each row shows: status dot, event type, HTTP code, attempt count, age,
+ * truncated response/error body.
+ */
+function DeliveriesDrawer({
+  deliveries,
+  loading,
+  onRefresh,
+}: {
+  deliveries: WebhookDelivery[] | undefined;
+  loading: boolean;
+  onRefresh: () => void;
+}) {
+  if (loading || !deliveries) {
+    return (
+      <div className="border-t border-border px-5 py-4 grid place-items-center">
+        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (deliveries.length === 0) {
+    return (
+      <div className="border-t border-border px-5 py-4 grid-bg text-center">
+        <p className="font-mono text-[10px] tracking-widest text-muted-foreground">
+          [ NO DELIVERIES YET ]
+        </p>
+        <p className="text-[12px] text-muted-foreground mt-1">
+          Fire a test event with the button above, or wait for a real run to match.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="border-t border-border">
+      <div className="px-5 py-2 flex items-center justify-between bg-secondary/30">
+        <p className="font-mono text-[10px] tracking-widest text-muted-foreground uppercase">
+          last {deliveries.length} {deliveries.length === 1 ? 'delivery' : 'deliveries'}
+        </p>
+        <button
+          type="button"
+          onClick={onRefresh}
+          className="font-mono text-[10px] tracking-wider text-muted-foreground hover:text-foreground"
+        >
+          refresh
+        </button>
+      </div>
+      <ul className="divide-y divide-border">
+        {deliveries.map((d) => (
+          <li key={d.id} className="px-5 py-3 text-[12px] flex items-start gap-3">
+            <DeliveryStatusBadge status={d.status} />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap font-mono text-[11px]">
+                <span className="text-foreground">{d.eventType}</span>
+                {d.responseStatus !== null && (
+                  <span
+                    className={cn(
+                      'px-1.5 py-0.5 rounded-sm border',
+                      d.responseStatus >= 200 && d.responseStatus < 300
+                        ? 'border-signal/40 text-signal'
+                        : 'border-fail/40 text-fail'
+                    )}
+                  >
+                    HTTP {d.responseStatus}
+                  </span>
+                )}
+                <span className="text-muted-foreground">
+                  attempt {d.attemptCount}/{d.maxAttempts}
+                </span>
+                <span className="text-muted-foreground">{timeAgo(d.createdAt)}</span>
+              </div>
+              {d.responseBody && (
+                <pre className="mt-1 text-[11px] text-muted-foreground font-mono whitespace-pre-wrap break-all max-h-32 overflow-y-auto">
+                  {d.responseBody}
+                </pre>
+              )}
+              {d.nextRetryAt && d.status === 'PENDING' && (
+                <p className="mt-1 font-mono text-[10px] text-muted-foreground tracking-wider">
+                  next retry · {new Date(d.nextRetryAt).toLocaleString()}
+                </p>
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function DeliveryStatusBadge({ status }: { status: string }) {
+  const map: Record<string, { icon: typeof CheckCircle2; className: string }> = {
+    DELIVERED: { icon: CheckCircle2, className: 'text-signal' },
+    FAILED: { icon: AlertCircle, className: 'text-fail' },
+    PENDING: { icon: Loader2, className: 'text-muted-foreground animate-spin' },
+  };
+  const entry = map[status] ?? { icon: AlertCircle, className: 'text-muted-foreground' };
+  const Icon = entry.icon;
+  return <Icon className={cn('h-3.5 w-3.5 shrink-0 mt-0.5', entry.className)} />;
+}
+
+function timeAgo(iso: string): string {
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
 }

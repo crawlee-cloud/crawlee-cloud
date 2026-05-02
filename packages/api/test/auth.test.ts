@@ -172,11 +172,31 @@ describe('Auth Routes', () => {
   });
 
   describe('GET /v2/auth/api-keys', () => {
-    it('should list api keys', async () => {
+    it('should list api keys with camelCase field names', async () => {
+      // Lock the snake → camel conversion. Without it the dashboard's
+      // `apiKeys.filter(k => k.isActive)` evaluates to [] for every row
+      // (PG returns is_active, the consumer reads isActive → undefined →
+      // filtered out), hiding every key the user created.
+      const created = new Date('2026-05-02T10:00:00Z');
+      const lastUsed = new Date('2026-05-02T10:30:00Z');
       mockPoolQuery.mockResolvedValueOnce({
         rows: [
-          { id: 'key-1', name: 'Key 1', key_preview: 'apify_api_...', is_active: true },
-          { id: 'key-2', name: 'Key 2', key_preview: 'apify_api_...', is_active: true },
+          {
+            id: 'key-1',
+            name: 'Key 1',
+            key_preview: 'cp_abc...',
+            created_at: created,
+            last_used_at: lastUsed,
+            is_active: true,
+          },
+          {
+            id: 'key-2',
+            name: 'Key 2',
+            key_preview: 'cp_def...',
+            created_at: created,
+            last_used_at: null,
+            is_active: false,
+          },
         ],
       });
 
@@ -186,8 +206,30 @@ describe('Auth Routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
+      const body = JSON.parse(response.body) as {
+        data: Array<{
+          id: string;
+          name: string;
+          keyPreview: string;
+          createdAt: string;
+          lastUsedAt: string | null;
+          isActive: boolean;
+        }>;
+      };
       expect(body.data).toHaveLength(2);
+      expect(body.data[0]).toEqual({
+        id: 'key-1',
+        name: 'Key 1',
+        keyPreview: 'cp_abc...',
+        createdAt: created.toISOString(),
+        lastUsedAt: lastUsed.toISOString(),
+        isActive: true,
+      });
+      expect(body.data[1].lastUsedAt).toBeNull();
+      expect(body.data[1].isActive).toBe(false);
+      // Make sure no snake_case keys leaked through
+      expect(body.data[0]).not.toHaveProperty('is_active');
+      expect(body.data[0]).not.toHaveProperty('key_preview');
     });
   });
 

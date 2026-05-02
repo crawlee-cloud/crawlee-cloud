@@ -134,13 +134,34 @@ export async function authRoutes(app: FastifyInstance) {
       const user = request.user;
       if (!user) return reply.status(401).send({ error: { message: 'Not authenticated' } });
 
-      const result = await pool.query(
+      const result = await pool.query<{
+        id: string;
+        name: string;
+        key_preview: string;
+        created_at: Date;
+        last_used_at: Date | null;
+        is_active: boolean;
+      }>(
         `SELECT id, name, key_preview, created_at, last_used_at, is_active
          FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC`,
         [user.id]
       );
 
-      return reply.send({ data: result.rows });
+      // Convert PG snake_case columns to camelCase on the wire — the rest of
+      // the API already does this (defaultDatasetId, etc.), and the dashboard's
+      // ApiKey interface expects isActive/keyPreview/createdAt/lastUsedAt.
+      // Returning raw rows here meant `apiKeys.filter(k => k.isActive)` was
+      // always empty, hiding every active key.
+      const data = result.rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        keyPreview: r.key_preview,
+        createdAt: r.created_at,
+        lastUsedAt: r.last_used_at,
+        isActive: r.is_active,
+      }));
+
+      return reply.send({ data });
     });
 
     /**

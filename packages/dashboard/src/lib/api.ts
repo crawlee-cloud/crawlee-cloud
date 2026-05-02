@@ -155,16 +155,29 @@ export interface ScalerStatus {
   config: { min: number; max: number; runsPerRunner: number };
 }
 
+/**
+ * Wire shape returned by GET /v2/webhooks/:id/deliveries and
+ * POST /v2/webhooks/:id/test. Field names mirror the API's `formatDelivery`
+ * helper exactly — earlier this type used `statusCode` / `errorMessage` /
+ * `deliveredAt` (none of which the API ever returned), so every row in the
+ * dashboard rendered as undefined.
+ */
 export interface WebhookDelivery {
   id: string;
   webhookId: string;
+  runId: string | null;
   eventType: string;
-  statusCode: number | null;
-  responseBody?: string | null;
-  errorMessage?: string | null;
+  /** 'PENDING' | 'DELIVERED' | 'FAILED' — uppercase, matches the DB enum */
+  status: string;
   attemptCount: number;
-  deliveredAt: string | null;
+  maxAttempts: number;
+  nextRetryAt: string | null;
+  /** HTTP response status from the receiver, null on network error */
+  responseStatus: number | null;
+  /** First 1024 chars of the response body OR the error message on a network failure */
+  responseBody: string | null;
   createdAt: string;
+  finishedAt: string | null;
 }
 
 export interface Dataset {
@@ -923,12 +936,22 @@ export async function getScalerStatus(): Promise<ScalerStatus> {
 }
 
 export async function getWebhookDeliveries(id: string): Promise<WebhookDelivery[]> {
-  try {
-    const res = await fetchApi<{ data: { items: WebhookDelivery[] } }>(
-      `/v2/webhooks/${id}/dispatches`
-    );
-    return res.data.items;
-  } catch {
-    return [];
-  }
+  // API path is /deliveries (was previously calling /dispatches and swallowing
+  // the 404, which made the deliveries list silently empty).
+  const res = await fetchApi<{ data: { items: WebhookDelivery[] } }>(
+    `/v2/webhooks/${id}/deliveries`
+  );
+  return res.data.items;
+}
+
+/**
+ * Fire a synthetic event at the webhook's URL — one shot, no retries, 10s
+ * timeout. The response includes the resulting delivery row so the UI can
+ * render the result inline without polling.
+ */
+export async function testWebhook(id: string): Promise<WebhookDelivery> {
+  const res = await fetchApi<{ data: WebhookDelivery }>(`/v2/webhooks/${id}/test`, {
+    method: 'POST',
+  });
+  return res.data;
 }
