@@ -114,14 +114,14 @@ The "platform survives months of operation" gate.
 
 ## v0.9.1 ✅ — Webhook Templating + Server-Side Search
 
-| Feature                                 | Status                                                                                     |
-| --------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Apify-compatible webhook engine         | ✅ Shipped — both `"{{x}}"` quoted and `{{x}}` unquoted forms; interpolation; dot notation |
-| Test webhook applies template           | ✅ Shipped — `POST /v2/webhooks/:id/test` runs the same engine as production deliveries    |
-| Server-side `?q=` search                | ✅ Shipped — ILIKE substring on every list endpoint, LIKE-metachar escape                  |
-| Reaper uses GREATEST(accessed,modified) | ✅ Shipped — actively-written-to unnamed resources no longer false-reaped                  |
-| Dashboard counts real total             | ✅ Shipped — counter tiles read `COUNT(*)`, not `items.length` capped at 1000              |
-| Stress-fixture script                   | ✅ Shipped — `scripts/seed-stress-fixtures.ts` for at-scale QA                             |
+| Feature                                          | Status                                                                                     |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| Apify-compatible webhook engine                  | ✅ Shipped — both `"{{x}}"` quoted and `{{x}}` unquoted forms; interpolation; dot notation |
+| Test webhook applies template                    | ✅ Shipped — `POST /v2/webhooks/:id/test` runs the same engine as production deliveries    |
+| Server-side `?q=` search                         | ✅ Shipped — ILIKE substring on every list endpoint, LIKE-metachar escape                  |
+| Reaper uses `GREATEST(accessed_at, modified_at)` | ✅ Shipped — actively-written-to unnamed resources no longer false-reaped                  |
+| Dashboard counts real total                      | ✅ Shipped — counter tiles read `COUNT(*)`, not `items.length` capped at 1000              |
+| Stress-fixture script                            | ✅ Shipped — `scripts/seed-stress-fixtures.ts` for at-scale QA                             |
 
 ## v0.9.x patch line
 
