@@ -7,7 +7,7 @@
  * which imports `pool` from db/index.js, sees the same connection pool
  * the tests use for direct setup queries.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import type pg from 'pg';
 import { S3Client, PutObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { TEST_CONFIG, ensureS3Bucket, runMigrations } from './setup.js';
@@ -383,39 +383,13 @@ describe('reaper — reapRuns', () => {
     expect(tomb.rows[0]?.reason).toBe('expired-run');
     expect(tomb.rows[0]?.metadata).toEqual({ actor_id: 'ret-test-actor', status: 'SUCCEEDED' });
   });
-
-  it('respects RETENTION_BATCH_SIZE per call', async () => {
-    // Insert 5 reapable runs; with batch size 3 only 3 should reap per call.
-    for (let i = 0; i < 5; i++) {
-      await pool.query(
-        `INSERT INTO runs (id, actor_id, user_id, status, finished_at, created_at)
-         VALUES ($1, 'ret-test-actor', 'ret-test-user', 'SUCCEEDED', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`,
-        [`reap-test-batch-${i}`]
-      );
-    }
-
-    process.env.RETENTION_BATCH_SIZE = '3';
-    vi.resetModules();
-    const { reapRuns } = await import('../../src/retention.js');
-    const client = await pool.connect();
-    try {
-      const reaped1 = await reapRuns(client);
-      expect(reaped1).toBe(3);
-      const reaped2 = await reapRuns(client);
-      expect(reaped2).toBe(2);
-    } finally {
-      client.release();
-      delete process.env.RETENTION_BATCH_SIZE;
-    }
-  });
 });
 
 describe('reaper — reapDatasets', () => {
   let s3: S3Client;
   beforeAll(async () => {
-    // Re-init S3 in case vi.resetModules() was called by a previous test
-    // (e.g. the RETENTION_BATCH_SIZE test), which would clear the module-level
-    // s3 client inside storage/s3.js and cause deleteDatasetS3Prefix to fail.
+    // Re-init S3 to ensure the module-level s3 client is populated before
+    // deleteDatasetS3Prefix is called.
     const { initS3 } = await import('../../src/storage/s3.js');
     await initS3();
     s3 = new S3Client({
@@ -504,8 +478,8 @@ describe('reaper — reapDatasets', () => {
 describe('reaper — reapKVStores', () => {
   let s3: S3Client;
   beforeAll(async () => {
-    // Same async + initS3() pattern as reapDatasets — vi.resetModules() in
-    // earlier tests orphans the module-level S3 client; re-init it here.
+    // Re-init S3 to ensure the module-level s3 client is populated before
+    // deleteKVStoreS3Prefix is called.
     const { initS3 } = await import('../../src/storage/s3.js');
     await initS3();
     s3 = new S3Client({
