@@ -79,7 +79,9 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
         const [r, b, w] = await Promise.all([
           getActorRuns(a.id).catch(() => []),
           getBuilds(a.id).catch(() => []),
-          getWebhooks().catch(() => []),
+          getWebhooks({ limit: 1000 })
+            .then((p) => p.items)
+            .catch(() => [] as Webhook[]),
         ]);
         if (!alive) return;
         setRuns(r);

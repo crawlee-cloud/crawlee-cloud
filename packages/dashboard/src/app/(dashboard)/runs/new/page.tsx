@@ -22,11 +22,11 @@ function NewRunContent() {
 
   useEffect(() => {
     let alive = true;
-    getActors()
-      .then((data) => {
+    getActors({ limit: 1000 })
+      .then((p) => {
         if (!alive) return;
-        setActors(data);
-        if (preselected && data.find((a) => a.id === preselected)) {
+        setActors(p.items);
+        if (preselected && p.items.find((a) => a.id === preselected)) {
           setSelectedActor(preselected);
         }
       })

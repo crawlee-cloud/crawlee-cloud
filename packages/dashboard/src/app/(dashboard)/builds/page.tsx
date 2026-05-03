@@ -24,7 +24,8 @@ export default function BuildsPage() {
   async function load() {
     setRefreshing(true);
     try {
-      const acts = await getActors().catch(() => [] as Actor[]);
+      const page = await getActors({ limit: 1000 }).catch(() => null);
+      const acts = page?.items ?? [];
       setActors(acts);
       // Fan-out: pull builds for every actor in parallel; tolerate per-actor failure.
       const perActor = await Promise.all(

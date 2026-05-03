@@ -3,27 +3,36 @@
 import { useEffect, useState } from 'react';
 import { Boxes, Search, Trash2 } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
+import { Pagination } from '@/components/pagination';
 import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
 import { deleteKeyValueStore, getKeyValueStores, type KeyValueStore } from '@/lib/api';
+
+const LIMIT = 50;
 
 export default function KeyValueStoresPage() {
   const confirm = useConfirm();
   const toast = useToast();
   const [stores, setStores] = useState<KeyValueStore[]>([]);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
 
   useEffect(() => {
     let alive = true;
-    getKeyValueStores()
-      .then((d) => alive && setStores(d))
+    getKeyValueStores({ offset, limit: LIMIT })
+      .then((p) => {
+        if (!alive) return;
+        setStores(p.items);
+        setTotal(p.total);
+      })
       .catch(() => {})
       .finally(() => alive && setLoading(false));
     return () => {
       alive = false;
     };
-  }, []);
+  }, [offset]);
 
   async function handleDelete(s: KeyValueStore) {
     const ok = await confirm({
@@ -141,6 +150,8 @@ export default function KeyValueStoresPage() {
           </table>
         )}
       </section>
+
+      <Pagination total={total} offset={offset} limit={LIMIT} onChange={setOffset} />
     </div>
   );
 }

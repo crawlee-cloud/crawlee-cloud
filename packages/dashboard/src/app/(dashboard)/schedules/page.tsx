@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CalendarClock, Clock, Loader2, Plus, Save, Trash2 } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
+import { Pagination } from '@/components/pagination';
 import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
 import {
@@ -15,6 +16,8 @@ import {
   type Schedule,
 } from '@/lib/api';
 import { cn } from '@/lib/utils';
+
+const LIMIT = 50;
 
 const COMMON_CRONS: { label: string; value: string; hint: string }[] = [
   { label: 'Every hour', value: '0 * * * *', hint: 'top of every hour' },
@@ -29,24 +32,30 @@ export default function SchedulesPage() {
   const confirm = useConfirm();
   const toast = useToast();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
   const [actors, setActors] = useState<Actor[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
 
   useEffect(() => {
     let alive = true;
-    void Promise.all([getSchedules().catch(() => []), getActors().catch(() => [])]).then(
-      ([s, a]) => {
-        if (!alive) return;
-        setSchedules(s);
-        setActors(a);
-        setLoading(false);
+    void Promise.all([
+      getSchedules({ offset, limit: LIMIT }).catch(() => null),
+      getActors({ limit: 1000 }).catch(() => null),
+    ]).then(([s, a]) => {
+      if (!alive) return;
+      if (s) {
+        setSchedules(s.items);
+        setTotal(s.total);
       }
-    );
+      if (a) setActors(a.items);
+      setLoading(false);
+    });
     return () => {
       alive = false;
     };
-  }, []);
+  }, [offset]);
 
   async function handleToggle(s: Schedule) {
     try {
@@ -199,6 +208,8 @@ export default function SchedulesPage() {
           })}
         </ul>
       )}
+
+      <Pagination total={total} offset={offset} limit={LIMIT} onChange={setOffset} />
     </div>
   );
 }

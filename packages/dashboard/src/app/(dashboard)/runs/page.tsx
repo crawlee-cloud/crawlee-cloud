@@ -117,9 +117,9 @@ export default function RunsPage() {
   }
 
   async function loadActors() {
-    const a = await getActors();
+    const a = await getActors({ limit: 1000 });
     const map: Record<string, Actor> = {};
-    a.forEach((x) => (map[x.id] = x));
+    a.items.forEach((x) => (map[x.id] = x));
     setActors(map);
   }
 

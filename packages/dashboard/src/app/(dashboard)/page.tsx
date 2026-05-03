@@ -31,13 +31,13 @@ export default function ConsolePage() {
         const [s, r, a] = await Promise.all([
           getDashboardStats(),
           getRuns(),
-          getActors().catch(() => [] as Actor[]),
+          getActors({ limit: 1000 }).catch(() => null),
         ]);
         if (!alive) return;
         setStats(s);
         setRuns(r);
         const map: Record<string, Actor> = {};
-        a.forEach((x) => (map[x.id] = x));
+        if (a) a.items.forEach((x) => (map[x.id] = x));
         setActorsById(map);
       } finally {
         if (alive) setLoading(false);

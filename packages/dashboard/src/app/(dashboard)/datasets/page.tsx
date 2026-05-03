@@ -3,28 +3,37 @@
 import { Suspense, useEffect, useState } from 'react';
 import { Database, Download, Eye, Search, Trash2 } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
+import { Pagination } from '@/components/pagination';
 import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
 import type { Dataset } from '@/lib/api';
 import { deleteDataset, getDatasetItems, getDatasets } from '@/lib/api';
 
+const LIMIT = 50;
+
 function DatasetsContent() {
   const confirm = useConfirm();
   const toast = useToast();
   const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
 
   useEffect(() => {
     let alive = true;
-    getDatasets()
-      .then((d) => alive && setDatasets(d))
+    getDatasets({ offset, limit: LIMIT })
+      .then((p) => {
+        if (!alive) return;
+        setDatasets(p.items);
+        setTotal(p.total);
+      })
       .catch(() => {})
       .finally(() => alive && setLoading(false));
     return () => {
       alive = false;
     };
-  }, []);
+  }, [offset]);
 
   async function handleDelete(id: string) {
     const ok = await confirm({
@@ -173,6 +182,8 @@ function DatasetsContent() {
           </table>
         )}
       </section>
+
+      <Pagination total={total} offset={offset} limit={LIMIT} onChange={setOffset} />
     </div>
   );
 }

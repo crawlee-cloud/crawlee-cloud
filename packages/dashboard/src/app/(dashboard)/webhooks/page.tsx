@@ -15,6 +15,7 @@ import {
   Webhook as WebhookIcon,
 } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
+import { Pagination } from '@/components/pagination';
 import {
   createWebhook,
   deleteWebhook,
@@ -32,10 +33,14 @@ import { cn } from '@/lib/utils';
 import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
 
+const LIMIT = 50;
+
 export default function WebhooksPage() {
   const confirm = useConfirm();
   const toast = useToast();
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
   const [actors, setActors] = useState<Actor[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -54,18 +59,22 @@ export default function WebhooksPage() {
 
   useEffect(() => {
     let alive = true;
-    void Promise.all([getWebhooks().catch(() => []), getActors().catch(() => [])]).then(
-      ([w, a]) => {
-        if (!alive) return;
-        setWebhooks(w);
-        setActors(a);
-        setLoading(false);
+    void Promise.all([
+      getWebhooks({ offset, limit: LIMIT }).catch(() => null),
+      getActors({ limit: 1000 }).catch(() => null),
+    ]).then(([w, a]) => {
+      if (!alive) return;
+      if (w) {
+        setWebhooks(w.items);
+        setTotal(w.total);
       }
-    );
+      if (a) setActors(a.items);
+      setLoading(false);
+    });
     return () => {
       alive = false;
     };
-  }, []);
+  }, [offset]);
 
   function handleSaved(w: Webhook) {
     if (editingId) {
@@ -372,6 +381,8 @@ export default function WebhooksPage() {
           })}
         </ul>
       )}
+
+      <Pagination total={total} offset={offset} limit={LIMIT} onChange={setOffset} />
     </div>
   );
 }
