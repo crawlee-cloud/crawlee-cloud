@@ -439,7 +439,9 @@ async function deleteByPrefix(prefix: string): Promise<void> {
         ContinuationToken: continuationToken,
       })
     );
-    const keys = (listed.Contents ?? []).map((o) => ({ Key: o.Key! }));
+    const keys = (listed.Contents ?? [])
+      .filter((o): o is typeof o & { Key: string } => typeof o.Key === 'string')
+      .map((o) => ({ Key: o.Key }));
     if (keys.length > 0) {
       await s3.send(
         new DeleteObjectsCommand({
