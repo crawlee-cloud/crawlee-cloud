@@ -15,7 +15,9 @@ import { pool } from './db/index.js';
 import { config } from './config.js';
 
 /**
- * Fixed 32-bit constant identifying the retention reaper's advisory lock.
+ * Fixed 32-bit unsigned hex constant identifying the retention reaper's
+ * advisory lock. Sent to PG as bigint via pg_try_advisory_lock's bigint
+ * overload, since 0xC0DEBEEF exceeds INT4_MAX.
  * MUST NOT collide with any other advisory lock in this codebase. See the
  * registry comment in db/index.ts.
  */
@@ -50,7 +52,15 @@ export async function runReaperTick(): Promise<void> {
       );
     } finally {
       try {
-        await client.query('SELECT pg_advisory_unlock($1)', [RETENTION_LOCK_ID]);
+        const unlockResult = await client.query<{ pg_advisory_unlock: boolean }>(
+          'SELECT pg_advisory_unlock($1)',
+          [RETENTION_LOCK_ID]
+        );
+        if (!unlockResult.rows[0]?.pg_advisory_unlock) {
+          console.error(
+            '[retention] pg_advisory_unlock returned false — lock was not held by this session'
+          );
+        }
       } catch (err) {
         mustDestroy = true;
         console.error(
