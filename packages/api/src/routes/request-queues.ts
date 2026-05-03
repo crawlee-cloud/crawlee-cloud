@@ -263,21 +263,33 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
       }
     }
 
-    // Check if queue has any locked requests
+    // Check if queue has any actively-locked, *unhandled* requests.
+    //
+    // The handled_at IS NULL clause is load-bearing two ways:
+    //   1. Correctness — a handled request that still carries a stale
+    //      locked_until is a leftover ghost; counting it as "actively
+    //      locked" misleads the SDK's distributed-crawl bookkeeping.
+    //   2. Performance — together with locked_until, this matches the
+    //      partial idx_requests_locked (queue_id, locked_until)
+    //      WHERE handled_at IS NULL. Without the filter, the planner
+    //      can't prove all matching rows live in the partial index and
+    //      falls back to seq scan as the table grows.
     const lockedCheck = await query<{ count: string }>(
       `
-      SELECT COUNT(*) as count FROM requests 
-      WHERE queue_id = $1 AND locked_until > NOW()
+      SELECT COUNT(*) as count FROM requests
+      WHERE queue_id = $1 AND locked_until > NOW() AND handled_at IS NULL
     `,
       [qId]
     );
     const queueHasLockedRequests = parseInt(lockedCheck.rows[0]?.count ?? '0', 10) > 0;
 
-    // Update hadMultipleClients if there are multiple client keys
+    // Update hadMultipleClients if there are multiple client keys.
+    // Same handled_at IS NULL filter as above for the same two reasons —
+    // a handled request shouldn't be considered an active client.
     const clientsCheck = await query<{ count: string }>(
       `
-      SELECT COUNT(DISTINCT locked_by) as count FROM requests 
-      WHERE queue_id = $1 AND locked_by IS NOT NULL
+      SELECT COUNT(DISTINCT locked_by) as count FROM requests
+      WHERE queue_id = $1 AND locked_by IS NOT NULL AND handled_at IS NULL
     `,
       [qId]
     );
@@ -349,32 +361,23 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     const uniqueKey =
       body.uniqueKey || computeUniqueKey(body.url, body.method || 'GET', body.payload);
 
-    // Check if already exists (DEDUPLICATION!)
-    const existing = await query<RequestRow>(
-      'SELECT * FROM requests WHERE queue_id = $1 AND unique_key = $2',
-      [qId, uniqueKey]
-    );
-
-    if (existing.rows[0]) {
-      return {
-        data: {
-          requestId: existing.rows[0].id,
-          wasAlreadyPresent: true,
-          wasAlreadyHandled: existing.rows[0].handled_at !== null,
-        },
-      };
-    }
-
-    // Insert new request
-    const id = nanoid();
-
     // For forefront, use negative order_no to put at front
     const orderModifier = forefront ? -1 : 1;
 
-    const result = await query<RequestRow>(
+    // INSERT ... ON CONFLICT DO NOTHING is the race-free shape: under
+    // concurrent callers with the same uniqueKey, the unique
+    // (queue_id, unique_key) constraint serializes them, exactly one wins
+    // the insert, and the rest get an empty RETURNING row instead of a
+    // 500-throwing constraint violation. The pre-fix shape was
+    // SELECT-then-INSERT with no transaction, which under load lost ~5%
+    // of concurrent same-key calls to constraint errors (confirmed in
+    // slice #1 stress: 5/100 errors at 100-way concurrency).
+    const id = nanoid();
+    const insertResult = await query<RequestRow>(
       `
       INSERT INTO requests (id, queue_id, unique_key, url, method, payload, headers, user_data, no_retry)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      ON CONFLICT (queue_id, unique_key) DO NOTHING
       RETURNING *
     `,
       [
@@ -389,6 +392,31 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
         body.noRetry || false,
       ]
     );
+
+    // Empty RETURNING ⇒ row already existed (concurrent insert won, or it
+    // was inserted earlier). Re-fetch to return wasAlreadyPresent=true with
+    // the existing row's id and handled state.
+    if (!insertResult.rows[0]) {
+      const existing = await query<RequestRow>(
+        'SELECT * FROM requests WHERE queue_id = $1 AND unique_key = $2',
+        [qId, uniqueKey]
+      );
+      if (existing.rows[0]) {
+        return {
+          data: {
+            requestId: existing.rows[0].id,
+            wasAlreadyPresent: true,
+            wasAlreadyHandled: existing.rows[0].handled_at !== null,
+          },
+        };
+      }
+      // Vanishingly rare: row neither inserted nor existing. Treat as a
+      // transient failure and return 500. Caller can retry idempotently.
+      reply.status(500);
+      return { error: { type: 'internal-error', message: 'Failed to add request' } };
+    }
+
+    const result = insertResult;
 
     // Update queue counts
     await query(
@@ -478,30 +506,20 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
             req.uniqueKey || computeUniqueKey(req.url, req.method || 'GET', req.payload);
 
           try {
-            // Check existing (Deduplication)
-            const existing = await query<RequestRow>(
-              'SELECT * FROM requests WHERE queue_id = $1 AND unique_key = $2',
-              [qId, uniqueKey]
-            );
-
-            if (existing.rows[0]) {
-              return {
-                type: 'processed',
-                data: {
-                  requestId: existing.rows[0].id,
-                  uniqueKey,
-                  wasAlreadyPresent: true,
-                  wasAlreadyHandled: existing.rows[0].handled_at !== null,
-                },
-              };
-            }
-
-            // Insert new
+            // Race-free dedupe via INSERT ... ON CONFLICT DO NOTHING — same
+            // shape as the single-add path. The previous SELECT-then-INSERT
+            // form returned correct results for non-contended calls but, on
+            // concurrent same-key inserts, lost the constraint-violation
+            // race in the catch below and returned `unprocessed` rows that
+            // misled callers (the request really *is* present, just
+            // inserted by a sibling caller).
             const id = nanoid();
-            await query(
+            const inserted = await query<{ id: string }>(
               `
             INSERT INTO requests (id, queue_id, unique_key, url, method, payload, user_data)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (queue_id, unique_key) DO NOTHING
+            RETURNING id
           `,
               [
                 id,
@@ -514,14 +532,42 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
               ]
             );
 
+            if (inserted.rows[0]) {
+              return {
+                type: 'processed',
+                data: {
+                  requestId: inserted.rows[0].id,
+                  uniqueKey,
+                  wasAlreadyPresent: false,
+                  wasAlreadyHandled: false,
+                },
+              };
+            }
+
+            // Empty RETURNING ⇒ duplicate. Look up the existing row to
+            // report the canonical request id and handled state.
+            const existing = await query<RequestRow>(
+              'SELECT * FROM requests WHERE queue_id = $1 AND unique_key = $2',
+              [qId, uniqueKey]
+            );
+            if (existing.rows[0]) {
+              return {
+                type: 'processed',
+                data: {
+                  requestId: existing.rows[0].id,
+                  uniqueKey,
+                  wasAlreadyPresent: true,
+                  wasAlreadyHandled: existing.rows[0].handled_at !== null,
+                },
+              };
+            }
+            // Truly unable to insert and no row exists — keep the
+            // unprocessed signal for visibility. This branch is
+            // vanishingly rare (would require both a transient error and
+            // the row not being there).
             return {
-              type: 'processed',
-              data: {
-                requestId: id,
-                uniqueKey,
-                wasAlreadyPresent: false,
-                wasAlreadyHandled: false,
-              },
+              type: 'unprocessed',
+              data: { url: req.url, uniqueKey },
             };
           } catch (err) {
             console.error(`Error processing batch request element:`, err);

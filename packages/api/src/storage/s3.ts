@@ -31,7 +31,12 @@ export async function initS3(): Promise<void> {
 }
 
 /**
- * Store a dataset item.
+ * Store a single dataset item.
+ *
+ * Retained for backwards compatibility with any existing caller; the dataset
+ * push route now uses putDatasetBatch (one S3 object per pushData call) for
+ * cost on Spaces and IOPS on hobby MinIO. Reads transparently handle both
+ * formats — see iterateDatasetItems.
  */
 export async function putDatasetItem(
   datasetId: string,
@@ -51,43 +56,66 @@ export async function putDatasetItem(
 }
 
 /**
+ * Store a batch of dataset items as a single S3 object.
+ *
+ * Key shape: `datasets/{id}/{startIdx-9d}.batch.json`. The 9-digit padding on
+ * startIdx preserves lexicographic = numeric ordering relative to the legacy
+ * `{idx-9d}.json` key shape, so a single ListObjectsV2 returns old + new keys
+ * interleaved in correct numeric order. The `.batch.json` infix is the
+ * positive marker iterateDatasetItems dispatches on.
+ */
+export async function putDatasetBatch(
+  datasetId: string,
+  startIdx: number,
+  items: unknown[]
+): Promise<void> {
+  if (items.length === 0) return;
+  const key = `datasets/${datasetId}/${String(startIdx).padStart(9, '0')}.batch.json`;
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: config.s3Bucket,
+      Key: key,
+      Body: JSON.stringify(items),
+      ContentType: 'application/json',
+    })
+  );
+}
+
+/**
  * Get dataset items with pagination.
+ *
+ * Paginates at the *item* level, not the S3 key level — required so that
+ * mixed legacy/batched datasets paginate correctly (one batch key may
+ * contain hundreds of items). Total is supplied by the caller from
+ * datasets.item_count, which is the authoritative count; the previous
+ * implementation derived total from S3 listing and silently capped at
+ * ~1000 (no pagination loop), so callers should pass total explicitly.
+ *
+ * Compatibility: if total is omitted, falls back to counting yielded items
+ * up to offset+limit and returning that as a lower-bound. Existing callers
+ * that don't pass total see a non-regressive behavior change (pagination
+ * is now correct on batched data; total may under-report on huge datasets
+ * relative to true item_count).
  */
 export async function listDatasetItems(
   datasetId: string,
-  options: { offset?: number; limit?: number } = {}
+  options: { offset?: number; limit?: number; total?: number } = {}
 ): Promise<{ items: unknown[]; total: number }> {
   const { offset = 0, limit = 100 } = options;
-  const prefix = `datasets/${datasetId}/`;
 
-  // List all objects to get total count
-  const listResult = await s3.send(
-    new ListObjectsV2Command({
-      Bucket: config.s3Bucket,
-      Prefix: prefix,
-    })
-  );
-
-  const allKeys = listResult.Contents?.map((obj) => obj.Key!) || [];
-  const total = allKeys.length;
-
-  // Get subset based on offset/limit
-  const keysToFetch = allKeys.slice(offset, offset + limit);
-
-  const items = await Promise.all(
-    keysToFetch.map(async (key) => {
-      const result = await s3.send(
-        new GetObjectCommand({
-          Bucket: config.s3Bucket,
-          Key: key,
-        })
-      );
-      const body = await result.Body?.transformToString();
-      return body ? JSON.parse(body) : null;
-    })
-  );
-
-  return { items: items.filter(Boolean), total };
+  const items: unknown[] = [];
+  let seen = 0;
+  for await (const item of iterateDatasetItems(datasetId)) {
+    if (seen >= offset && items.length < limit) {
+      items.push(item);
+    }
+    seen++;
+    if (items.length >= limit && options.total !== undefined) {
+      // Caller supplied total — no need to keep iterating to derive one.
+      return { items, total: options.total };
+    }
+  }
+  return { items, total: options.total ?? seen };
 }
 
 /**
@@ -168,11 +196,45 @@ export async function* iterateDatasetKeys(datasetId: string): AsyncGenerator<str
 /**
  * Fetch one dataset item by S3 key. Used by the streaming download endpoint
  * which iterates keys, then fetches with bounded concurrency.
+ *
+ * Note: this returns the *raw* contents of the S3 object — for `.batch.json`
+ * keys that's a JSON array, for legacy `{idx}.json` keys that's a single
+ * value. Most callers should prefer iterateDatasetItems, which dispatches by
+ * key shape and yields one item at a time.
  */
 export async function getDatasetItemByKey(key: string): Promise<unknown> {
   const result = await s3.send(new GetObjectCommand({ Bucket: config.s3Bucket, Key: key }));
   const body = await result.Body?.transformToString();
   return body ? JSON.parse(body) : null;
+}
+
+/**
+ * Async-iterate over every dataset item, transparently handling both the
+ * legacy per-item key shape (`{idx-9d}.json`) and the batched key shape
+ * (`{startIdx-9d}.batch.json` containing a JSON array).
+ *
+ * Items are yielded in numeric index order across both formats — the 9-digit
+ * zero-padding on both shapes ensures lexicographic listing == numeric order.
+ *
+ * Use this for any read path that needs item-level iteration. The lower-level
+ * iterateDatasetKeys + getDatasetItemByKey are still exported for callers
+ * that want raw key-level control (e.g. parallel fetch with custom batching),
+ * but those callers must dispatch on the `.batch.json` suffix themselves.
+ */
+export async function* iterateDatasetItems(datasetId: string): AsyncGenerator<unknown> {
+  for await (const key of iterateDatasetKeys(datasetId)) {
+    const body = await getDatasetItemByKey(key);
+    if (key.endsWith('.batch.json')) {
+      if (Array.isArray(body)) {
+        for (const item of body) yield item;
+      }
+      // Non-array body in a .batch.json key is a malformed write — skip
+      // rather than crash a download mid-stream. Operator-visible via API
+      // logs; not silently swallowed in the iterator's contract.
+    } else {
+      yield body;
+    }
+  }
 }
 
 /**

@@ -179,12 +179,13 @@ describe('Request Queue Routes', () => {
   });
 
   describe('POST /v2/request-queues/:queueId/requests', () => {
-    it('should add request with deduplication', async () => {
+    it('should add request when not yet present (INSERT returns row)', async () => {
       mockQuery
         .mockResolvedValueOnce({ rows: [createQueueRow()] })
-        .mockResolvedValueOnce({ rows: [] }) // no duplicate
+        // INSERT ... ON CONFLICT DO NOTHING RETURNING * — won the race,
+        // returns the inserted row.
         .mockResolvedValueOnce({ rows: [createRequestRow()] })
-        .mockResolvedValueOnce({ rows: [] }); // count update
+        .mockResolvedValueOnce({ rows: [] }); // counter UPDATE
 
       const response = await app.inject({
         method: 'POST',
@@ -197,10 +198,13 @@ describe('Request Queue Routes', () => {
       expect(body.data.wasAlreadyPresent).toBe(false);
     });
 
-    it('should return existing if duplicate', async () => {
+    it('should return existing on conflict (concurrent same-uniqueKey insert)', async () => {
       mockQuery
         .mockResolvedValueOnce({ rows: [createQueueRow()] })
-        .mockResolvedValueOnce({ rows: [createRequestRow()] }); // duplicate found
+        // INSERT ... ON CONFLICT DO NOTHING returned empty — duplicate.
+        .mockResolvedValueOnce({ rows: [] })
+        // Re-fetch by (queue_id, unique_key) returns the existing row.
+        .mockResolvedValueOnce({ rows: [createRequestRow()] });
 
       const response = await app.inject({
         method: 'POST',

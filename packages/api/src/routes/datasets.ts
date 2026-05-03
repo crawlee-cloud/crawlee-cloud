@@ -7,12 +7,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { nanoid } from 'nanoid';
 import { query } from '../db/index.js';
-import {
-  putDatasetItem,
-  listDatasetItems,
-  iterateDatasetKeys,
-  getDatasetItemByKey,
-} from '../storage/s3.js';
+import { putDatasetBatch, listDatasetItems, iterateDatasetItems } from '../storage/s3.js';
 import { authenticate } from '../auth/middleware.js';
 import { CreateDatasetSchema } from '../schemas/datasets.js';
 
@@ -145,9 +140,13 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
 
     // ?download=1 — stream the FULL dataset as a single JSON array file.
     // Browser opens it as a download; no in-memory materialization on either
-    // server (chunked S3 GETs with bounded concurrency) or client. This
-    // sidesteps the silent ~1000-item cap in listDatasetItems and the
-    // browser-blob memory pressure on the dashboard side.
+    // server (sequential streaming via iterateDatasetItems) or client. This
+    // sidesteps the silent ~1000-item cap in the legacy listDatasetItems and
+    // the browser-blob memory pressure on the dashboard side.
+    //
+    // iterateDatasetItems handles both legacy per-item keys and the newer
+    // batched keys transparently; one yielded item == one comma-separated
+    // entry in the output array.
     if (request.query.download === '1' || request.query.download === 'true') {
       const dsId = dataset.rows[0].id;
       // setHeader on the raw response — reply.header() needs Fastify's
@@ -162,38 +161,11 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
       stream.setHeader('content-disposition', `attachment; filename="dataset-${dsId}.json"`);
       stream.write('[');
 
-      // Bounded concurrency: 16 parallel S3 GETs is enough to saturate a
-      // local MinIO and still leaves headroom under AWS's per-prefix QPS cap.
-      const CONCURRENCY = 16;
-      let inflight: Array<Promise<{ idx: number; data: unknown }>> = [];
-      let writeIdx = 0;
       let firstWritten = false;
-      const buffer = new Map<number, unknown>();
-
-      function drainBuffer() {
-        while (buffer.has(writeIdx)) {
-          const item = buffer.get(writeIdx);
-          buffer.delete(writeIdx);
-          stream.write((firstWritten ? ',' : '') + JSON.stringify(item));
-          firstWritten = true;
-          writeIdx++;
-        }
+      for await (const item of iterateDatasetItems(dsId)) {
+        stream.write((firstWritten ? ',' : '') + JSON.stringify(item));
+        firstWritten = true;
       }
-
-      let nextIdx = 0;
-      for await (const key of iterateDatasetKeys(dsId)) {
-        const myIdx = nextIdx++;
-        inflight.push(getDatasetItemByKey(key).then((data) => ({ idx: myIdx, data })));
-        if (inflight.length >= CONCURRENCY) {
-          const settled = await Promise.all(inflight);
-          for (const r of settled) buffer.set(r.idx, r.data);
-          inflight = [];
-          drainBuffer();
-        }
-      }
-      const tail = await Promise.all(inflight);
-      for (const r of tail) buffer.set(r.idx, r.data);
-      drainBuffer();
 
       stream.write(']');
       stream.end();
@@ -203,8 +175,16 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
     const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
     const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
 
-    // Get items from S3
-    const { items, total } = await listDatasetItems(dataset.rows[0].id, { offset, limit });
+    // Pass total = dataset.item_count so listDatasetItems can short-circuit
+    // iteration once `limit` items have been collected. The DB row is the
+    // authoritative count (incremented atomically on each push); deriving
+    // total from S3 listing is what gave the legacy implementation its
+    // silent 1000-item cap.
+    const { items, total } = await listDatasetItems(dataset.rows[0].id, {
+      offset,
+      limit,
+      total: dataset.rows[0].item_count,
+    });
 
     // Set pagination headers (Apify style)
     reply.header('x-apify-pagination-total', total);
@@ -261,31 +241,53 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
     // Handle single item or array
     const items = Array.isArray(body) ? body : [body];
 
-    // Store each item in S3 in parallel
-    // Apify batches are typically manageable size (e.g. 100-1000 items)
-    // but we chunk them just in case to avoid file system/S3 limits
-    const CHUNK_SIZE = 50;
-
-    // Calculate new total count first so we know IDs
-    const startCount = ds.item_count;
-
-    // Process in chunks
-    for (let i = 0; i < items.length; i += CHUNK_SIZE) {
-      const chunk = items.slice(i, i + CHUNK_SIZE);
-      const promises = chunk.map((item, index) => {
-        const itemIndex = startCount + i + index;
-        return putDatasetItem(ds.id, itemIndex, item);
-      });
-      await Promise.all(promises);
+    // Atomically reserve a non-overlapping index range for this push.
+    //
+    // The previous shape was read-then-update:
+    //   startCount = ds.item_count                           -- read
+    //   write S3 objects at keys derived from startCount
+    //   UPDATE datasets SET item_count = startCount + N      -- write
+    //
+    // Three operations with no transaction means concurrent callers all read
+    // the same startCount, write to the same S3 keys (last writer wins), and
+    // all UPDATE to the same final value — silently losing data. Confirmed
+    // under 100-way concurrent push stress in slice #1: 100 callers × 200
+    // items collapsed into 1 batch object with item_count = 200.
+    //
+    // The RETURNING form below makes index allocation race-free: PostgreSQL
+    // row-locks the UPDATE for the duration of the transaction, concurrent
+    // callers serialize at the row, and each gets a unique, gap-free range.
+    // No SELECT FOR UPDATE / no explicit BEGIN needed; a single UPDATE statement
+    // is its own implicit transaction.
+    const reserved = await query<{ item_count: number }>(
+      `UPDATE datasets
+         SET item_count = item_count + $1, modified_at = NOW()
+       WHERE id = $2
+       RETURNING item_count`,
+      [items.length, ds.id]
+    );
+    const newCount = reserved.rows[0]?.item_count;
+    if (newCount === undefined) {
+      reply.status(404);
+      return { error: { type: 'record-not-found', message: 'Dataset not found' } };
     }
+    const startCount = newCount - items.length;
 
-    const currentCount = startCount + items.length;
-
-    // Update count
-    await query('UPDATE datasets SET item_count = $1, modified_at = NOW() WHERE id = $2', [
-      currentCount,
-      ds.id,
-    ]);
+    // Each pushData call writes 1..N batched S3 objects (one per BATCH_SIZE
+    // chunk), not one object per item. Cuts S3 PUT volume by 50–500x on DO
+    // Spaces (cost) and on hobby MinIO (IOPS / inode pressure). Reads are
+    // backwards-compatible: iterateDatasetItems dispatches by key shape,
+    // and existing per-item datasets continue to read correctly.
+    //
+    // Sequential rather than parallel: at 500 items/batch, a 1500-item push
+    // is 3 sequential PUTs, well within request-time budgets, and avoids
+    // the partial-write failure mode that Promise.all introduces (one PUT
+    // fails, the others still succeed and item_count drifts from S3 truth).
+    const batchSize = parseInt(process.env.DATASET_BATCH_SIZE ?? '', 10) || 500;
+    for (let i = 0; i < items.length; i += batchSize) {
+      const chunk = items.slice(i, i + batchSize);
+      await putDatasetBatch(ds.id, startCount + i, chunk);
+    }
 
     reply.status(201);
     return {};

@@ -68,7 +68,16 @@ CREATE TABLE IF NOT EXISTS requests (
 );
 
 -- Index for fast head queries (pending, not locked, ordered)
-CREATE INDEX IF NOT EXISTS idx_requests_pending ON requests (queue_id, order_no) 
+CREATE INDEX IF NOT EXISTS idx_requests_pending ON requests (queue_id, order_no)
+  WHERE handled_at IS NULL;
+
+-- Covers the two COUNT aggregates inside POST /head/lock that filter by
+-- (queue_id, locked_until). Without this, those scan the queue's slice of
+-- requests for every poll cycle — fine on day 1, painful as the table grows
+-- under sustained crawls. Partial on handled_at IS NULL because handled rows
+-- are never re-locked.
+CREATE INDEX IF NOT EXISTS idx_requests_locked
+  ON requests (queue_id, locked_until)
   WHERE handled_at IS NULL;
 
 -- Actors

@@ -12,9 +12,15 @@ export let pool: pg.Pool;
 export async function initDatabase(): Promise<void> {
   const useSSL = config.databaseUrl.includes('sslmode=') || config.nodeEnv === 'production';
 
+  // Pool ceiling. Default 8 fits DO Managed PG 1GB plan (22-conn ceiling) with
+  // headroom for migrations, runner pool, and admin sessions. Operators on
+  // larger plans set DB_POOL_MAX explicitly per the deployment recipe; if a
+  // PgBouncer/connection-pooler endpoint is in front of PG, set it high (50+)
+  // and let the pooler multiplex.
   pool = new Pool({
     connectionString: config.databaseUrl,
     ssl: useSSL ? { rejectUnauthorized: false } : undefined,
+    max: parseInt(process.env.DB_POOL_MAX ?? '', 10) || 8,
   });
 
   // Test connection
