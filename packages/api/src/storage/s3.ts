@@ -457,3 +457,7 @@ async function deleteByPrefix(prefix: string): Promise<void> {
 export async function deleteDatasetS3Prefix(datasetId: string): Promise<void> {
   await deleteByPrefix(`datasets/${datasetId}/`);
 }
+
+export async function deleteKVStoreS3Prefix(storeId: string): Promise<void> {
+  await deleteByPrefix(`key-value-stores/${storeId}/`);
+}

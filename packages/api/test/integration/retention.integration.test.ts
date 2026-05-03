@@ -275,4 +275,35 @@ describe('s3 prefix helpers', () => {
     // Should not throw.
     await deleteDatasetS3Prefix('non-existent-' + Math.random().toString(36).slice(2));
   });
+
+  it('deleteKVStoreS3Prefix removes every record under the KV store prefix', async () => {
+    const kvId = 'pref-test-kv-' + Math.random().toString(36).slice(2, 10);
+    for (const k of ['foo', 'bar', 'baz']) {
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: TEST_CONFIG.s3Bucket,
+          Key: `key-value-stores/${kvId}/${encodeURIComponent(k)}`,
+          Body: 'value',
+        })
+      );
+    }
+    const before = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: TEST_CONFIG.s3Bucket,
+        Prefix: `key-value-stores/${kvId}/`,
+      })
+    );
+    expect(before.Contents?.length ?? 0).toBe(3);
+
+    const { deleteKVStoreS3Prefix } = await import('../../src/storage/s3.js');
+    await deleteKVStoreS3Prefix(kvId);
+
+    const after = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: TEST_CONFIG.s3Bucket,
+        Prefix: `key-value-stores/${kvId}/`,
+      })
+    );
+    expect(after.Contents ?? []).toHaveLength(0);
+  });
 });
