@@ -4,6 +4,7 @@
  * SECURITY: In production, all sensitive values MUST be provided via environment variables.
  * Development defaults are only used when NODE_ENV !== 'production'.
  */
+import cron from 'node-cron';
 
 export interface Config {
   port: number;
@@ -37,6 +38,13 @@ export interface Config {
   // pressure during downloads is a concern; raise (1000–2000) on Spaces/AWS
   // to further reduce PUT cost.
   datasetBatchSize: number;
+
+  // Retention slice #3:
+  retentionEnabled: boolean;
+  retentionDays: number;
+  retentionTombstoneDays: number;
+  retentionBatchSize: number;
+  retentionCron: string;
 }
 
 const isDevelopment = process.env.NODE_ENV !== 'production';
@@ -88,6 +96,14 @@ function envBool(key: string, defaultValue: boolean): boolean {
   return value === 'true' || value === '1';
 }
 
+function envCron(key: string, defaultValue: string): string {
+  const v = process.env[key] ?? defaultValue;
+  if (!cron.validate(v)) {
+    throw new Error(`Invalid ${key}=${v} — must be a valid cron expression`);
+  }
+  return v;
+}
+
 export const config: Config = {
   port: envInt('PORT', 3000),
   logLevel: process.env.LOG_LEVEL ?? 'info',
@@ -124,4 +140,10 @@ export const config: Config = {
   // push loop step backward and never terminate.
   dbPoolMax: envIntPositive('DB_POOL_MAX', 8),
   datasetBatchSize: envIntPositive('DATASET_BATCH_SIZE', 500),
+
+  retentionEnabled: envBool('RETENTION_ENABLED', true),
+  retentionDays: envIntPositive('RETENTION_DAYS', 30),
+  retentionTombstoneDays: envIntPositive('RETENTION_TOMBSTONE_DAYS', 365),
+  retentionBatchSize: envIntPositive('RETENTION_BATCH_SIZE', 500),
+  retentionCron: envCron('RETENTION_CRON', '0 3 * * *'),
 };
