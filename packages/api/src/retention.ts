@@ -14,6 +14,7 @@ import cron from 'node-cron';
 import type pg from 'pg';
 import { pool } from './db/index.js';
 import { config } from './config.js';
+import { deleteDatasetS3Prefix } from './storage/s3.js';
 
 /**
  * Fixed 32-bit unsigned hex constant identifying the retention reaper's
@@ -67,6 +68,50 @@ export async function reapRuns(client: pg.PoolClient): Promise<number> {
 }
 
 /**
+ * Phase 2: reap unnamed datasets whose accessed_at is older than
+ * retentionDays. After the PG transaction commits, each reaped id's S3
+ * prefix is deleted best-effort; failures are logged but don't roll back
+ * the PG state.
+ */
+export async function reapDatasets(client: pg.PoolClient): Promise<number> {
+  const result = await client.query<{ resource_id: string }>(
+    `WITH deleted AS (
+       DELETE FROM datasets
+         WHERE id IN (
+           SELECT id FROM datasets
+             WHERE name IS NULL
+               AND accessed_at < NOW() - $1::int * INTERVAL '1 day'
+             ORDER BY accessed_at ASC
+             LIMIT $2
+             FOR UPDATE SKIP LOCKED
+         )
+         AND name IS NULL
+         AND accessed_at < NOW() - $1::int * INTERVAL '1 day'
+       RETURNING id, name, user_id, created_at
+     )
+     INSERT INTO retention_tombstones
+       (resource_kind, resource_id, resource_name, user_id, reason,
+        original_created_at)
+     SELECT 'dataset', id, name, user_id, 'expired-unnamed', created_at
+       FROM deleted
+     RETURNING resource_id`,
+    [config.retentionDays, config.retentionBatchSize]
+  );
+
+  // S3 cleanup happens after the transaction commits. Best-effort.
+  for (const row of result.rows) {
+    try {
+      await deleteDatasetS3Prefix(row.resource_id);
+    } catch (err) {
+      console.error(
+        `[retention] failed to delete S3 prefix datasets/${row.resource_id}/: ${(err as Error).message}`
+      );
+    }
+  }
+  return result.rowCount ?? 0;
+}
+
+/**
  * Run a single reaper tick. Pins one pool connection for the entire window,
  * acquires pg_try_advisory_lock, runs the 5 phases, releases the lock. On
  * unlock failure, destroys the connection so the lock can't leak back into
@@ -88,6 +133,7 @@ export async function runReaperTick(): Promise<void> {
       const stats = { runs: 0, datasets: 0, kvStores: 0, requestQueues: 0, tombstones: 0 };
       const tickStart = Date.now();
       stats.runs = await reapRuns(client);
+      stats.datasets = await reapDatasets(client);
       console.log(
         `[retention] tick complete elapsed=${Date.now() - tickStart}ms ` +
           `runs=${stats.runs} datasets=${stats.datasets} kv=${stats.kvStores} ` +

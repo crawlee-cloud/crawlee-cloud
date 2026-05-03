@@ -409,3 +409,94 @@ describe('reaper — reapRuns', () => {
     }
   });
 });
+
+describe('reaper — reapDatasets', () => {
+  let s3: S3Client;
+  beforeAll(async () => {
+    // Re-init S3 in case vi.resetModules() was called by a previous test
+    // (e.g. the RETENTION_BATCH_SIZE test), which would clear the module-level
+    // s3 client inside storage/s3.js and cause deleteDatasetS3Prefix to fail.
+    const { initS3 } = await import('../../src/storage/s3.js');
+    await initS3();
+    s3 = new S3Client({
+      endpoint: TEST_CONFIG.s3Endpoint,
+      region: TEST_CONFIG.s3Region,
+      credentials: {
+        accessKeyId: TEST_CONFIG.s3AccessKey,
+        secretAccessKey: TEST_CONFIG.s3SecretKey,
+      },
+      forcePathStyle: true,
+    });
+  });
+
+  beforeEach(async () => {
+    await pool.query(`DELETE FROM retention_tombstones WHERE resource_kind = 'dataset'`);
+    await pool.query(`DELETE FROM datasets WHERE id LIKE 'reap-ds-%'`);
+  });
+
+  it('reaps unnamed datasets older than retentionDays, with S3 cleanup, and skips named/recent ones', async () => {
+    // Old unnamed (eligible).
+    await pool.query(
+      `INSERT INTO datasets (id, name, user_id, accessed_at, created_at)
+       VALUES ('reap-ds-old',  NULL,    'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
+    );
+    // Old named (skipped — named is sacred).
+    await pool.query(
+      `INSERT INTO datasets (id, name, user_id, accessed_at, created_at)
+       VALUES ('reap-ds-named', 'my-ds', 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
+    );
+    // New unnamed (skipped — within TTL).
+    await pool.query(
+      `INSERT INTO datasets (id, name, user_id, accessed_at, created_at)
+       VALUES ('reap-ds-new',  NULL,    'u1', NOW() - INTERVAL '1 day',   NOW() - INTERVAL '2 days')`
+    );
+
+    // Seed an S3 object under the eligible dataset's prefix.
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: TEST_CONFIG.s3Bucket,
+        Key: `datasets/reap-ds-old/000000000.batch.json`,
+        Body: '[{"x":1}]',
+      })
+    );
+
+    const { reapDatasets } = await import('../../src/retention.js');
+    const client = await pool.connect();
+    try {
+      const reaped = await reapDatasets(client);
+      expect(reaped).toBe(1);
+    } finally {
+      client.release();
+    }
+
+    // Eligible row gone, others remain.
+    expect((await pool.query(`SELECT 1 FROM datasets WHERE id = 'reap-ds-old'`)).rows).toHaveLength(
+      0
+    );
+    expect(
+      (await pool.query(`SELECT 1 FROM datasets WHERE id = 'reap-ds-named'`)).rows
+    ).toHaveLength(1);
+    expect((await pool.query(`SELECT 1 FROM datasets WHERE id = 'reap-ds-new'`)).rows).toHaveLength(
+      1
+    );
+
+    // Tombstone written.
+    const tomb = await pool.query(
+      `SELECT reason FROM retention_tombstones
+        WHERE resource_kind = 'dataset' AND resource_id = 'reap-ds-old'`
+    );
+    expect(tomb.rows[0]?.reason).toBe('expired-unnamed');
+
+    // S3 prefix cleaned.
+    const after = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: TEST_CONFIG.s3Bucket,
+        Prefix: `datasets/reap-ds-old/`,
+      })
+    );
+    expect(after.Contents ?? []).toHaveLength(0);
+
+    // Cleanup the named row we left behind.
+    await pool.query(`DELETE FROM datasets WHERE id IN ('reap-ds-named', 'reap-ds-new')`);
+  });
+});
