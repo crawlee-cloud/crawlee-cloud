@@ -13,6 +13,16 @@ name: Publish CLI
 # `id-token: write` + `--provenance` is what npm verifies. If trusted
 # publishing isn't set up on the npm side, this job fails at the
 # publish step with a clear auth error.
+#
+# npm version: the publish step REQUIRES npm >= 11.5.1 because that's
+# when `npm publish` learned to exchange the GitHub OIDC token for an
+# npm publish credential (the actual TP auth handshake). Older npm
+# versions can sign provenance via OIDC just fine but then fall back to
+# .npmrc auth for the PUT — and with TP we have no token in .npmrc, so
+# the publish 404s with npm's intentionally-misleading "package not
+# found" response. Node 20 ships with npm 10.8.2, so we explicitly
+# upgrade. Once setup-node ships npm >= 11.5.1 by default, drop the
+# upgrade step.
 
 on:
   push:
@@ -45,6 +55,11 @@ jobs:
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
+
+      # See top-of-file note: setup-node ships npm 10.8.2 with Node 20,
+      # but Trusted Publishing's auth-token exchange needs >= 11.5.1.
+      - name: Upgrade npm to a Trusted-Publishing-capable version
+        run: npm install -g npm@latest
 
       # Install from the workspace root so the CLI gets its hoisted
       # devDeps (tsc, etc.). `npm ci` inside packages/cli/ skips the
