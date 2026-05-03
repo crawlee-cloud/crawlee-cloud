@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-05-03
+
+### Fixed
+
+- **CLI: `crawlee-cloud push` header now shows the registry-qualified image runners pull**, not the internal local Docker tag. Previously `--ghcr` and `CRAWLEE_CLOUD_REGISTRY_URL` flows printed `crawlee-cloud/actor-<name>:<tag>` (a Docker daemon-only tag never published anywhere) at the top of the push output, while the actual deploy target only appeared mid-stream in the push spinner. CI logs and PR screenshots showed two different images on the same screen with no indication which one the platform actually stores. The header now uses the same `runtimeImage` value that gets sent to the API as `actor.defaultRunOptions.image`.
+
+### Infrastructure
+
+- **`publish-cli.yml` workflow now upgrades npm to a Trusted-Publishing-capable version (>=11.5.1) before publishing.** v0.8.5's first publish attempt 404'd from npm despite a valid OIDC token because Node 20's bundled npm 10.8.2 supports the OIDC handshake for sigstore provenance signing but not for the publish-credential exchange itself, which landed in npm 11.5.1. v0.8.5 was eventually published via a one-time `workflow_dispatch` from a debug branch with the upgrade applied; v0.8.6 will be the first release to take the clean tag-driven publish path end-to-end and confirm the fix.
+
 ## [0.8.5] - 2026-05-02
 
 ### Fixed
