@@ -543,3 +543,53 @@ describe('reaper — reapKVStores', () => {
     await pool.query(`DELETE FROM key_value_stores WHERE id = 'reap-kv-named'`);
   });
 });
+
+describe('reaper — reapRequestQueues', () => {
+  beforeEach(async () => {
+    await pool.query(`DELETE FROM retention_tombstones WHERE resource_kind = 'request_queue'`);
+    await pool.query(`DELETE FROM request_queues WHERE id LIKE 'reap-rq-%'`);
+  });
+
+  it('reaps unnamed queues older than retentionDays and CASCADE-deletes their requests', async () => {
+    await pool.query(
+      `INSERT INTO request_queues (id, name, user_id, accessed_at, created_at)
+       VALUES ('reap-rq-old',   NULL,    'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days'),
+              ('reap-rq-named', 'my-rq', 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
+    );
+    // Seed 5 requests under the eligible queue. CASCADE should clean them.
+    for (let i = 0; i < 5; i++) {
+      await pool.query(
+        `INSERT INTO requests (id, queue_id, unique_key, url) VALUES ($1, 'reap-rq-old', $2, $3)`,
+        [`reap-rq-old-req-${i}`, `key-${i}`, `https://example.com/${i}`]
+      );
+    }
+
+    const { reapRequestQueues } = await import('../../src/retention.js');
+    const client = await pool.connect();
+    try {
+      const reaped = await reapRequestQueues(client);
+      expect(reaped).toBe(1);
+    } finally {
+      client.release();
+    }
+
+    // Queue gone.
+    expect(
+      (await pool.query(`SELECT 1 FROM request_queues WHERE id = 'reap-rq-old'`)).rows
+    ).toHaveLength(0);
+    // CASCADE-deleted requests gone.
+    expect(
+      (
+        await pool.query<{ n: number }>(
+          `SELECT COUNT(*)::int AS n FROM requests WHERE queue_id = 'reap-rq-old'`
+        )
+      ).rows[0]?.n
+    ).toBe(0);
+    // Named queue still there.
+    expect(
+      (await pool.query(`SELECT 1 FROM request_queues WHERE id = 'reap-rq-named'`)).rows
+    ).toHaveLength(1);
+
+    await pool.query(`DELETE FROM request_queues WHERE id = 'reap-rq-named'`);
+  });
+});

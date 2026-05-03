@@ -153,6 +153,42 @@ export async function reapKVStores(client: pg.PoolClient): Promise<number> {
 }
 
 /**
+ * Phase 4: reap unnamed request_queues whose accessed_at is older than
+ * retentionDays. No S3 cleanup — request data lives in the requests table,
+ * and ON DELETE CASCADE on requests.queue_id handles per-row cleanup
+ * automatically.
+ *
+ * Caveat: a queue with very many requests (≥100K) generates a large CASCADE
+ * inside one PG statement. See the spec's "Phase 4 long CASCADE" note.
+ */
+export async function reapRequestQueues(client: pg.PoolClient): Promise<number> {
+  const result = await client.query(
+    `WITH deleted AS (
+       DELETE FROM request_queues
+         WHERE id IN (
+           SELECT id FROM request_queues
+             WHERE name IS NULL
+               AND accessed_at < NOW() - $1::int * INTERVAL '1 day'
+             ORDER BY accessed_at ASC
+             LIMIT $2
+             FOR UPDATE SKIP LOCKED
+         )
+         AND name IS NULL
+         AND accessed_at < NOW() - $1::int * INTERVAL '1 day'
+       RETURNING id, name, user_id, created_at
+     )
+     INSERT INTO retention_tombstones
+       (resource_kind, resource_id, resource_name, user_id, reason,
+        original_created_at)
+     SELECT 'request_queue', id, name, user_id, 'expired-unnamed', created_at
+       FROM deleted
+     RETURNING resource_id`,
+    [config.retentionDays, config.retentionBatchSize]
+  );
+  return result.rowCount ?? 0;
+}
+
+/**
  * Run a single reaper tick. Pins one pool connection for the entire window,
  * acquires pg_try_advisory_lock, runs the 5 phases, releases the lock. On
  * unlock failure, destroys the connection so the lock can't leak back into
@@ -176,6 +212,7 @@ export async function runReaperTick(): Promise<void> {
       stats.runs = await reapRuns(client);
       stats.datasets = await reapDatasets(client);
       stats.kvStores = await reapKVStores(client);
+      stats.requestQueues = await reapRequestQueues(client);
       console.log(
         `[retention] tick complete elapsed=${Date.now() - tickStart}ms ` +
           `runs=${stats.runs} datasets=${stats.datasets} kv=${stats.kvStores} ` +
