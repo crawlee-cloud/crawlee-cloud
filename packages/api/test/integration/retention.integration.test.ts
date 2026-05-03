@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type pg from 'pg';
-import { TEST_CONFIG, ensureS3Bucket } from './setup.js';
+import { TEST_CONFIG, ensureS3Bucket, runMigrations } from './setup.js';
 
 // Bound in beforeAll to the API's module-level pool — see comment above.
 let pool: pg.Pool;
@@ -35,6 +35,7 @@ beforeAll(async () => {
   await initDatabase();
   await initS3();
   await initRedis();
+  await runMigrations();
   // Re-import after init so the bound `pool` symbol is the populated one.
   pool = (await import('../../src/db/index.js')).pool;
 
