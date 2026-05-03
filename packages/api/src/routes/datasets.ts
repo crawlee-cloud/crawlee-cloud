@@ -9,6 +9,7 @@ import { nanoid } from 'nanoid';
 import { query } from '../db/index.js';
 import { putDatasetBatch, listDatasetItems, iterateDatasetItems } from '../storage/s3.js';
 import { authenticate } from '../auth/middleware.js';
+import { config } from '../config.js';
 import { CreateDatasetSchema } from '../schemas/datasets.js';
 
 interface DatasetRow {
@@ -283,7 +284,7 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
     // is 3 sequential PUTs, well within request-time budgets, and avoids
     // the partial-write failure mode that Promise.all introduces (one PUT
     // fails, the others still succeed and item_count drifts from S3 truth).
-    const batchSize = parseInt(process.env.DATASET_BATCH_SIZE ?? '', 10) || 500;
+    const batchSize = config.datasetBatchSize;
     for (let i = 0; i < items.length; i += batchSize) {
       const chunk = items.slice(i, i + batchSize);
       await putDatasetBatch(ds.id, startCount + i, chunk);

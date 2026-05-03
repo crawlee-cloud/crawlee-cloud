@@ -82,40 +82,99 @@ export async function putDatasetBatch(
 }
 
 /**
- * Get dataset items with pagination.
+ * Get dataset items with pagination — skips whole batch objects by
+ * filename without fetching their bodies.
  *
- * Paginates at the *item* level, not the S3 key level — required so that
- * mixed legacy/batched datasets paginate correctly (one batch key may
- * contain hundreds of items). Total is supplied by the caller from
- * datasets.item_count, which is the authoritative count; the previous
- * implementation derived total from S3 listing and silently capped at
- * ~1000 (no pagination loop), so callers should pass total explicitly.
+ * Strategy: list every key once (paginated ListObjectsV2 walk; cheap),
+ * derive each key's [start, length) range from the filename, filter to
+ * ranges overlapping the requested [offset, offset + limit) window,
+ * then GET only those keys in parallel.
  *
- * Compatibility: if total is omitted, falls back to counting yielded items
- * up to offset+limit and returning that as a lower-bound. Existing callers
- * that don't pass total see a non-regressive behavior change (pagination
- * is now correct on batched data; total may under-report on huge datasets
- * relative to true item_count).
+ * For batched keys (`{startIdx-9d}.batch.json`), length is inferred as
+ * the next key's startIdx minus this one's. For the last key, length
+ * comes from caller-supplied `total` (datasets.item_count) or defaults
+ * to 1. For legacy single-item keys (`{idx-9d}.json`), length is 1.
+ *
+ * Cost: O(total / 1000) LIST + O(ceil(limit / batch_size) + 1) GET.
+ * The previous read-from-zero implementation was O(offset / batch_size)
+ * GETs at deep offsets — this one is bounded by `limit` regardless of
+ * how deep the offset goes.
+ *
+ * `total`: caller should pass `datasets.item_count` (authoritative).
+ * When omitted, falls back to the last key's inferred range.
  */
 export async function listDatasetItems(
   datasetId: string,
   options: { offset?: number; limit?: number; total?: number } = {}
 ): Promise<{ items: unknown[]; total: number }> {
-  const { offset = 0, limit = 100 } = options;
+  const { offset = 0, limit = 100, total: totalHint } = options;
+  const wantStart = offset;
+  const wantEnd = offset + limit;
 
-  const items: unknown[] = [];
-  let seen = 0;
-  for await (const item of iterateDatasetItems(datasetId)) {
-    if (seen >= offset && items.length < limit) {
-      items.push(item);
+  // Phase 1: collect keys + their inferred ranges. No body fetches.
+  const keys: string[] = [];
+  for await (const key of iterateDatasetKeys(datasetId)) {
+    keys.push(key);
+  }
+  if (keys.length === 0) return { items: [], total: totalHint ?? 0 };
+
+  const startOf = (key: string): number => {
+    const m = /(\d{9})/.exec(key);
+    return m ? parseInt(m[1]!, 10) : 0;
+  };
+
+  type Range = { key: string; start: number; length: number; isBatch: boolean };
+  const ranges: Range[] = [];
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i]!;
+    const start = startOf(key);
+    const isBatch = key.endsWith('.batch.json');
+    let length: number;
+    if (!isBatch) {
+      length = 1;
+    } else if (i + 1 < keys.length) {
+      length = startOf(keys[i + 1]!) - start;
+    } else {
+      // Last batch — derive length from caller-supplied total when known,
+      // otherwise default to 1 (under-counts the tail; callers that need
+      // exact pagination across the last batch should pass `total`).
+      length = totalHint !== undefined ? Math.max(1, totalHint - start) : 1;
     }
-    seen++;
-    if (items.length >= limit && options.total !== undefined) {
-      // Caller supplied total — no need to keep iterating to derive one.
-      return { items, total: options.total };
+    if (length > 0) ranges.push({ key, start, length, isBatch });
+  }
+
+  // Phase 2: filter to ranges overlapping [wantStart, wantEnd).
+  const overlapping = ranges.filter((r) => r.start < wantEnd && r.start + r.length > wantStart);
+
+  // Phase 3: parallel-fetch only the overlapping keys.
+  const fetched = await Promise.all(
+    overlapping.map(async (r) => {
+      const body = await getDatasetItemByKey(r.key);
+      const arr = r.isBatch ? (Array.isArray(body) ? body : []) : [body];
+      return { range: r, items: arr };
+    })
+  );
+
+  // Phase 4: place items at their absolute positions, then slice. Using a
+  // Map keeps the result dense even if a batch turns out shorter than its
+  // inferred length (e.g. an unfinished tail).
+  const placed = new Map<number, unknown>();
+  for (const { range, items: chunkItems } of fetched) {
+    for (let i = 0; i < chunkItems.length; i++) {
+      const absIdx = range.start + i;
+      if (absIdx >= wantStart && absIdx < wantEnd) {
+        placed.set(absIdx, chunkItems[i]);
+      }
     }
   }
-  return { items, total: options.total ?? seen };
+  const items: unknown[] = [];
+  for (let i = wantStart; i < wantEnd; i++) {
+    if (placed.has(i)) items.push(placed.get(i));
+  }
+
+  const lastRange = ranges[ranges.length - 1];
+  const derivedTotal = lastRange ? lastRange.start + lastRange.length : 0;
+  return { items, total: totalHint ?? derivedTotal };
 }
 
 /**
@@ -227,10 +286,16 @@ export async function* iterateDatasetItems(datasetId: string): AsyncGenerator<un
     if (key.endsWith('.batch.json')) {
       if (Array.isArray(body)) {
         for (const item of body) yield item;
+      } else {
+        // Malformed batch object: skip rather than crash a download
+        // mid-stream, but emit a server log so operators see the
+        // integrity issue instead of inheriting a silent gap. A
+        // non-array body in a .batch.json key indicates a writer that
+        // bypassed putDatasetBatch — worth investigating.
+        console.error(
+          `[dataset] malformed batch object at ${key} (body is ${typeof body}, not Array); skipped`
+        );
       }
-      // Non-array body in a .batch.json key is a malformed write — skip
-      // rather than crash a download mid-stream. Operator-visible via API
-      // logs; not silently swallowed in the iterator's contract.
     } else {
       yield body;
     }

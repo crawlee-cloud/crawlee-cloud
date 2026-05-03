@@ -27,6 +27,16 @@ export interface Config {
   // unauthenticated — only safe behind a private network / VPN. There is
   // intentionally no equivalent flag for /v2/scaler/status (runner IPs).
   metricsPublic: boolean;
+
+  // PG pool ceiling. Default 8 fits DO Managed PG 1GB plan (22-conn ceiling)
+  // with headroom for migrations and admin sessions. Bump on larger plans;
+  // set high (50+) if a PgBouncer/pooler endpoint is in front of PG.
+  dbPoolMax: number;
+
+  // Items per S3 object on dataset push. Default 500. Lower if memory
+  // pressure during downloads is a concern; raise (1000–2000) on Spaces/AWS
+  // to further reduce PUT cost.
+  datasetBatchSize: number;
 }
 
 const isDevelopment = process.env.NODE_ENV !== 'production';
@@ -90,4 +100,7 @@ export const config: Config = {
   adminPassword: envOptional('ADMIN_PASSWORD'),
 
   metricsPublic: envBool('METRICS_PUBLIC', false),
+
+  dbPoolMax: envInt('DB_POOL_MAX', 8),
+  datasetBatchSize: envInt('DATASET_BATCH_SIZE', 500),
 };
