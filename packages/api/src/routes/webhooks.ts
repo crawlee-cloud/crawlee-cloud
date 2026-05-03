@@ -7,6 +7,7 @@ import { nanoid } from 'nanoid';
 import { CreateWebhookSchema, UpdateWebhookSchema } from '../schemas/webhooks.js';
 import { query } from '../db/index.js';
 import { authenticate } from '../auth/middleware.js';
+import { applyWebhookTemplate } from '../webhooks/apply-template.js';
 
 interface WebhookRow {
   id: string;
@@ -522,7 +523,15 @@ async function deliverTestWebhook(
       computeUnits: 0,
     },
   };
-  const payload = buildWebhookPayload(eventType, syntheticRun, { test: true });
+  // Apply the user's payload_template if set, so test webhooks exercise
+  // the same engine production deliveries do. Without this, an operator
+  // could test a webhook successfully and find their custom template
+  // mangling production payloads.
+  const defaultPayload = buildWebhookPayload(eventType, syntheticRun, { test: true });
+  const payload = applyWebhookTemplate(
+    webhook.payload_template,
+    defaultPayload as unknown as Record<string, unknown>
+  );
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(webhook.headers ?? {}),
