@@ -28,19 +28,19 @@ import {
   type Webhook,
   type WebhookDelivery,
 } from '@/lib/api';
+import { FETCH_ALL_LIMIT, PAGE_SIZE } from '@/lib/constants';
+import { usePageParam } from '@/lib/use-page-param';
 import { WEBHOOK_EVENTS } from '@/lib/webhooks';
 import { cn } from '@/lib/utils';
 import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
 
-const LIMIT = 50;
-
 export default function WebhooksPage() {
   const confirm = useConfirm();
   const toast = useToast();
+  const { offset, setOffset } = usePageParam();
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
   const [total, setTotal] = useState(0);
-  const [offset, setOffset] = useState(0);
   const [actors, setActors] = useState<Actor[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -60,8 +60,8 @@ export default function WebhooksPage() {
   useEffect(() => {
     let alive = true;
     void Promise.all([
-      getWebhooks({ offset, limit: LIMIT }).catch(() => null),
-      getActors({ limit: 1000 }).catch(() => null),
+      getWebhooks({ offset, limit: PAGE_SIZE }).catch(() => null),
+      getActors({ limit: FETCH_ALL_LIMIT }).catch(() => null),
     ]).then(([w, a]) => {
       if (!alive) return;
       if (w) {
@@ -382,7 +382,7 @@ export default function WebhooksPage() {
         </ul>
       )}
 
-      <Pagination total={total} offset={offset} limit={LIMIT} onChange={setOffset} />
+      <Pagination total={total} offset={offset} limit={PAGE_SIZE} onChange={setOffset} />
     </div>
   );
 }

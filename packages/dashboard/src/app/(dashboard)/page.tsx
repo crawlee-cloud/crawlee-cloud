@@ -6,6 +6,7 @@ import { AppLink } from '@/components/app-link';
 import { StatusChip } from '@/components/ui/badge';
 import type { Actor, Run } from '@/lib/api';
 import { getActors, getDashboardStats, getRuns } from '@/lib/api';
+import { FETCH_ALL_LIMIT } from '@/lib/constants';
 import { cn } from '@/lib/utils';
 
 type Stats = Awaited<ReturnType<typeof getDashboardStats>>;
@@ -31,7 +32,7 @@ export default function ConsolePage() {
         const [s, r, a] = await Promise.all([
           getDashboardStats(),
           getRuns(),
-          getActors({ limit: 1000 }).catch(() => null),
+          getActors({ limit: FETCH_ALL_LIMIT }).catch(() => null),
         ]);
         if (!alive) return;
         setStats(s);

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { ArrowLeft, Check, Copy, Folder, Package, Sparkles, Terminal } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
 import { useToast } from '@/components/ui/toast';
+import { COPY_FEEDBACK_MS } from '@/lib/constants';
 import { cn } from '@/lib/utils';
 
 /*
@@ -23,7 +24,7 @@ function CopyButton({ text }: { text: string }) {
             await navigator.clipboard.writeText(text);
             setCopied(true);
             toast.success('Copied to clipboard');
-            setTimeout(() => setCopied(false), 2000);
+            setTimeout(() => setCopied(false), COPY_FEEDBACK_MS);
           } catch {
             toast.error('Copy failed');
           }

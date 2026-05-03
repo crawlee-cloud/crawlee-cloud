@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Cpu, RotateCw, ShieldAlert } from 'lucide-react';
 import { getScalerStatus, type RunnerInfo, type ScalerStatus } from '@/lib/api';
+import { POLL_RUNNERS_MS } from '@/lib/constants';
 import { cn } from '@/lib/utils';
 
 const STATUS_TONE: Record<RunnerInfo['status'], 'signal' | 'info' | 'warn' | 'fail' | 'muted'> = {
@@ -36,8 +37,8 @@ export default function RunnersPage() {
 
   useEffect(() => {
     void load();
-    // Auto-refresh every 5s while open — runner state changes fast.
-    const id = setInterval(() => void load(), 5000);
+    // Auto-refresh while open — runner state changes fast.
+    const id = setInterval(() => void load(), POLL_RUNNERS_MS);
     return () => clearInterval(id);
   }, []);
 

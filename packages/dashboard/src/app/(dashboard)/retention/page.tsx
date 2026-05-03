@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Trash2, RotateCw, ShieldAlert } from 'lucide-react';
 import { getRetentionStatus, type RetentionStatus } from '@/lib/api';
+import { POLL_RETENTION_MS } from '@/lib/constants';
 import { cn } from '@/lib/utils';
 
 export default function RetentionPage() {
@@ -28,9 +29,8 @@ export default function RetentionPage() {
   useEffect(() => {
     void load();
     // Reaper ticks daily by default — no need to auto-refresh aggressively.
-    // 30s gives operators a snappy refresh while watching a tick land,
-    // without hammering the endpoint when nothing's happening.
-    const id = setInterval(() => void load(), 30000);
+    // The constant lets ops bump cadence without code-archeology.
+    const id = setInterval(() => void load(), POLL_RETENTION_MS);
     return () => clearInterval(id);
   }, []);
 

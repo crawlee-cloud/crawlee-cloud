@@ -39,6 +39,7 @@ import {
   type Run,
   type Webhook,
 } from '@/lib/api';
+import { FETCH_ALL_LIMIT } from '@/lib/constants';
 import { WEBHOOK_EVENTS } from '@/lib/webhooks';
 import { cn } from '@/lib/utils';
 import { useConfirm } from '@/components/ui/confirm';
@@ -79,7 +80,7 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
         const [r, b, w] = await Promise.all([
           getActorRuns(a.id).catch(() => []),
           getBuilds(a.id).catch(() => []),
-          getWebhooks({ limit: 1000 })
+          getWebhooks({ limit: FETCH_ALL_LIMIT })
             .then((p) => p.items)
             .catch(() => [] as Webhook[]),
         ]);

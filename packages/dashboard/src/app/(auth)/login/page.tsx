@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Image from 'next/image';
 import { Loader2, LogIn, ShieldAlert } from 'lucide-react';
+import { APP_VERSION } from '@/lib/constants';
 import { prefixPath } from '@/lib/path-prefix';
 
 export default function LoginPage() {
@@ -56,7 +57,7 @@ export default function LoginPage() {
           <div className="flex flex-col leading-none">
             <span className="font-mono text-[12px] tracking-widest text-foreground">CRAWLEE</span>
             <span className="font-mono text-[10px] tracking-[0.22em] text-muted-foreground">
-              OPERATOR · v0.1
+              OPERATOR · v{APP_VERSION}
             </span>
           </div>
         </header>

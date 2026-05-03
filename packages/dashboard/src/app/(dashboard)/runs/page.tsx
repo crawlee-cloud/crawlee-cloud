@@ -14,6 +14,7 @@ import { AppLink } from '@/components/app-link';
 import { StatusChip } from '@/components/ui/badge';
 import type { Actor, Run } from '@/lib/api';
 import { getActors, listRuns } from '@/lib/api';
+import { FETCH_ALL_LIMIT, PAGE_SIZE } from '@/lib/constants';
 import { cn } from '@/lib/utils';
 
 /*
@@ -42,8 +43,6 @@ const STATUS_GROUPS: Record<Exclude<StatusGroup, 'all'>, Run['status'][]> = {
   failed: ['FAILED', 'TIMED-OUT'],
   aborted: ['ABORTING', 'ABORTED'],
 };
-
-const PAGE_SIZE = 50;
 
 export default function RunsPage() {
   const [items, setItems] = useState<Run[]>([]);
@@ -117,7 +116,7 @@ export default function RunsPage() {
   }
 
   async function loadActors() {
-    const a = await getActors({ limit: 1000 });
+    const a = await getActors({ limit: FETCH_ALL_LIMIT });
     const map: Record<string, Actor> = {};
     a.items.forEach((x) => (map[x.id] = x));
     setActors(map);

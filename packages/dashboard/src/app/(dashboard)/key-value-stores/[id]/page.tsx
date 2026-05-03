@@ -29,6 +29,7 @@ import {
   type KVKey,
   type Run,
 } from '@/lib/api';
+import { KV_KEYS_PREVIEW_LIMIT } from '@/lib/constants';
 
 export default function KVStoreDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -87,7 +88,7 @@ export default function KVStoreDetail({ params }: { params: Promise<{ id: string
     let alive = true;
     void Promise.all([
       getKeyValueStore(id).catch(() => null),
-      getKVKeys(id, { limit: 100 }).catch(() => ({
+      getKVKeys(id, { limit: KV_KEYS_PREVIEW_LIMIT }).catch(() => ({
         items: [],
         isTruncated: false,
         nextExclusiveStartKey: null,

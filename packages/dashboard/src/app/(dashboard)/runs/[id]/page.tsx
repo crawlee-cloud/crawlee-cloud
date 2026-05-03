@@ -28,6 +28,7 @@ import {
   type Actor,
   type Run,
 } from '@/lib/api';
+import { DATASET_PREVIEW_LIMIT, LOG_TAIL_LIMIT } from '@/lib/constants';
 import { cn } from '@/lib/utils';
 import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
@@ -76,7 +77,10 @@ function RunDetail() {
         // a failed run need. The API exposes total separately so we can
         // surface "showing 500 of 23,481" honestly. For the full log,
         // operators click "View raw" → streaming download endpoint.
-        const [r, l] = await Promise.all([getRun(id), getRunLogs(id, { limit: 500, tail: true })]);
+        const [r, l] = await Promise.all([
+          getRun(id),
+          getRunLogs(id, { limit: LOG_TAIL_LIMIT, tail: true }),
+        ]);
         if (!alive) return;
         setRun(r);
         setLogs(l.items || []);
@@ -125,7 +129,7 @@ function RunDetail() {
     }
     if (tab === 'output' && dataset === null && !datasetLoading) {
       setDatasetLoading(true);
-      getRunDatasetItems(id, { limit: 200 })
+      getRunDatasetItems(id, { limit: DATASET_PREVIEW_LIMIT })
         .then((d) => setDataset(d || []))
         .catch(() => setDataset([]))
         .finally(() => setDatasetLoading(false));

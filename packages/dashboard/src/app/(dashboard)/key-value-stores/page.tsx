@@ -7,21 +7,21 @@ import { Pagination } from '@/components/pagination';
 import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
 import { deleteKeyValueStore, getKeyValueStores, type KeyValueStore } from '@/lib/api';
-
-const LIMIT = 50;
+import { PAGE_SIZE } from '@/lib/constants';
+import { usePageParam } from '@/lib/use-page-param';
 
 export default function KeyValueStoresPage() {
   const confirm = useConfirm();
   const toast = useToast();
+  const { offset, setOffset } = usePageParam();
   const [stores, setStores] = useState<KeyValueStore[]>([]);
   const [total, setTotal] = useState(0);
-  const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
 
   useEffect(() => {
     let alive = true;
-    getKeyValueStores({ offset, limit: LIMIT })
+    getKeyValueStores({ offset, limit: PAGE_SIZE })
       .then((p) => {
         if (!alive) return;
         setStores(p.items);
@@ -151,7 +151,7 @@ export default function KeyValueStoresPage() {
         )}
       </section>
 
-      <Pagination total={total} offset={offset} limit={LIMIT} onChange={setOffset} />
+      <Pagination total={total} offset={offset} limit={PAGE_SIZE} onChange={setOffset} />
     </div>
   );
 }

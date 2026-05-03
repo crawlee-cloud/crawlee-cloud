@@ -8,21 +8,21 @@ import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
 import type { Dataset } from '@/lib/api';
 import { deleteDataset, getDatasetItems, getDatasets } from '@/lib/api';
-
-const LIMIT = 50;
+import { PAGE_SIZE } from '@/lib/constants';
+import { usePageParam } from '@/lib/use-page-param';
 
 function DatasetsContent() {
   const confirm = useConfirm();
   const toast = useToast();
+  const { offset, setOffset } = usePageParam();
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [total, setTotal] = useState(0);
-  const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
 
   useEffect(() => {
     let alive = true;
-    getDatasets({ offset, limit: LIMIT })
+    getDatasets({ offset, limit: PAGE_SIZE })
       .then((p) => {
         if (!alive) return;
         setDatasets(p.items);
@@ -183,7 +183,7 @@ function DatasetsContent() {
         )}
       </section>
 
-      <Pagination total={total} offset={offset} limit={LIMIT} onChange={setOffset} />
+      <Pagination total={total} offset={offset} limit={PAGE_SIZE} onChange={setOffset} />
     </div>
   );
 }

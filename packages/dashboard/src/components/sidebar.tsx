@@ -20,6 +20,7 @@ import {
   Cpu,
   Trash2,
 } from 'lucide-react';
+import { APP_VERSION } from '@/lib/constants';
 import { cn } from '@/lib/utils';
 import type { LucideIcon } from 'lucide-react';
 
@@ -107,7 +108,7 @@ export function BrandStrip() {
           CRAWLEE CLOUD
         </span>
         <span className="font-mono text-[9px] tracking-[0.22em] text-muted-foreground">
-          OPERATOR · v0.1
+          OPERATOR · v{APP_VERSION}
         </span>
       </div>
     </div>

@@ -4,6 +4,8 @@
  * Handles authenticated requests to the backend API.
  */
 
+import { FETCH_ALL_LIMIT } from '@/lib/constants';
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 /**
@@ -739,8 +741,8 @@ export async function getDashboardStats(): Promise<{
     const emptyPage = <T>(): Page<T> => ({ items: [], total: 0, count: 0, offset: 0, limit: 0 });
     const [runs, actors, datasets] = await Promise.all([
       getRuns().catch(() => [] as Run[]),
-      getActors({ limit: 1000 }).catch(() => emptyPage<Actor>()),
-      getDatasets({ limit: 1000 }).catch(() => emptyPage<Dataset>()),
+      getActors({ limit: FETCH_ALL_LIMIT }).catch(() => emptyPage<Actor>()),
+      getDatasets({ limit: FETCH_ALL_LIMIT }).catch(() => emptyPage<Dataset>()),
     ]);
 
     const succeeded = runs.filter((r) => r.status === 'SUCCEEDED').length;

@@ -15,9 +15,9 @@ import {
   type Actor,
   type Schedule,
 } from '@/lib/api';
+import { FETCH_ALL_LIMIT, PAGE_SIZE } from '@/lib/constants';
+import { usePageParam } from '@/lib/use-page-param';
 import { cn } from '@/lib/utils';
-
-const LIMIT = 50;
 
 const COMMON_CRONS: { label: string; value: string; hint: string }[] = [
   { label: 'Every hour', value: '0 * * * *', hint: 'top of every hour' },
@@ -31,9 +31,9 @@ const COMMON_CRONS: { label: string; value: string; hint: string }[] = [
 export default function SchedulesPage() {
   const confirm = useConfirm();
   const toast = useToast();
+  const { offset, setOffset } = usePageParam();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [total, setTotal] = useState(0);
-  const [offset, setOffset] = useState(0);
   const [actors, setActors] = useState<Actor[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -41,8 +41,8 @@ export default function SchedulesPage() {
   useEffect(() => {
     let alive = true;
     void Promise.all([
-      getSchedules({ offset, limit: LIMIT }).catch(() => null),
-      getActors({ limit: 1000 }).catch(() => null),
+      getSchedules({ offset, limit: PAGE_SIZE }).catch(() => null),
+      getActors({ limit: FETCH_ALL_LIMIT }).catch(() => null),
     ]).then(([s, a]) => {
       if (!alive) return;
       if (s) {
@@ -209,7 +209,7 @@ export default function SchedulesPage() {
         </ul>
       )}
 
-      <Pagination total={total} offset={offset} limit={LIMIT} onChange={setOffset} />
+      <Pagination total={total} offset={offset} limit={PAGE_SIZE} onChange={setOffset} />
     </div>
   );
 }
