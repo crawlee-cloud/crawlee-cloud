@@ -189,6 +189,26 @@ export async function reapRequestQueues(client: pg.PoolClient): Promise<number> 
 }
 
 /**
+ * Phase 5: prune tombstones older than retentionTombstoneDays. Bounded by
+ * RETENTION_BATCH_SIZE — at production scale tombstones can grow to
+ * millions; pruning all-at-once would lock the table.
+ */
+export async function pruneTombstones(client: pg.PoolClient): Promise<number> {
+  const result = await client.query(
+    `DELETE FROM retention_tombstones
+       WHERE id IN (
+         SELECT id FROM retention_tombstones
+           WHERE deleted_at < NOW() - $1::int * INTERVAL '1 day'
+           ORDER BY deleted_at ASC
+           LIMIT $2
+       )
+     RETURNING id`,
+    [config.retentionTombstoneDays, config.retentionBatchSize]
+  );
+  return result.rowCount ?? 0;
+}
+
+/**
  * Run a single reaper tick. Pins one pool connection for the entire window,
  * acquires pg_try_advisory_lock, runs the 5 phases, releases the lock. On
  * unlock failure, destroys the connection so the lock can't leak back into
@@ -213,6 +233,7 @@ export async function runReaperTick(): Promise<void> {
       stats.datasets = await reapDatasets(client);
       stats.kvStores = await reapKVStores(client);
       stats.requestQueues = await reapRequestQueues(client);
+      stats.tombstones = await pruneTombstones(client);
       console.log(
         `[retention] tick complete elapsed=${Date.now() - tickStart}ms ` +
           `runs=${stats.runs} datasets=${stats.datasets} kv=${stats.kvStores} ` +

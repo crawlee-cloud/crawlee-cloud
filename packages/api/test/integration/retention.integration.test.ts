@@ -593,3 +593,36 @@ describe('reaper — reapRequestQueues', () => {
     await pool.query(`DELETE FROM request_queues WHERE id = 'reap-rq-named'`);
   });
 });
+
+describe('reaper — pruneTombstones', () => {
+  beforeEach(async () => {
+    await pool.query(`DELETE FROM retention_tombstones WHERE resource_id LIKE 'prune-%'`);
+  });
+
+  it('deletes tombstones older than retentionTombstoneDays', async () => {
+    await pool.query(
+      `INSERT INTO retention_tombstones (resource_kind, resource_id, reason, deleted_at)
+       VALUES
+         ('dataset', 'prune-old', 'expired-unnamed', NOW() - INTERVAL '400 days'),
+         ('dataset', 'prune-new', 'expired-unnamed', NOW() - INTERVAL '30 days')`
+    );
+
+    const { pruneTombstones } = await import('../../src/retention.js');
+    const client = await pool.connect();
+    try {
+      const pruned = await pruneTombstones(client);
+      expect(pruned).toBe(1);
+    } finally {
+      client.release();
+    }
+
+    expect(
+      (await pool.query(`SELECT 1 FROM retention_tombstones WHERE resource_id = 'prune-old'`)).rows
+    ).toHaveLength(0);
+    expect(
+      (await pool.query(`SELECT 1 FROM retention_tombstones WHERE resource_id = 'prune-new'`)).rows
+    ).toHaveLength(1);
+
+    await pool.query(`DELETE FROM retention_tombstones WHERE resource_id = 'prune-new'`);
+  });
+});
