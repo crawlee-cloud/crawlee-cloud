@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-05-03
+
+### Added
+
+- **Apify-compatible webhook payload templating engine.** Custom `payload_template` strings now support both forms Apify documents — `"{{eventData}}"` (quoted, the entire string-cell is the variable) and `{{eventData}}` (unquoted, sits as a JSON value) — plus mid-string interpolation (`"text {{userId}} more"`) and dot-notation lookup (`{{eventData.actorRunId}}`, `{{resource.stats.runTimeSecs}}`). Substitution is now against the camelCase Apify-shape payload, not the raw snake_case run row, so templates copied from Apify's docs work unchanged. Implementation: a small character-walker tracks JSON-string state, replaces each `{{...}}` with a sentinel (bare inside strings, JSON-encoded in value position), then JSON.parses and walks the tree to substitute typed values. Engine duplicated in `packages/api/src/webhooks/apply-template.ts` and `packages/runner/src/webhook-template.ts` with `KEEP IN SYNC` headers + 16 + 10 mirrored unit tests; consolidation into a shared workspace lands in v1.0.
+- **Test webhook now applies the user's template.** `POST /v2/webhooks/:id/test` previously sent the default Apify-shape payload regardless of the user's `payload_template`. Operators could pass the test webhook and discover production was mangling the template only later. The test endpoint now runs the same engine production deliveries do, so dashboard "test webhook" exercises identical bytes to receivers.
+- **Server-side substring search** via `?q=<text>` on `/v2/{acts,datasets,key-value-stores,request-queues,schedules,webhooks}`. ILIKE on `(id, name)` for most resources; actors also search `title, description`; webhooks search `(id, description, request_url)` since they have no `name` column. User-typed LIKE metacharacters (`%`, `_`, `\`) are escaped via a small helper so `?q=100%25` matches the literal string `"100%"` rather than everything. Empty/whitespace `?q=` skips the WHERE clause so the index-only path stays cheap on no-op searches.
+- **Dashboard search now hits the API.** The four list pages with existing search inputs (actors, datasets, KV stores, request queues) drop their client-side `Array.filter` (which only filtered the visible 50 rows) and route through the new `?q=` URL param. New `useDebouncedSearch` hook (300 ms) keeps typing responsive without firing a fetch on every keystroke. Setting a new query resets `?page=` so a narrowing search doesn't strand the user on a now-out-of-range page. Search state lives in the URL alongside `?page=` — bookmarkable, shareable, browser back works.
+- **Stress-test fixture script** at `scripts/seed-stress-fixtures.ts` — bulk-inserts 5,000 each of unnamed datasets / KV / queues / runs plus 200 actors / 100 schedules / 100 webhooks via `generate_series` for QA at scale. Idempotent on re-run; `--teardown` removes everything with the `stress-` prefix in one pass.
+
+### Fixed
+
+- **Reaper no longer reaps actively-written-to unnamed resources.** v0.9.0's `reap*` predicates only checked `accessed_at`, but data-write paths (`POST /datasets/:id/items`, `PUT /key-value-stores/:id/records/:key`, request-queue mutations) bump `modified_at` only. So an actor pushing data into an unnamed dataset for 31 days could see the dataset reaped while writes were still landing. Each reap predicate now uses `GREATEST(accessed_at, modified_at) < NOW() - $1::int * INTERVAL '1 day'`, which fixes the gap in one place rather than retrofitting every writer.
+- **Dashboard counter tiles report the real total** rather than `items.length` capped at 1000. The home dashboard's "Actors" and "Datasets" tiles previously called `getActors({ limit: 1000 })` then reported `actors.items.length` — silently undercounting any tenant past 1,000. They now read `actors.total` from the API's parallel `COUNT(*)`, and the `limit: 1` request makes the call cheaper since the items are unused.
+
+### Changed
+
+- **Search-condition helper extracted to `packages/api/src/db/search.ts`.** The five-line ILIKE clause builder was duplicated across all six list routes; bot-review suggested centralizing. New `appendSearchCondition(where, params, q, columns)` mutates `params` and returns the new WHERE — each route now passes only its searchable columns.
+
+### Tests
+
+- 16 webhook-template engine cases on the api side + 10 on the runner side. Cover both Apify-doc forms (quoted lone-cell, unquoted value-position), mixed quoted/unquoted in one template, mid-string interpolation, dot notation, missing keys (lone → `null`, interpolation → `""`), and invalid-template fallback.
+- 6 cases for `escapeLikePattern`, 4 cases for `?q=` on actors, 1 for webhooks (different searchable columns).
+
 ## [0.9.0] - 2026-05-03
 
 ### Added
