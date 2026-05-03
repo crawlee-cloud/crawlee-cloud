@@ -9,6 +9,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type pg from 'pg';
+import { S3Client, PutObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { TEST_CONFIG, ensureS3Bucket, runMigrations } from './setup.js';
 
 // Bound in beforeAll to the API's module-level pool — see comment above.
@@ -221,5 +222,57 @@ describe('retention schema — sweep indexes', () => {
     expect(result.rows[1]?.indexdef).toMatch(/WHERE \(?name IS NULL\)?/);
     expect(result.rows[2]?.indexdef).toMatch(/WHERE \(?name IS NULL\)?/);
     expect(result.rows[3]?.indexdef).toMatch(/WHERE \(?finished_at IS NOT NULL\)?/);
+  });
+});
+
+describe('s3 prefix helpers', () => {
+  let s3: S3Client;
+
+  beforeAll(() => {
+    s3 = new S3Client({
+      endpoint: TEST_CONFIG.s3Endpoint,
+      region: TEST_CONFIG.s3Region,
+      credentials: {
+        accessKeyId: TEST_CONFIG.s3AccessKey,
+        secretAccessKey: TEST_CONFIG.s3SecretKey,
+      },
+      forcePathStyle: true,
+    });
+  });
+
+  it('deleteDatasetS3Prefix removes every object under the dataset prefix', async () => {
+    const dsId = 'pref-test-' + Math.random().toString(36).slice(2, 10);
+    // Seed three objects under the prefix.
+    for (let i = 0; i < 3; i++) {
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: TEST_CONFIG.s3Bucket,
+          Key: `datasets/${dsId}/000000${i}00.batch.json`,
+          Body: JSON.stringify([{ idx: i }]),
+        })
+      );
+    }
+    // Verify they're there.
+    const before = await s3.send(
+      new ListObjectsV2Command({ Bucket: TEST_CONFIG.s3Bucket, Prefix: `datasets/${dsId}/` })
+    );
+    expect(before.Contents?.length ?? 0).toBe(3);
+
+    // Call the helper under test. (initS3 was already called by the shared
+    // beforeAll, so the module-level s3 client is wired up.)
+    const { deleteDatasetS3Prefix } = await import('../../src/storage/s3.js');
+    await deleteDatasetS3Prefix(dsId);
+
+    // Verify all gone.
+    const after = await s3.send(
+      new ListObjectsV2Command({ Bucket: TEST_CONFIG.s3Bucket, Prefix: `datasets/${dsId}/` })
+    );
+    expect(after.Contents ?? []).toHaveLength(0);
+  });
+
+  it('deleteDatasetS3Prefix is a no-op for an empty prefix', async () => {
+    const { deleteDatasetS3Prefix } = await import('../../src/storage/s3.js');
+    // Should not throw.
+    await deleteDatasetS3Prefix('non-existent-' + Math.random().toString(36).slice(2));
   });
 });

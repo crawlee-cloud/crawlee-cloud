@@ -8,6 +8,7 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   ListObjectsV2Command,
   HeadObjectCommand,
 } from '@aws-sdk/client-s3';
@@ -416,4 +417,41 @@ export async function listKVKeys(
     isTruncated: result.IsTruncated || false,
     nextExclusiveStartKey: keys.length > 0 ? keys[keys.length - 1]!.key : undefined,
   };
+}
+
+/**
+ * Bulk-delete every object under a prefix. Paginates ListObjectsV2 and
+ * issues DeleteObjects (S3-side cap of 1000 keys/request). Used by the
+ * retention reaper to clean unnamed-dataset and unnamed-KV S3 prefixes
+ * after the corresponding PG row has been deleted.
+ *
+ * Idempotent: empty prefixes are a no-op. S3 errors propagate; callers
+ * are expected to catch and log so a single failed bucket-wide delete
+ * doesn't abort the rest of a reaper phase.
+ */
+async function deleteByPrefix(prefix: string): Promise<void> {
+  let continuationToken: string | undefined;
+  do {
+    const listed = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: config.s3Bucket,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      })
+    );
+    const keys = (listed.Contents ?? []).map((o) => ({ Key: o.Key! }));
+    if (keys.length > 0) {
+      await s3.send(
+        new DeleteObjectsCommand({
+          Bucket: config.s3Bucket,
+          Delete: { Objects: keys, Quiet: true },
+        })
+      );
+    }
+    continuationToken = listed.IsTruncated ? listed.NextContinuationToken : undefined;
+  } while (continuationToken);
+}
+
+export async function deleteDatasetS3Prefix(datasetId: string): Promise<void> {
+  await deleteByPrefix(`datasets/${datasetId}/`);
 }
