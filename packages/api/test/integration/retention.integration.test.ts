@@ -138,4 +138,62 @@ describe('retention schema — FK softening', () => {
     // Cleanup
     await pool.query(`DELETE FROM runs WHERE id = $1`, [runId]);
   });
+
+  it('deleting a key_value_store that a run references nulls the FK rather than failing', async () => {
+    const kvId = 'fk-test-kv-' + Math.random().toString(36).slice(2, 10);
+    const runId = 'fk-test-run-' + Math.random().toString(36).slice(2, 10);
+    const userId = 'fk-test-user';
+
+    await pool.query(`INSERT INTO key_value_stores (id, name, user_id) VALUES ($1, $2, $3)`, [
+      kvId,
+      kvId,
+      userId,
+    ]);
+    await pool.query(
+      `INSERT INTO runs (id, user_id, default_key_value_store_id) VALUES ($1, $2, $3)`,
+      [runId, userId, kvId]
+    );
+
+    // Pre-fix: this DELETE would error with foreign_key_violation.
+    // Post-fix: it succeeds and the run's default_key_value_store_id becomes NULL.
+    await pool.query(`DELETE FROM key_value_stores WHERE id = $1`, [kvId]);
+
+    const result = await pool.query<{ default_key_value_store_id: string | null }>(
+      `SELECT default_key_value_store_id FROM runs WHERE id = $1`,
+      [runId]
+    );
+    expect(result.rows[0]?.default_key_value_store_id).toBeNull();
+
+    // Cleanup
+    await pool.query(`DELETE FROM runs WHERE id = $1`, [runId]);
+  });
+
+  it('deleting a request_queue that a run references nulls the FK rather than failing', async () => {
+    const qId = 'fk-test-rq-' + Math.random().toString(36).slice(2, 10);
+    const runId = 'fk-test-run-' + Math.random().toString(36).slice(2, 10);
+    const userId = 'fk-test-user';
+
+    await pool.query(`INSERT INTO request_queues (id, name, user_id) VALUES ($1, $2, $3)`, [
+      qId,
+      qId,
+      userId,
+    ]);
+    await pool.query(
+      `INSERT INTO runs (id, user_id, default_request_queue_id) VALUES ($1, $2, $3)`,
+      [runId, userId, qId]
+    );
+
+    // Pre-fix: this DELETE would error with foreign_key_violation.
+    // Post-fix: it succeeds and the run's default_request_queue_id becomes NULL.
+    await pool.query(`DELETE FROM request_queues WHERE id = $1`, [qId]);
+
+    const result = await pool.query<{ default_request_queue_id: string | null }>(
+      `SELECT default_request_queue_id FROM runs WHERE id = $1`,
+      [runId]
+    );
+    expect(result.rows[0]?.default_request_queue_id).toBeNull();
+
+    // Cleanup
+    await pool.query(`DELETE FROM runs WHERE id = $1`, [runId]);
+  });
 });
