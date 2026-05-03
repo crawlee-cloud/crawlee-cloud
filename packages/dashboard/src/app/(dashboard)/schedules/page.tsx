@@ -31,7 +31,7 @@ const COMMON_CRONS: { label: string; value: string; hint: string }[] = [
 export default function SchedulesPage() {
   const confirm = useConfirm();
   const toast = useToast();
-  const { offset, setOffset } = usePageParam();
+  const { offset, setOffset, query } = usePageParam();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [total, setTotal] = useState(0);
   const [actors, setActors] = useState<Actor[]>([]);
@@ -41,7 +41,7 @@ export default function SchedulesPage() {
   useEffect(() => {
     let alive = true;
     void Promise.all([
-      getSchedules({ offset, limit: PAGE_SIZE }).catch(() => null),
+      getSchedules({ offset, limit: PAGE_SIZE, q: query }).catch(() => null),
       getActors({ limit: FETCH_ALL_LIMIT }).catch(() => null),
     ]).then(([s, a]) => {
       if (!alive) return;
@@ -55,7 +55,7 @@ export default function SchedulesPage() {
     return () => {
       alive = false;
     };
-  }, [offset]);
+  }, [offset, query]);
 
   async function handleToggle(s: Schedule) {
     try {

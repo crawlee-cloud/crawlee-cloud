@@ -8,20 +8,21 @@ import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
 import { deleteKeyValueStore, getKeyValueStores, type KeyValueStore } from '@/lib/api';
 import { PAGE_SIZE } from '@/lib/constants';
+import { useDebouncedSearch } from '@/lib/use-debounced-search';
 import { usePageParam } from '@/lib/use-page-param';
 
 export default function KeyValueStoresPage() {
   const confirm = useConfirm();
   const toast = useToast();
-  const { offset, setOffset } = usePageParam();
+  const { offset, setOffset, query, setQuery } = usePageParam();
+  const [search, setSearch] = useDebouncedSearch(query, setQuery);
   const [stores, setStores] = useState<KeyValueStore[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
 
   useEffect(() => {
     let alive = true;
-    getKeyValueStores({ offset, limit: PAGE_SIZE })
+    getKeyValueStores({ offset, limit: PAGE_SIZE, q: query })
       .then((p) => {
         if (!alive) return;
         setStores(p.items);
@@ -32,7 +33,7 @@ export default function KeyValueStoresPage() {
     return () => {
       alive = false;
     };
-  }, [offset]);
+  }, [offset, query]);
 
   async function handleDelete(s: KeyValueStore) {
     const ok = await confirm({
@@ -51,12 +52,8 @@ export default function KeyValueStoresPage() {
     }
   }
 
-  const q = search.trim().toLowerCase();
-  const filtered = q
-    ? stores.filter(
-        (s) => s.id.toLowerCase().includes(q) || (s.name?.toLowerCase().includes(q) ?? false)
-      )
-    : stores;
+  // Server-side search; the API has already filtered.
+  const filtered = stores;
 
   return (
     <div className="space-y-6">

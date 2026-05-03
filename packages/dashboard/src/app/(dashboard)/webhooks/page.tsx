@@ -38,7 +38,7 @@ import { useToast } from '@/components/ui/toast';
 export default function WebhooksPage() {
   const confirm = useConfirm();
   const toast = useToast();
-  const { offset, setOffset } = usePageParam();
+  const { offset, setOffset, query } = usePageParam();
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
   const [total, setTotal] = useState(0);
   const [actors, setActors] = useState<Actor[]>([]);
@@ -60,7 +60,7 @@ export default function WebhooksPage() {
   useEffect(() => {
     let alive = true;
     void Promise.all([
-      getWebhooks({ offset, limit: PAGE_SIZE }).catch(() => null),
+      getWebhooks({ offset, limit: PAGE_SIZE, q: query }).catch(() => null),
       getActors({ limit: FETCH_ALL_LIMIT }).catch(() => null),
     ]).then(([w, a]) => {
       if (!alive) return;
@@ -74,7 +74,7 @@ export default function WebhooksPage() {
     return () => {
       alive = false;
     };
-  }, [offset]);
+  }, [offset, query]);
 
   function handleSaved(w: Webhook) {
     if (editingId) {

@@ -9,20 +9,21 @@ import { useToast } from '@/components/ui/toast';
 import type { Dataset } from '@/lib/api';
 import { deleteDataset, getDatasetItems, getDatasets } from '@/lib/api';
 import { PAGE_SIZE } from '@/lib/constants';
+import { useDebouncedSearch } from '@/lib/use-debounced-search';
 import { usePageParam } from '@/lib/use-page-param';
 
 function DatasetsContent() {
   const confirm = useConfirm();
   const toast = useToast();
-  const { offset, setOffset } = usePageParam();
+  const { offset, setOffset, query, setQuery } = usePageParam();
+  const [search, setSearch] = useDebouncedSearch(query, setQuery);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
 
   useEffect(() => {
     let alive = true;
-    getDatasets({ offset, limit: PAGE_SIZE })
+    getDatasets({ offset, limit: PAGE_SIZE, q: query })
       .then((p) => {
         if (!alive) return;
         setDatasets(p.items);
@@ -33,7 +34,7 @@ function DatasetsContent() {
     return () => {
       alive = false;
     };
-  }, [offset]);
+  }, [offset, query]);
 
   async function handleDelete(id: string) {
     const ok = await confirm({
@@ -68,12 +69,10 @@ function DatasetsContent() {
     }
   }
 
-  const q = search.trim().toLowerCase();
-  const filtered = q
-    ? datasets.filter(
-        (d) => d.id.toLowerCase().includes(q) || (d.name?.toLowerCase().includes(q) ?? false)
-      )
-    : datasets;
+  // Server-side search returns the already-filtered page. The local
+  // `filtered` alias kept here to minimise diff churn against existing
+  // render logic.
+  const filtered = datasets;
 
   return (
     <div className="space-y-6">

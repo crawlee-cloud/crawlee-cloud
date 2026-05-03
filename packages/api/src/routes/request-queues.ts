@@ -11,6 +11,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { createHash } from 'node:crypto';
 import { nanoid } from 'nanoid';
 import { query, getClient as _getClient } from '../db/index.js';
+import { escapeLikePattern } from '../db/like.js';
 import {
   addToQueueHead,
   getQueueHead as _getQueueHead,
@@ -66,21 +67,30 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
    * GET /v2/request-queues - List queues (user-scoped)
    */
   fastify.get<{
-    Querystring: { offset?: string; limit?: string };
+    Querystring: { offset?: string; limit?: string; q?: string };
   }>('/request-queues', async (request) => {
     const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
     const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
+    const q = (request.query.q || '').trim();
+
+    let where = 'user_id = $1';
+    const params: unknown[] = [request.user!.id];
+    if (q) {
+      const idx = params.length + 1;
+      params.push(`%${escapeLikePattern(q)}%`);
+      where += ` AND (id ILIKE $${idx} OR name ILIKE $${idx})`;
+    }
 
     const [countResult, pageResult] = await Promise.all([
       query<{ total: string }>(
-        'SELECT COUNT(*)::text AS total FROM request_queues WHERE user_id = $1',
-        [request.user!.id]
+        `SELECT COUNT(*)::text AS total FROM request_queues WHERE ${where}`,
+        params
       ),
       query<QueueRow>(
-        `SELECT * FROM request_queues WHERE user_id = $1
+        `SELECT * FROM request_queues WHERE ${where}
          ORDER BY created_at DESC, id DESC
-         LIMIT $2 OFFSET $3`,
-        [request.user!.id, limit, offset]
+         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, limit, offset]
       ),
     ]);
 

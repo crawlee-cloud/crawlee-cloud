@@ -8,20 +8,21 @@ import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
 import { deleteRequestQueue, getRequestQueues, type RequestQueue } from '@/lib/api';
 import { PAGE_SIZE } from '@/lib/constants';
+import { useDebouncedSearch } from '@/lib/use-debounced-search';
 import { usePageParam } from '@/lib/use-page-param';
 
 export default function RequestQueuesPage() {
   const confirm = useConfirm();
   const toast = useToast();
-  const { offset, setOffset } = usePageParam();
+  const { offset, setOffset, query, setQuery } = usePageParam();
+  const [search, setSearch] = useDebouncedSearch(query, setQuery);
   const [queues, setQueues] = useState<RequestQueue[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
 
   useEffect(() => {
     let alive = true;
-    getRequestQueues({ offset, limit: PAGE_SIZE })
+    getRequestQueues({ offset, limit: PAGE_SIZE, q: query })
       .then((p) => {
         if (!alive) return;
         setQueues(p.items);
@@ -32,7 +33,7 @@ export default function RequestQueuesPage() {
     return () => {
       alive = false;
     };
-  }, [offset]);
+  }, [offset, query]);
 
   async function handleDelete(q: RequestQueue) {
     const ok = await confirm({
@@ -51,13 +52,8 @@ export default function RequestQueuesPage() {
     }
   }
 
-  const needle = search.trim().toLowerCase();
-  const filtered = needle
-    ? queues.filter(
-        (q) =>
-          q.id.toLowerCase().includes(needle) || (q.name?.toLowerCase().includes(needle) ?? false)
-      )
-    : queues;
+  // Server-side search; the API has already filtered.
+  const filtered = queues;
 
   return (
     <div className="space-y-6">

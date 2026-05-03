@@ -25,14 +25,17 @@ export interface Page<T> {
 export interface PageParams {
   offset?: number;
   limit?: number;
+  /** Server-side substring search across (id, name, ...) per endpoint. */
+  q?: string;
 }
 
-/** Build a `?offset=N&limit=N` querystring (omitting unset values). */
+/** Build a `?offset=N&limit=N&q=...` querystring (omitting unset values). */
 function pageQuery(params?: PageParams): string {
   if (!params) return '';
   const qs = new URLSearchParams();
   if (params.offset !== undefined) qs.set('offset', String(params.offset));
   if (params.limit !== undefined) qs.set('limit', String(params.limit));
+  if (params.q !== undefined && params.q !== '') qs.set('q', params.q);
   const s = qs.toString();
   return s ? `?${s}` : '';
 }

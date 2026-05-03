@@ -6,6 +6,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { nanoid } from 'nanoid';
 import { CreateWebhookSchema, UpdateWebhookSchema } from '../schemas/webhooks.js';
 import { query } from '../db/index.js';
+import { escapeLikePattern } from '../db/like.js';
 import { authenticate } from '../auth/middleware.js';
 import { applyWebhookTemplate } from '../webhooks/apply-template.js';
 
@@ -83,20 +84,33 @@ export const webhooksRoutes: FastifyPluginAsync = async (fastify) => {
    * GET /v2/webhooks - List user's webhooks
    */
   fastify.get<{
-    Querystring: { offset?: string; limit?: string };
+    Querystring: { offset?: string; limit?: string; q?: string };
   }>('/webhooks', async (request) => {
     const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
     const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
+    const q = (request.query.q || '').trim();
+
+    // Webhooks have no `name` column — search instead matches against id,
+    // description, and request_url so operators can find a hook by what
+    // they typed in the description field or by domain.
+    let where = 'user_id = $1';
+    const params: unknown[] = [request.user!.id];
+    if (q) {
+      const idx = params.length + 1;
+      params.push(`%${escapeLikePattern(q)}%`);
+      where += ` AND (id ILIKE $${idx} OR description ILIKE $${idx} OR request_url ILIKE $${idx})`;
+    }
 
     const [countResult, pageResult] = await Promise.all([
-      query<{ total: string }>('SELECT COUNT(*)::text AS total FROM webhooks WHERE user_id = $1', [
-        request.user!.id,
-      ]),
+      query<{ total: string }>(
+        `SELECT COUNT(*)::text AS total FROM webhooks WHERE ${where}`,
+        params
+      ),
       query<WebhookRow>(
-        `SELECT * FROM webhooks WHERE user_id = $1
+        `SELECT * FROM webhooks WHERE ${where}
          ORDER BY created_at DESC, id DESC
-         LIMIT $2 OFFSET $3`,
-        [request.user!.id, limit, offset]
+         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, limit, offset]
       ),
     ]);
 

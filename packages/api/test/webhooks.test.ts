@@ -163,6 +163,21 @@ describe('Webhook Routes', () => {
       expect(body.data.items).toHaveLength(0);
       expect(body.data.total).toBe(0);
     });
+
+    it('honours ?q for substring search across (id, description, request_url)', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ total: '1' }] })
+        .mockResolvedValueOnce({ rows: [createWebhookRow()] });
+
+      await app.inject({ method: 'GET', url: '/v2/webhooks?q=example.com' });
+
+      // Webhooks have no `name` column — search hits id/description/request_url.
+      const sql = mockQuery.mock.calls[0]?.[0] as string;
+      expect(sql).toContain('id ILIKE');
+      expect(sql).toContain('description ILIKE');
+      expect(sql).toContain('request_url ILIKE');
+      expect(mockQuery.mock.calls[0]?.[1]).toEqual(['test-user-id', '%example.com%']);
+    });
   });
 
   describe('GET /v2/webhooks/:webhookId', () => {

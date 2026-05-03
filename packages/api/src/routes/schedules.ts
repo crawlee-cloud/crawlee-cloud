@@ -6,6 +6,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { nanoid } from 'nanoid';
 import { CreateScheduleSchema, UpdateScheduleSchema } from '../schemas/schedules.js';
 import { query } from '../db/index.js';
+import { escapeLikePattern } from '../db/like.js';
 import { authenticate } from '../auth/middleware.js';
 import { reloadSchedule, unregisterSchedule } from '../scheduler.js';
 
@@ -82,20 +83,30 @@ export const schedulesRoutes: FastifyPluginAsync = async (fastify) => {
    * GET /v2/schedules - List user's schedules
    */
   fastify.get<{
-    Querystring: { offset?: string; limit?: string };
+    Querystring: { offset?: string; limit?: string; q?: string };
   }>('/schedules', async (request) => {
     const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
     const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
+    const q = (request.query.q || '').trim();
+
+    let where = 'user_id = $1';
+    const params: unknown[] = [request.user!.id];
+    if (q) {
+      const idx = params.length + 1;
+      params.push(`%${escapeLikePattern(q)}%`);
+      where += ` AND (id ILIKE $${idx} OR name ILIKE $${idx})`;
+    }
 
     const [countResult, pageResult] = await Promise.all([
-      query<{ total: string }>('SELECT COUNT(*)::text AS total FROM schedules WHERE user_id = $1', [
-        request.user!.id,
-      ]),
+      query<{ total: string }>(
+        `SELECT COUNT(*)::text AS total FROM schedules WHERE ${where}`,
+        params
+      ),
       query<ScheduleRow>(
-        `SELECT * FROM schedules WHERE user_id = $1
+        `SELECT * FROM schedules WHERE ${where}
          ORDER BY created_at DESC, id DESC
-         LIMIT $2 OFFSET $3`,
-        [request.user!.id, limit, offset]
+         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, limit, offset]
       ),
     ]);
 

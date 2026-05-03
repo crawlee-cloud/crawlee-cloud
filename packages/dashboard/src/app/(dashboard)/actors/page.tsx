@@ -7,18 +7,19 @@ import { Pagination } from '@/components/pagination';
 import type { Actor } from '@/lib/api';
 import { getActors } from '@/lib/api';
 import { PAGE_SIZE } from '@/lib/constants';
+import { useDebouncedSearch } from '@/lib/use-debounced-search';
 import { usePageParam } from '@/lib/use-page-param';
 
 export default function ActorsPage() {
-  const { offset, setOffset } = usePageParam();
+  const { offset, setOffset, query, setQuery } = usePageParam();
+  const [search, setSearch] = useDebouncedSearch(query, setQuery);
   const [actors, setActors] = useState<Actor[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
 
   useEffect(() => {
     let alive = true;
-    getActors({ offset, limit: PAGE_SIZE })
+    getActors({ offset, limit: PAGE_SIZE, q: query })
       .then((p) => {
         if (!alive) return;
         setActors(p.items);
@@ -29,18 +30,11 @@ export default function ActorsPage() {
     return () => {
       alive = false;
     };
-  }, [offset]);
+  }, [offset, query]);
 
-  const q = search.trim().toLowerCase();
-  const filtered = q
-    ? actors.filter(
-        (a) =>
-          a.name.toLowerCase().includes(q) ||
-          a.id.toLowerCase().includes(q) ||
-          (a.title?.toLowerCase().includes(q) ?? false) ||
-          (a.description?.toLowerCase().includes(q) ?? false)
-      )
-    : actors;
+  // Server-side search — the API has already applied the substring
+  // filter. Keeping the `filtered` alias keeps the JSX diff small.
+  const filtered = actors;
 
   return (
     <div className="space-y-6">

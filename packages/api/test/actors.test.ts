@@ -103,6 +103,56 @@ describe('Actor Routes', () => {
       const pageCallArgs = mockQuery.mock.calls[1];
       expect(pageCallArgs?.[1]).toEqual([expect.any(String), 50, 200]);
     });
+
+    it('honours ?q for substring search across (id, name, title, description)', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ total: '3' }] })
+        .mockResolvedValueOnce({ rows: [createActorRow()] });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/acts?q=scraper',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.data.total).toBe(3);
+
+      // Both COUNT and SELECT carry the same wrapped pattern as the second
+      // bind param. ILIKE wildcards are added by SQL, not user-controlled.
+      const countSql = mockQuery.mock.calls[0]?.[0] as string;
+      expect(countSql).toContain('ILIKE');
+      expect(mockQuery.mock.calls[0]?.[1]).toEqual(['test-user-id', '%scraper%']);
+
+      const pageSql = mockQuery.mock.calls[1]?.[0] as string;
+      expect(pageSql).toContain('ILIKE');
+      expect(mockQuery.mock.calls[1]?.[1]).toEqual(['test-user-id', '%scraper%', 100, 0]);
+    });
+
+    it('escapes LIKE metacharacters in ?q so user-typed % stays literal', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ total: '0' }] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      await app.inject({ method: 'GET', url: '/v2/acts?q=100%25price_tag' });
+
+      // %25 → '%' after URL decode; the LIKE-escape then turns each metachar
+      // into its escaped form so PG matches them literally.
+      const pageCallArgs = mockQuery.mock.calls[1]?.[1] as unknown[];
+      expect(pageCallArgs[1]).toBe('%100\\%price\\_tag%');
+    });
+
+    it('skips the WHERE clause entirely when ?q is whitespace-only', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ total: '5' }] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      await app.inject({ method: 'GET', url: '/v2/acts?q=%20%20' });
+
+      const countSql = mockQuery.mock.calls[0]?.[0] as string;
+      expect(countSql).not.toContain('ILIKE');
+      expect(mockQuery.mock.calls[0]?.[1]).toEqual(['test-user-id']);
+    });
   });
 
   describe('POST /v2/acts', () => {
