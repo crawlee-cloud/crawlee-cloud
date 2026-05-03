@@ -291,6 +291,27 @@ ALTER TABLE actors ADD COLUMN IF NOT EXISTS retry_delay_secs INTEGER DEFAULT 60;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS origin_run_id VARCHAR(21);
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS run_after TIMESTAMPTZ;
+
+-- Retention slice #3: tombstone audit log for reaped resources.
+-- BIGSERIAL diverges from the project-wide VARCHAR(21) nanoid convention
+-- because tombstones are operator-internal — never user-referenced, never
+-- URL-shared, benefit from monotonic insertion order for time-window queries.
+-- user_id has no FK by design: tombstones must outlive users (audit trail).
+CREATE TABLE IF NOT EXISTS retention_tombstones (
+  id BIGSERIAL PRIMARY KEY,
+  resource_kind TEXT NOT NULL CHECK (resource_kind IN
+    ('dataset', 'key_value_store', 'request_queue', 'run')),
+  resource_id VARCHAR(21) NOT NULL,
+  resource_name TEXT,
+  user_id VARCHAR(21),
+  reason TEXT NOT NULL CHECK (reason IN ('expired-unnamed', 'expired-run')),
+  original_created_at TIMESTAMPTZ,
+  metadata JSONB,
+  deleted_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tombstones_deleted_at
+  ON retention_tombstones(deleted_at DESC);
 `;
 
 export async function migrate(): Promise<void> {
