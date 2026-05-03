@@ -8,6 +8,12 @@
  * config), then runs 5 phases bounded by RETENTION_BATCH_SIZE. Each phase
  * is one CTE-with-recheck SQL statement combining DELETE + tombstone INSERT
  * for atomicity.
+ *
+ * S3 cleanup runs AFTER the DB phases finish and the advisory lock has been
+ * released — the deleted rows are already committed, so nothing depends on
+ * the lock during the S3 phase. This keeps the connection pool healthy
+ * under load and lets sibling instances start their next DB tick while
+ * we're still draining S3.
  */
 
 import cron from 'node-cron';
@@ -26,6 +32,9 @@ import { redis } from './storage/redis.js';
  */
 export const RETENTION_LOCK_ID = 0xc0debeef;
 
+/** Concurrency cap for S3 prefix deletions. */
+const S3_CLEANUP_CONCURRENCY = 10;
+
 let cronTask: cron.ScheduledTask | null = null;
 
 /**
@@ -38,10 +47,10 @@ let cronTask: cron.ScheduledTask | null = null;
  * outer INSERT writes one tombstone per deleted row, with metadata
  * carrying actor_id + status for audit.
  *
- * Returns the number of rows reaped.
+ * Returns the IDs of reaped runs.
  */
-export async function reapRuns(client: pg.PoolClient): Promise<number> {
-  const result = await client.query(
+export async function reapRuns(client: pg.PoolClient): Promise<string[]> {
+  const result = await client.query<{ resource_id: string }>(
     `WITH deleted AS (
        DELETE FROM runs
          WHERE id IN (
@@ -65,16 +74,15 @@ export async function reapRuns(client: pg.PoolClient): Promise<number> {
      RETURNING resource_id`,
     [config.retentionDays, config.retentionBatchSize]
   );
-  return result.rowCount ?? 0;
+  return result.rows.map((r) => r.resource_id);
 }
 
 /**
  * Phase 2: reap unnamed datasets whose accessed_at is older than
- * retentionDays. After the PG transaction commits, each reaped id's S3
- * prefix is deleted best-effort; failures are logged but don't roll back
- * the PG state.
+ * retentionDays. Returns the IDs of reaped datasets so the caller can
+ * delete the corresponding S3 prefixes after releasing the DB connection.
  */
-export async function reapDatasets(client: pg.PoolClient): Promise<number> {
+export async function reapDatasets(client: pg.PoolClient): Promise<string[]> {
   const result = await client.query<{ resource_id: string }>(
     `WITH deleted AS (
        DELETE FROM datasets
@@ -98,26 +106,14 @@ export async function reapDatasets(client: pg.PoolClient): Promise<number> {
      RETURNING resource_id`,
     [config.retentionDays, config.retentionBatchSize]
   );
-
-  // S3 cleanup happens after the transaction commits. Best-effort.
-  for (const row of result.rows) {
-    try {
-      await deleteDatasetS3Prefix(row.resource_id);
-    } catch (err) {
-      console.error(
-        `[retention] failed to delete S3 prefix datasets/${row.resource_id}/: ${(err as Error).message}`
-      );
-    }
-  }
-  return result.rowCount ?? 0;
+  return result.rows.map((r) => r.resource_id);
 }
 
 /**
  * Phase 3: reap unnamed KV stores whose accessed_at is older than
- * retentionDays. Same shape as reapDatasets, just a different table and
- * S3 prefix.
+ * retentionDays. Same shape as reapDatasets.
  */
-export async function reapKVStores(client: pg.PoolClient): Promise<number> {
+export async function reapKVStores(client: pg.PoolClient): Promise<string[]> {
   const result = await client.query<{ resource_id: string }>(
     `WITH deleted AS (
        DELETE FROM key_value_stores
@@ -141,16 +137,7 @@ export async function reapKVStores(client: pg.PoolClient): Promise<number> {
      RETURNING resource_id`,
     [config.retentionDays, config.retentionBatchSize]
   );
-  for (const row of result.rows) {
-    try {
-      await deleteKVStoreS3Prefix(row.resource_id);
-    } catch (err) {
-      console.error(
-        `[retention] failed to delete S3 prefix key-value-stores/${row.resource_id}/: ${(err as Error).message}`
-      );
-    }
-  }
-  return result.rowCount ?? 0;
+  return result.rows.map((r) => r.resource_id);
 }
 
 /**
@@ -162,8 +149,8 @@ export async function reapKVStores(client: pg.PoolClient): Promise<number> {
  * Caveat: a queue with very many requests (≥100K) generates a large CASCADE
  * inside one PG statement. See the spec's "Phase 4 long CASCADE" note.
  */
-export async function reapRequestQueues(client: pg.PoolClient): Promise<number> {
-  const result = await client.query(
+export async function reapRequestQueues(client: pg.PoolClient): Promise<string[]> {
+  const result = await client.query<{ resource_id: string }>(
     `WITH deleted AS (
        DELETE FROM request_queues
          WHERE id IN (
@@ -186,7 +173,7 @@ export async function reapRequestQueues(client: pg.PoolClient): Promise<number> 
      RETURNING resource_id`,
     [config.retentionDays, config.retentionBatchSize]
   );
-  return result.rowCount ?? 0;
+  return result.rows.map((r) => r.resource_id);
 }
 
 /**
@@ -194,8 +181,8 @@ export async function reapRequestQueues(client: pg.PoolClient): Promise<number> 
  * RETENTION_BATCH_SIZE — at production scale tombstones can grow to
  * millions; pruning all-at-once would lock the table.
  */
-export async function pruneTombstones(client: pg.PoolClient): Promise<number> {
-  const result = await client.query(
+export async function pruneTombstones(client: pg.PoolClient): Promise<string[]> {
+  const result = await client.query<{ id: string }>(
     `DELETE FROM retention_tombstones
        WHERE id IN (
          SELECT id FROM retention_tombstones
@@ -206,18 +193,81 @@ export async function pruneTombstones(client: pg.PoolClient): Promise<number> {
      RETURNING id`,
     [config.retentionTombstoneDays, config.retentionBatchSize]
   );
-  return result.rowCount ?? 0;
+  return result.rows.map((r) => r.id);
 }
 
 /**
- * Run a single reaper tick. Pins one pool connection for the entire window,
- * acquires pg_try_advisory_lock, runs the 5 phases, releases the lock. On
- * unlock failure, destroys the connection so the lock can't leak back into
- * the pool.
+ * Delete S3 prefixes in parallel with a bounded concurrency. Per-prefix
+ * failures are logged but don't abort the batch — the DB rows are already
+ * gone, so a stale S3 prefix is just orphaned bytes (cleanable later by
+ * lifecycle policy or a future bookkeeping job).
+ */
+export async function cleanupDatasetS3Prefixes(ids: string[]): Promise<void> {
+  await runWithConcurrency(ids, S3_CLEANUP_CONCURRENCY, async (id) => {
+    try {
+      await deleteDatasetS3Prefix(id);
+    } catch (err) {
+      console.error(
+        `[retention] failed to delete S3 prefix datasets/${id}/: ${(err as Error).message}`
+      );
+    }
+  });
+}
+
+export async function cleanupKVStoreS3Prefixes(ids: string[]): Promise<void> {
+  await runWithConcurrency(ids, S3_CLEANUP_CONCURRENCY, async (id) => {
+    try {
+      await deleteKVStoreS3Prefix(id);
+    } catch (err) {
+      console.error(
+        `[retention] failed to delete S3 prefix key-value-stores/${id}/: ${(err as Error).message}`
+      );
+    }
+  });
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<void>
+): Promise<void> {
+  for (let i = 0; i < items.length; i += limit) {
+    await Promise.all(items.slice(i, i + limit).map(worker));
+  }
+}
+
+/**
+ * Run the DB phases of one tick under the advisory lock and return the
+ * IDs that need post-commit S3 cleanup. The lock is held only across the
+ * SQL statements; the caller releases it before doing S3 work.
+ */
+async function runDbPhases(client: pg.PoolClient): Promise<{
+  runs: string[];
+  datasets: string[];
+  kvStores: string[];
+  requestQueues: string[];
+  tombstones: string[];
+}> {
+  const runs = await reapRuns(client);
+  const datasets = await reapDatasets(client);
+  const kvStores = await reapKVStores(client);
+  const requestQueues = await reapRequestQueues(client);
+  const tombstones = await pruneTombstones(client);
+  return { runs, datasets, kvStores, requestQueues, tombstones };
+}
+
+/**
+ * Run a single reaper tick. Connects, acquires pg_try_advisory_lock,
+ * runs the 5 DB phases, releases the lock and connection, then performs
+ * S3 cleanup. On unlock failure, destroys the connection so the lock
+ * can't leak back into the pool.
  */
 export async function runReaperTick(): Promise<void> {
+  const tickStart = Date.now();
   const client = await pool.connect();
   let mustDestroy = false;
+  let phaseResult: Awaited<ReturnType<typeof runDbPhases>> | null = null;
+
   try {
     const lock = await client.query<{ pg_try_advisory_lock: boolean }>(
       'SELECT pg_try_advisory_lock($1)',
@@ -228,27 +278,7 @@ export async function runReaperTick(): Promise<void> {
       return;
     }
     try {
-      const stats = { runs: 0, datasets: 0, kvStores: 0, requestQueues: 0, tombstones: 0 };
-      const tickStart = Date.now();
-      stats.runs = await reapRuns(client);
-      stats.datasets = await reapDatasets(client);
-      stats.kvStores = await reapKVStores(client);
-      stats.requestQueues = await reapRequestQueues(client);
-      stats.tombstones = await pruneTombstones(client);
-      console.log(
-        `[retention] tick complete elapsed=${Date.now() - tickStart}ms ` +
-          `runs=${stats.runs} datasets=${stats.datasets} kv=${stats.kvStores} ` +
-          `queues=${stats.requestQueues} tombstones-pruned=${stats.tombstones}`
-      );
-      // Persist last-tick stats for the admin status endpoint.
-      try {
-        await redis.hset('retention:last-tick', {
-          at: new Date().toISOString(),
-          elapsed_ms: String(Date.now() - tickStart),
-        });
-      } catch (err) {
-        console.error(`[retention] failed to write last-tick to Redis: ${(err as Error).message}`);
-      }
+      phaseResult = await runDbPhases(client);
     } finally {
       try {
         const unlockResult = await client.query<{ pg_advisory_unlock: boolean }>(
@@ -274,11 +304,38 @@ export async function runReaperTick(): Promise<void> {
       client.release();
     }
   }
+
+  // The connection is back in the pool — S3 cleanup no longer blocks DB work.
+  if (phaseResult) {
+    await cleanupDatasetS3Prefixes(phaseResult.datasets);
+    await cleanupKVStoreS3Prefixes(phaseResult.kvStores);
+
+    const elapsed = Date.now() - tickStart;
+    console.log(
+      `[retention] tick complete elapsed=${elapsed}ms ` +
+        `runs=${phaseResult.runs.length} datasets=${phaseResult.datasets.length} ` +
+        `kv=${phaseResult.kvStores.length} queues=${phaseResult.requestQueues.length} ` +
+        `tombstones-pruned=${phaseResult.tombstones.length}`
+    );
+    try {
+      await redis.hset('retention:last-tick', {
+        at: new Date().toISOString(),
+        elapsed_ms: String(elapsed),
+      });
+    } catch (err) {
+      console.error(`[retention] failed to write last-tick to Redis: ${(err as Error).message}`);
+    }
+  }
 }
 
 /**
  * Register the cron job. Called from index.ts at startup. No-op when
  * RETENTION_ENABLED=false.
+ *
+ * The cron callback wraps `runReaperTick()` in `.catch()`. Without it, an
+ * early rejection (e.g. `pool.connect()` failing because the DB is down or
+ * the pool is exhausted) escapes the floating promise and — under Node's
+ * default --unhandled-rejections=throw — would kill the API process.
  */
 export function initRetention(): void {
   if (!config.retentionEnabled) {
@@ -288,7 +345,9 @@ export function initRetention(): void {
   cronTask = cron.schedule(
     config.retentionCron,
     () => {
-      void runReaperTick();
+      void runReaperTick().catch((err: unknown) => {
+        console.error(`[retention] reaper tick crashed: ${(err as Error).message}`);
+      });
     },
     { timezone: 'UTC' }
   );

@@ -355,7 +355,7 @@ describe('reaper — reapRuns', () => {
     const client = await pool.connect();
     try {
       const reaped = await reapRuns(client);
-      expect(reaped).toBe(1);
+      expect(reaped).toEqual(['reap-test-old']);
     } finally {
       client.release();
     }
@@ -434,14 +434,16 @@ describe('reaper — reapDatasets', () => {
       })
     );
 
-    const { reapDatasets } = await import('../../src/retention.js');
+    const { reapDatasets, cleanupDatasetS3Prefixes } = await import('../../src/retention.js');
     const client = await pool.connect();
+    let reapedIds: string[];
     try {
-      const reaped = await reapDatasets(client);
-      expect(reaped).toBe(1);
+      reapedIds = await reapDatasets(client);
+      expect(reapedIds).toEqual(['reap-ds-old']);
     } finally {
       client.release();
     }
+    await cleanupDatasetS3Prefixes(reapedIds);
 
     // Eligible row gone, others remain.
     expect((await pool.query(`SELECT 1 FROM datasets WHERE id = 'reap-ds-old'`)).rows).toHaveLength(
@@ -516,14 +518,16 @@ describe('reaper — reapKVStores', () => {
       })
     );
 
-    const { reapKVStores } = await import('../../src/retention.js');
+    const { reapKVStores, cleanupKVStoreS3Prefixes } = await import('../../src/retention.js');
     const client = await pool.connect();
+    let reapedIds: string[];
     try {
-      const reaped = await reapKVStores(client);
-      expect(reaped).toBe(1);
+      reapedIds = await reapKVStores(client);
+      expect(reapedIds).toEqual(['reap-kv-old']);
     } finally {
       client.release();
     }
+    await cleanupKVStoreS3Prefixes(reapedIds);
 
     expect(
       (await pool.query(`SELECT 1 FROM key_value_stores WHERE id = 'reap-kv-old'`)).rows
@@ -568,7 +572,7 @@ describe('reaper — reapRequestQueues', () => {
     const client = await pool.connect();
     try {
       const reaped = await reapRequestQueues(client);
-      expect(reaped).toBe(1);
+      expect(reaped).toEqual(['reap-rq-old']);
     } finally {
       client.release();
     }
@@ -611,7 +615,7 @@ describe('reaper — pruneTombstones', () => {
     const client = await pool.connect();
     try {
       const pruned = await pruneTombstones(client);
-      expect(pruned).toBe(1);
+      expect(pruned).toHaveLength(1);
     } finally {
       client.release();
     }
