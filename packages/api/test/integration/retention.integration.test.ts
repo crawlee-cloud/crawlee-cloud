@@ -107,3 +107,35 @@ describe('retention schema — tombstones', () => {
     await pool.query(`DELETE FROM retention_tombstones WHERE resource_id = 'r123'`);
   });
 });
+
+describe('retention schema — FK softening', () => {
+  it('deleting a dataset that a run references nulls the FK rather than failing', async () => {
+    const dsId = 'fk-test-ds-' + Math.random().toString(36).slice(2, 10);
+    const runId = 'fk-test-run-' + Math.random().toString(36).slice(2, 10);
+    const userId = 'fk-test-user';
+
+    await pool.query(`INSERT INTO datasets (id, name, user_id) VALUES ($1, $2, $3)`, [
+      dsId,
+      dsId,
+      userId,
+    ]);
+    await pool.query(`INSERT INTO runs (id, user_id, default_dataset_id) VALUES ($1, $2, $3)`, [
+      runId,
+      userId,
+      dsId,
+    ]);
+
+    // Pre-fix: this DELETE would error with foreign_key_violation.
+    // Post-fix: it succeeds and the run's default_dataset_id becomes NULL.
+    await pool.query(`DELETE FROM datasets WHERE id = $1`, [dsId]);
+
+    const result = await pool.query<{ default_dataset_id: string | null }>(
+      `SELECT default_dataset_id FROM runs WHERE id = $1`,
+      [runId]
+    );
+    expect(result.rows[0]?.default_dataset_id).toBeNull();
+
+    // Cleanup
+    await pool.query(`DELETE FROM runs WHERE id = $1`, [runId]);
+  });
+});

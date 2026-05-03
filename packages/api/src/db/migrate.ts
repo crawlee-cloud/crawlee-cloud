@@ -312,6 +312,25 @@ CREATE TABLE IF NOT EXISTS retention_tombstones (
 
 CREATE INDEX IF NOT EXISTS idx_tombstones_deleted_at
   ON retention_tombstones(deleted_at DESC);
+
+-- Retention slice #3: storage referenced by a run becomes NULL when storage
+-- is reaped, instead of failing the DELETE. Lets the reaper run runs and
+-- storage in either order without coordination.
+--
+-- Three explicit DROP+ADD migrations because PG auto-named constraints don't
+-- support ALTER MODIFY in place. Constraint names follow PG's default
+-- pattern: {table}_{column}_fkey.
+ALTER TABLE runs DROP CONSTRAINT IF EXISTS runs_default_dataset_id_fkey;
+ALTER TABLE runs ADD CONSTRAINT runs_default_dataset_id_fkey
+  FOREIGN KEY (default_dataset_id) REFERENCES datasets(id) ON DELETE SET NULL;
+
+ALTER TABLE runs DROP CONSTRAINT IF EXISTS runs_default_key_value_store_id_fkey;
+ALTER TABLE runs ADD CONSTRAINT runs_default_key_value_store_id_fkey
+  FOREIGN KEY (default_key_value_store_id) REFERENCES key_value_stores(id) ON DELETE SET NULL;
+
+ALTER TABLE runs DROP CONSTRAINT IF EXISTS runs_default_request_queue_id_fkey;
+ALTER TABLE runs ADD CONSTRAINT runs_default_request_queue_id_fkey
+  FOREIGN KEY (default_request_queue_id) REFERENCES request_queues(id) ON DELETE SET NULL;
 `;
 
 export async function migrate(): Promise<void> {
