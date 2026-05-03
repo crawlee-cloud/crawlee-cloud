@@ -119,13 +119,24 @@ export const pushCommand = new Command('push')
     const actorName = actorJson.name!;
     const imageName = `crawlee-cloud/actor-${actorName}:${options.tag as string}`;
 
+    // Determine build mode and the image runners will pull. We resolve
+    // both up-front (rather than after the build) so the header line
+    // shows the actual deploy target, not the throwaway local tag —
+    // otherwise `--ghcr` and `--registry-url` flows print the local
+    // `crawlee-cloud/actor-...` tag which is misleading in CI logs and
+    // never appears in any registry.
+    const buildMode = options.ghcr ? 'ghcr' : options.remote ? 'remote' : 'local';
+    const runtimeImage =
+      buildMode === 'ghcr'
+        ? `ghcr.io/${(options.ghcr as string).toLowerCase()}/actor-${actorName}:${options.tag as string}`
+        : config.registryUrl && buildMode === 'local'
+          ? `${config.registryUrl}/actor-${actorName}:${options.tag as string}`
+          : imageName;
+
     console.log(chalk.dim(`Actor: ${actorName}`));
     if (actorJson.title) console.log(chalk.dim(`Title: ${actorJson.title}`));
     if (actorJson.version) console.log(chalk.dim(`Version: ${actorJson.version}`));
-    console.log(chalk.dim(`Image: ${imageName}`));
-
-    // Determine build mode
-    const buildMode = options.ghcr ? 'ghcr' : options.remote ? 'remote' : 'local';
+    console.log(chalk.dim(`Image: ${runtimeImage}`));
     console.log(chalk.dim(`Build: ${buildMode}`));
     console.log();
 
@@ -199,20 +210,6 @@ export const pushCommand = new Command('push')
         ...dropEmpty(fromFile),
         ...dropEmpty(fromFlag),
       };
-
-      // Resolve the image reference runners will pull. Mirrors the build/push
-      // branches above so the stored value matches whatever was actually pushed:
-      //   --ghcr:                       ghcr.io/<repo>/actor-<name>:<tag>
-      //   config.registryUrl + local:   <registryUrl>/actor-<name>:<tag>
-      //   local only / remote:          imageName (local Docker daemon convention)
-      // Without this, ghcr / registryUrl deploys would store the local
-      // `crawlee-cloud/actor-...` tag and runners would fail to pull it.
-      const runtimeImage =
-        buildMode === 'ghcr'
-          ? `ghcr.io/${(options.ghcr as string).toLowerCase()}/actor-${actorName}:${options.tag as string}`
-          : config.registryUrl && buildMode === 'local'
-            ? `${config.registryUrl}/actor-${actorName}:${options.tag as string}`
-            : imageName;
 
       const actorPayload = {
         name: actorName,
