@@ -64,6 +64,24 @@ function envInt(key: string, defaultValue: number): number {
   return value ? parseInt(value, 10) : defaultValue;
 }
 
+/**
+ * Like envInt, but rejects values < min at startup with a clear message.
+ * Use for config that would put the app into an unrecoverable state if
+ * misconfigured — e.g. a negative DATASET_BATCH_SIZE makes the dataset
+ * push loop step backward and never terminate (hangs the handler), and
+ * a non-positive DB_POOL_MAX leaves pg-pool unable to allocate a single
+ * connection (every query rejects).
+ */
+function envIntPositive(key: string, defaultValue: number, min = 1): number {
+  const v = envInt(key, defaultValue);
+  if (!Number.isFinite(v) || v < min) {
+    throw new Error(
+      `Invalid ${key}=${process.env[key] ?? '(unset)'} — must be an integer >= ${min}`
+    );
+  }
+  return v;
+}
+
 function envBool(key: string, defaultValue: boolean): boolean {
   const value = process.env[key];
   if (value === undefined) return defaultValue;
@@ -101,6 +119,9 @@ export const config: Config = {
 
   metricsPublic: envBool('METRICS_PUBLIC', false),
 
-  dbPoolMax: envInt('DB_POOL_MAX', 8),
-  datasetBatchSize: envInt('DATASET_BATCH_SIZE', 500),
+  // Both must be >= 1: a non-positive DB_POOL_MAX leaves pg-pool unable
+  // to allocate connections; a non-positive DATASET_BATCH_SIZE makes the
+  // push loop step backward and never terminate.
+  dbPoolMax: envIntPositive('DB_POOL_MAX', 8),
+  datasetBatchSize: envIntPositive('DATASET_BATCH_SIZE', 500),
 };
