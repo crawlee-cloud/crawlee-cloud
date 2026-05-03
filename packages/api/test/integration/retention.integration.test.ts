@@ -409,20 +409,21 @@ describe('reaper — reapDatasets', () => {
   });
 
   it('reaps unnamed datasets older than retentionDays, with S3 cleanup, and skips named/recent ones', async () => {
-    // Old unnamed (eligible).
+    // Old unnamed (eligible). modified_at must also be old or the
+    // GREATEST(accessed_at, modified_at) predicate keeps it alive.
     await pool.query(
-      `INSERT INTO datasets (id, name, user_id, accessed_at, created_at)
-       VALUES ('reap-ds-old',  NULL,    'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
+      `INSERT INTO datasets (id, name, user_id, accessed_at, modified_at, created_at)
+       VALUES ('reap-ds-old',  NULL,    'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
     );
     // Old named (skipped — named is sacred).
     await pool.query(
-      `INSERT INTO datasets (id, name, user_id, accessed_at, created_at)
-       VALUES ('reap-ds-named', 'my-ds', 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
+      `INSERT INTO datasets (id, name, user_id, accessed_at, modified_at, created_at)
+       VALUES ('reap-ds-named', 'my-ds', 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
     );
     // New unnamed (skipped — within TTL).
     await pool.query(
-      `INSERT INTO datasets (id, name, user_id, accessed_at, created_at)
-       VALUES ('reap-ds-new',  NULL,    'u1', NOW() - INTERVAL '1 day',   NOW() - INTERVAL '2 days')`
+      `INSERT INTO datasets (id, name, user_id, accessed_at, modified_at, created_at)
+       VALUES ('reap-ds-new',  NULL,    'u1', NOW() - INTERVAL '1 day', NOW() - INTERVAL '1 day', NOW() - INTERVAL '2 days')`
     );
 
     // Seed an S3 object under the eligible dataset's prefix.
@@ -502,12 +503,12 @@ describe('reaper — reapKVStores', () => {
 
   it('reaps unnamed KV stores older than retentionDays with S3 cleanup', async () => {
     await pool.query(
-      `INSERT INTO key_value_stores (id, name, user_id, accessed_at, created_at)
-       VALUES ('reap-kv-old', NULL, 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
+      `INSERT INTO key_value_stores (id, name, user_id, accessed_at, modified_at, created_at)
+       VALUES ('reap-kv-old', NULL, 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
     );
     await pool.query(
-      `INSERT INTO key_value_stores (id, name, user_id, accessed_at, created_at)
-       VALUES ('reap-kv-named', 'my-kv', 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
+      `INSERT INTO key_value_stores (id, name, user_id, accessed_at, modified_at, created_at)
+       VALUES ('reap-kv-named', 'my-kv', 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
     );
 
     await s3.send(
@@ -556,9 +557,9 @@ describe('reaper — reapRequestQueues', () => {
 
   it('reaps unnamed queues older than retentionDays and CASCADE-deletes their requests', async () => {
     await pool.query(
-      `INSERT INTO request_queues (id, name, user_id, accessed_at, created_at)
-       VALUES ('reap-rq-old',   NULL,    'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days'),
-              ('reap-rq-named', 'my-rq', 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
+      `INSERT INTO request_queues (id, name, user_id, accessed_at, modified_at, created_at)
+       VALUES ('reap-rq-old',   NULL,    'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days'),
+              ('reap-rq-named', 'my-rq', 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
     );
     // Seed 5 requests under the eligible queue. CASCADE should clean them.
     for (let i = 0; i < 5; i++) {
@@ -728,16 +729,16 @@ describe('reaper — runReaperTick orchestration', () => {
        VALUES ('orch-run', 'ret-test-actor', 'ret-test-user', 'SUCCEEDED', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
     );
     await pool.query(
-      `INSERT INTO datasets (id, name, user_id, accessed_at, created_at)
-       VALUES ('orch-ds', NULL, 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
+      `INSERT INTO datasets (id, name, user_id, accessed_at, modified_at, created_at)
+       VALUES ('orch-ds', NULL, 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
     );
     await pool.query(
-      `INSERT INTO key_value_stores (id, name, user_id, accessed_at, created_at)
-       VALUES ('orch-kv', NULL, 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
+      `INSERT INTO key_value_stores (id, name, user_id, accessed_at, modified_at, created_at)
+       VALUES ('orch-kv', NULL, 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
     );
     await pool.query(
-      `INSERT INTO request_queues (id, name, user_id, accessed_at, created_at)
-       VALUES ('orch-rq', NULL, 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
+      `INSERT INTO request_queues (id, name, user_id, accessed_at, modified_at, created_at)
+       VALUES ('orch-rq', NULL, 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
     );
     // An old tombstone for the prune phase.
     await pool.query(

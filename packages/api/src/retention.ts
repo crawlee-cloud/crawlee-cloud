@@ -78,9 +78,16 @@ export async function reapRuns(client: pg.PoolClient): Promise<string[]> {
 }
 
 /**
- * Phase 2: reap unnamed datasets whose accessed_at is older than
+ * Phase 2: reap unnamed datasets whose last activity is older than
  * retentionDays. Returns the IDs of reaped datasets so the caller can
  * delete the corresponding S3 prefixes after releasing the DB connection.
+ *
+ * "Last activity" = `GREATEST(accessed_at, modified_at)`. The data-write
+ * paths (`POST /datasets/:id/items`) bump `modified_at` but not
+ * `accessed_at`, so a dataset under active push but no reads would
+ * otherwise be reaped after RETENTION_DAYS — taking `modified_at` into
+ * account closes that gap without forcing every writer to remember to
+ * touch `accessed_at`.
  */
 export async function reapDatasets(client: pg.PoolClient): Promise<string[]> {
   const result = await client.query<{ resource_id: string }>(
@@ -89,13 +96,13 @@ export async function reapDatasets(client: pg.PoolClient): Promise<string[]> {
          WHERE id IN (
            SELECT id FROM datasets
              WHERE name IS NULL
-               AND accessed_at < NOW() - $1::int * INTERVAL '1 day'
-             ORDER BY accessed_at ASC
+               AND GREATEST(accessed_at, modified_at) < NOW() - $1::int * INTERVAL '1 day'
+             ORDER BY GREATEST(accessed_at, modified_at) ASC
              LIMIT $2
              FOR UPDATE SKIP LOCKED
          )
          AND name IS NULL
-         AND accessed_at < NOW() - $1::int * INTERVAL '1 day'
+         AND GREATEST(accessed_at, modified_at) < NOW() - $1::int * INTERVAL '1 day'
        RETURNING id, name, user_id, created_at
      )
      INSERT INTO retention_tombstones
@@ -110,8 +117,10 @@ export async function reapDatasets(client: pg.PoolClient): Promise<string[]> {
 }
 
 /**
- * Phase 3: reap unnamed KV stores whose accessed_at is older than
- * retentionDays. Same shape as reapDatasets.
+ * Phase 3: reap unnamed KV stores whose last activity is older than
+ * retentionDays. Same shape as reapDatasets — uses
+ * `GREATEST(accessed_at, modified_at)` so KV record PUT/DELETE (which
+ * only bumps modified_at) doesn't make the store look idle.
  */
 export async function reapKVStores(client: pg.PoolClient): Promise<string[]> {
   const result = await client.query<{ resource_id: string }>(
@@ -120,13 +129,13 @@ export async function reapKVStores(client: pg.PoolClient): Promise<string[]> {
          WHERE id IN (
            SELECT id FROM key_value_stores
              WHERE name IS NULL
-               AND accessed_at < NOW() - $1::int * INTERVAL '1 day'
-             ORDER BY accessed_at ASC
+               AND GREATEST(accessed_at, modified_at) < NOW() - $1::int * INTERVAL '1 day'
+             ORDER BY GREATEST(accessed_at, modified_at) ASC
              LIMIT $2
              FOR UPDATE SKIP LOCKED
          )
          AND name IS NULL
-         AND accessed_at < NOW() - $1::int * INTERVAL '1 day'
+         AND GREATEST(accessed_at, modified_at) < NOW() - $1::int * INTERVAL '1 day'
        RETURNING id, name, user_id, created_at
      )
      INSERT INTO retention_tombstones
@@ -156,13 +165,13 @@ export async function reapRequestQueues(client: pg.PoolClient): Promise<string[]
          WHERE id IN (
            SELECT id FROM request_queues
              WHERE name IS NULL
-               AND accessed_at < NOW() - $1::int * INTERVAL '1 day'
-             ORDER BY accessed_at ASC
+               AND GREATEST(accessed_at, modified_at) < NOW() - $1::int * INTERVAL '1 day'
+             ORDER BY GREATEST(accessed_at, modified_at) ASC
              LIMIT $2
              FOR UPDATE SKIP LOCKED
          )
          AND name IS NULL
-         AND accessed_at < NOW() - $1::int * INTERVAL '1 day'
+         AND GREATEST(accessed_at, modified_at) < NOW() - $1::int * INTERVAL '1 day'
        RETURNING id, name, user_id, created_at
      )
      INSERT INTO retention_tombstones
