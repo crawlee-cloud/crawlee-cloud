@@ -23,6 +23,7 @@ import { systemRoutes } from './routes/system.js';
 import { requireAdmin } from './auth/middleware.js';
 import { setupAdminUser } from './setup.js';
 import { initScheduler } from './scheduler.js';
+import { initRetention, unregisterRetention } from './retention.js';
 import { initScaler } from './scaler/index.js';
 import { registry, httpRequestsTotal, httpRequestDuration } from './metrics.js';
 import { registerHealthRoutes } from './health.js';
@@ -196,6 +197,9 @@ async function start() {
   // Start cron scheduler
   await initScheduler();
 
+  // Register retention reaper (no-op when RETENTION_ENABLED=false)
+  initRetention();
+
   // Start auto-scaler (disabled by default, no-op when SCALER_ENABLED != true)
   await initScaler();
 
@@ -220,9 +224,10 @@ function setupGracefulShutdown(): void {
     }, shutdownTimeoutSecs * 1000);
 
     try {
-      // 1. Stop scheduler and scaler
+      // 1. Stop scheduler, retention reaper, and scaler
       const { unregisterAllSchedules } = await import('./scheduler.js');
       unregisterAllSchedules();
+      unregisterRetention();
       const { stopScaler } = await import('./scaler/index.js');
       stopScaler();
 
