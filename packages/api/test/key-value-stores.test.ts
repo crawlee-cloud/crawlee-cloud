@@ -54,8 +54,8 @@ describe('Key-Value Store Routes', () => {
   });
 
   describe('GET /v2/key-value-stores', () => {
-    it('should list stores', async () => {
-      mockQuery.mockResolvedValueOnce({
+    it('should list stores with real total from COUNT(*)', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ total: '1' }] }).mockResolvedValueOnce({
         rows: [
           {
             id: 'kv-1',
@@ -76,6 +76,7 @@ describe('Key-Value Store Routes', () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body.data.items).toHaveLength(1);
+      expect(body.data.total).toBe(1);
     });
   });
 

@@ -62,8 +62,10 @@ describe('Actor Routes', () => {
   });
 
   describe('GET /v2/acts', () => {
-    it('should list actors', async () => {
-      mockQuery.mockResolvedValueOnce({
+    it('should list actors with real total from COUNT(*)', async () => {
+      // Two parallel queries: COUNT then page. Promise.all calls them in
+      // array order so the mock queue must answer COUNT first.
+      mockQuery.mockResolvedValueOnce({ rows: [{ total: '142' }] }).mockResolvedValueOnce({
         rows: [createActorRow(), createActorRow({ id: 'actor-2', name: 'actor-2' })],
       });
 
@@ -75,6 +77,31 @@ describe('Actor Routes', () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body.data.items).toHaveLength(2);
+      expect(body.data.total).toBe(142); // real COUNT, not the page length
+      expect(body.data.count).toBe(2);
+      expect(body.data.offset).toBe(0);
+      expect(body.data.limit).toBe(100);
+    });
+
+    it('honours ?offset and ?limit query params', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ total: '500' }] })
+        .mockResolvedValueOnce({ rows: [createActorRow()] });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/acts?offset=200&limit=50',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.data.total).toBe(500);
+      expect(body.data.offset).toBe(200);
+      expect(body.data.limit).toBe(50);
+      // The SELECT mock call (call #2) should have been issued with the
+      // parsed offset and limit as the trailing parameters.
+      const pageCallArgs = mockQuery.mock.calls[1];
+      expect(pageCallArgs?.[1]).toEqual([expect.any(String), 50, 200]);
     });
   });
 

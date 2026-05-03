@@ -77,7 +77,8 @@ describe('Authorization Tests', () => {
 
   describe('Actors - User Isolation', () => {
     it('should only list actors owned by the current user', async () => {
-      mockQuery.mockResolvedValueOnce({
+      // List endpoints now run COUNT + SELECT in parallel — mock both.
+      mockQuery.mockResolvedValueOnce({ rows: [{ total: '1' }] }).mockResolvedValueOnce({
         rows: [{ id: 'actor-1', name: 'my-actor', user_id: USER_A.id, title: 'My Actor' }],
       });
 
@@ -88,7 +89,8 @@ describe('Authorization Tests', () => {
 
       expect(response.statusCode).toBe(200);
 
-      // Verify query includes user_id filter
+      // Both queries must include the user_id filter (the COUNT and the SELECT).
+      // toHaveBeenCalledWith matches if any call equals the given args.
       expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('user_id = $1'), [USER_A.id]);
     });
 
@@ -152,7 +154,7 @@ describe('Authorization Tests', () => {
 
   describe('Datasets - User Isolation', () => {
     it('should only list datasets owned by the current user', async () => {
-      mockQuery.mockResolvedValueOnce({
+      mockQuery.mockResolvedValueOnce({ rows: [{ total: '1' }] }).mockResolvedValueOnce({
         rows: [{ id: 'ds-1', name: 'my-dataset', user_id: USER_A.id }],
       });
 
@@ -203,7 +205,7 @@ describe('Authorization Tests', () => {
 
   describe('Key-Value Stores - User Isolation', () => {
     it('should only list KV stores owned by the current user', async () => {
-      mockQuery.mockResolvedValueOnce({
+      mockQuery.mockResolvedValueOnce({ rows: [{ total: '1' }] }).mockResolvedValueOnce({
         rows: [{ id: 'kv-1', name: 'my-store', user_id: USER_A.id }],
       });
 
@@ -232,7 +234,7 @@ describe('Authorization Tests', () => {
 
   describe('Request Queues - User Isolation', () => {
     it('should only list queues owned by the current user', async () => {
-      mockQuery.mockResolvedValueOnce({
+      mockQuery.mockResolvedValueOnce({ rows: [{ total: '1' }] }).mockResolvedValueOnce({
         rows: [{ id: 'q-1', name: 'my-queue', user_id: USER_A.id }],
       });
 

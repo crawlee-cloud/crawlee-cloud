@@ -127,8 +127,8 @@ describe('Webhook Routes', () => {
   });
 
   describe('GET /v2/webhooks', () => {
-    it('should list user webhooks', async () => {
-      mockQuery.mockResolvedValueOnce({
+    it('should list user webhooks with real total from COUNT(*)', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ total: '2' }] }).mockResolvedValueOnce({
         rows: [
           createWebhookRow(),
           createWebhookRow({ id: 'webhook-2', description: 'Second webhook' }),
@@ -149,7 +149,9 @@ describe('Webhook Routes', () => {
     });
 
     it('should return empty list when no webhooks exist', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ total: '0' }] })
+        .mockResolvedValueOnce({ rows: [] });
 
       const response = await app.inject({
         method: 'GET',

@@ -140,8 +140,10 @@ describe('Schedule Routes', () => {
   });
 
   describe('GET /v2/schedules', () => {
-    it('should list user schedules', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+    it('should list user schedules with real total from COUNT(*)', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ total: '0' }] })
+        .mockResolvedValueOnce({ rows: [] });
 
       const response = await app.inject({
         method: 'GET',
@@ -157,7 +159,7 @@ describe('Schedule Routes', () => {
     });
 
     it('should return schedules when they exist', async () => {
-      mockQuery.mockResolvedValueOnce({
+      mockQuery.mockResolvedValueOnce({ rows: [{ total: '2' }] }).mockResolvedValueOnce({
         rows: [
           createScheduleRow(),
           createScheduleRow({ id: 'schedule-2', name: 'Second Schedule' }),

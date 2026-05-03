@@ -80,8 +80,8 @@ describe('Request Queue Routes', () => {
   });
 
   describe('GET /v2/request-queues', () => {
-    it('should list queues', async () => {
-      mockQuery.mockResolvedValueOnce({
+    it('should list queues with real total from COUNT(*)', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ total: '2' }] }).mockResolvedValueOnce({
         rows: [createQueueRow(), createQueueRow({ id: 'queue-2', name: 'queue-2' })],
       });
 
@@ -93,6 +93,7 @@ describe('Request Queue Routes', () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body.data.items).toHaveLength(2);
+      expect(body.data.total).toBe(2);
     });
   });
 

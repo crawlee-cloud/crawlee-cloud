@@ -150,20 +150,47 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
 
   /**
    * GET /v2/acts - List actors (filtered by user)
+   *
+   * Apify-shaped pagination: { data: { total, count, offset, limit, items } }
+   * where `total` is the real row count from a parallel COUNT(*) query and
+   * `count` is the length of the returned page. The previous version
+   * hardcoded LIMIT 100 in SQL, ignored the ?limit/?offset query params,
+   * and returned `total = result.rows.length` (always ≤ 100). Consumers
+   * trusting `total` concluded there were exactly 100 actors no matter
+   * how many actually existed.
+   *
+   * Mirrors the pattern in runs.ts and datasets.ts.
    */
-  fastify.get('/acts', async (request) => {
-    const result = await query<ActorRow>(
-      'SELECT * FROM actors WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100',
-      [request.user!.id]
-    );
+  fastify.get<{
+    Querystring: { offset?: string; limit?: string };
+  }>('/acts', async (request) => {
+    const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
+    const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
+
+    // COUNT and SELECT run in parallel. Stable tiebreaker on `id` so
+    // LIMIT/OFFSET paging doesn't drop or duplicate rows when two actors
+    // share the same created_at (ms-precision ties happen on bulk imports).
+    const [countResult, pageResult] = await Promise.all([
+      query<{ total: string }>('SELECT COUNT(*)::text AS total FROM actors WHERE user_id = $1', [
+        request.user!.id,
+      ]),
+      query<ActorRow>(
+        `SELECT * FROM actors WHERE user_id = $1
+         ORDER BY created_at DESC, id DESC
+         LIMIT $2 OFFSET $3`,
+        [request.user!.id, limit, offset]
+      ),
+    ]);
+
+    const total = parseInt(countResult.rows[0]?.total ?? '0', 10);
 
     return {
       data: {
-        total: result.rows.length,
-        count: result.rows.length,
-        offset: 0,
-        limit: 100,
-        items: result.rows.map(formatActor),
+        total,
+        count: pageResult.rows.length,
+        offset,
+        limit,
+        items: pageResult.rows.map(formatActor),
       },
     };
   });

@@ -81,19 +81,33 @@ export const webhooksRoutes: FastifyPluginAsync = async (fastify) => {
   /**
    * GET /v2/webhooks - List user's webhooks
    */
-  fastify.get('/webhooks', async (request) => {
-    const result = await query<WebhookRow>(
-      'SELECT * FROM webhooks WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100',
-      [request.user!.id]
-    );
+  fastify.get<{
+    Querystring: { offset?: string; limit?: string };
+  }>('/webhooks', async (request) => {
+    const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
+    const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
+
+    const [countResult, pageResult] = await Promise.all([
+      query<{ total: string }>('SELECT COUNT(*)::text AS total FROM webhooks WHERE user_id = $1', [
+        request.user!.id,
+      ]),
+      query<WebhookRow>(
+        `SELECT * FROM webhooks WHERE user_id = $1
+         ORDER BY created_at DESC, id DESC
+         LIMIT $2 OFFSET $3`,
+        [request.user!.id, limit, offset]
+      ),
+    ]);
+
+    const total = parseInt(countResult.rows[0]?.total ?? '0', 10);
 
     return {
       data: {
-        total: result.rows.length,
-        count: result.rows.length,
-        offset: 0,
-        limit: 100,
-        items: result.rows.map(formatWebhook),
+        total,
+        count: pageResult.rows.length,
+        offset,
+        limit,
+        items: pageResult.rows.map(formatWebhook),
       },
     };
   });

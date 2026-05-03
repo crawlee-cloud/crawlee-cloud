@@ -51,8 +51,10 @@ describe('Dataset Routes', () => {
   });
 
   describe('GET /v2/datasets', () => {
-    it('should list datasets', async () => {
-      mockQuery.mockResolvedValueOnce({
+    it('should list datasets with real total from COUNT(*)', async () => {
+      // Two parallel queries: COUNT then page. Promise.all calls them in
+      // array order so the mock queue must answer COUNT first.
+      mockQuery.mockResolvedValueOnce({ rows: [{ total: '2' }] }).mockResolvedValueOnce({
         rows: [
           {
             id: 'ds-1',
@@ -84,6 +86,7 @@ describe('Dataset Routes', () => {
       const body = JSON.parse(response.body);
       expect(body.data.items).toHaveLength(2);
       expect(body.data.total).toBe(2);
+      expect(body.data.count).toBe(2);
     });
   });
 
