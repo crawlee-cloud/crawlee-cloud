@@ -89,7 +89,7 @@ describe('applyWebhookTemplate', () => {
     expect(out).toEqual(PAYLOAD);
   });
 
-  it('renders the canonical Apify default-shape template into the same payload', () => {
+  it('renders the quoted Apify default-shape template into the same payload', () => {
     const apifyDefault = `{
       "userId": "{{userId}}",
       "createdAt": "{{createdAt}}",
@@ -99,5 +99,40 @@ describe('applyWebhookTemplate', () => {
     }`;
     const out = applyWebhookTemplate(apifyDefault, PAYLOAD);
     expect(out).toEqual(PAYLOAD);
+  });
+
+  it('renders the UNQUOTED Apify default template (literal docs example) too', () => {
+    // Apify's docs show this exact form. The previous regex two-pass
+    // engine string-coerced the unquoted placeholders ("[object Object]")
+    // and silently fell back to the default payload — fixed here.
+    const apifyUnquoted = `{
+      "userId": {{userId}},
+      "createdAt": {{createdAt}},
+      "eventType": {{eventType}},
+      "eventData": {{eventData}},
+      "resource": {{resource}}
+    }`;
+    const out = applyWebhookTemplate(apifyUnquoted, PAYLOAD);
+    expect(out).toEqual(PAYLOAD);
+  });
+
+  it('mixes quoted and unquoted forms in the same template', () => {
+    const mixed = `{
+      "id": "{{userId}}",
+      "data": {{eventData}},
+      "logged": "User {{userId}} fired {{eventType}}"
+    }`;
+    const out = applyWebhookTemplate(mixed, PAYLOAD);
+    expect(out).toEqual({
+      id: 'u-123',
+      data: { actorId: 'act-1', actorRunId: 'run-1' },
+      logged: 'User u-123 fired ACTOR.RUN.SUCCEEDED',
+    });
+  });
+
+  it('handles unquoted scalar placeholders as typed values', () => {
+    const t = `{ "ms": {{resource.stats.runTimeSecs}}, "id": {{userId}} }`;
+    const out = applyWebhookTemplate(t, PAYLOAD);
+    expect(out).toEqual({ ms: 42, id: 'u-123' });
   });
 });

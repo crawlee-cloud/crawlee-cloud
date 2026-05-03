@@ -1,23 +1,28 @@
 /**
  * Webhook payload template engine — Apify-compatible.
  *
- * Apify's template syntax has a documented behavior we now match:
+ * Apify's template syntax has two ways to reference a variable, both of
+ * which produce the typed value spliced in:
  *
- *   • `"{{key}}"` (entire string cell is the variable) → typed value
- *     spliced in via JSON.stringify. For object/array/number/boolean/
- *     null values the surrounding quotes drop, so the placeholder
- *     becomes a JSON value of the matching type. For string values
- *     the quotes stay.
- *   • `"text {{key}} more"` (interpolated mid-string) → String coercion.
- *     Numbers/strings interpolate naturally; objects render as
- *     `[object Object]` (operator should fix their template).
- *   • `{{key.path.to.field}}` — dot notation, drills into nested
- *     properties. Returns `undefined` (→ JSON null in Pass 1, empty
- *     string in Pass 2) if any path segment is missing.
+ *   • `"{{key}}"` (quoted, entire string-cell is the variable)
+ *   • `{{key}}`   (unquoted, sits as a JSON value)
  *
- * Two-pass implementation: a JSON-aware engine would be more correct
- * but ~10× larger. The two-pass regex covers the cases Apify's docs
- * actually call out, and we lock the behavior with a contract test.
+ * Apify's documented default template uses the unquoted form
+ * (`"eventData": {{eventData}}`); operators authoring custom templates
+ * with their JSON editor's auto-quote behaviour will produce the
+ * quoted form (`"eventData": "{{eventData}}"`). Both must work.
+ *
+ * Mid-string interpolation (`"text {{userId}} more"`) string-coerces
+ * the value, regardless of type.
+ *
+ * Implementation: a small character-by-character scan stitches each
+ * `{{...}}` into a placeholder sentinel — bare sentinel when we're
+ * inside a JSON string (so the surrounding `"..."` keeps its shape),
+ * a JSON-encoded sentinel string when we're in JSON value position.
+ * Then JSON.parse the result and walk the tree: strings whose entire
+ * content is a sentinel are replaced with the typed value, strings
+ * with embedded sentinels get each sentinel string-coerced. JSON.parse
+ * decides what's a value and what's an interpolated string for us.
  *
  * KEEP IN SYNC with packages/runner/src/webhook-template.ts —
  * the runner ships production deliveries through the same engine, so
@@ -40,11 +45,58 @@ function resolveDotted(root: Record<string, unknown>, path: string): unknown {
 }
 
 /**
+ * Walk the raw template, emitting the same characters except every
+ * `{{...}}` is replaced with a sentinel. Records the captured keys in
+ * `placeholders` (parallel array — sentinel index maps to keys index).
+ *
+ * Inside a JSON string, the sentinel is bare so the surrounding string
+ * stays one JSON string. Outside any string (value position), the
+ * sentinel is JSON-encoded so the placeholder sits as a JSON string
+ * value — making both quoted (`"{{x}}"`) and unquoted (`{{x}}`) forms
+ * legal JSON post-stitch.
+ */
+function stitchTemplate(template: string, tag: string, placeholders: string[]): string {
+  let out = '';
+  let inString = false;
+  let i = 0;
+  while (i < template.length) {
+    const ch = template[i]!;
+    if (inString && ch === '\\') {
+      // Pass through escape + next char untouched.
+      out += template.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === '{' && template[i + 1] === '{') {
+      const end = template.indexOf('}}', i + 2);
+      if (end !== -1) {
+        const key = template.slice(i + 2, end).trim();
+        const idx = placeholders.length;
+        placeholders.push(key);
+        out += inString ? `${tag}${idx}__` : JSON.stringify(`${tag}${idx}__`);
+        i = end + 2;
+        continue;
+      }
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+/**
  * Apply a user-supplied payload_template to the default Apify-shape
  * payload. Returns the parsed substituted JSON. If the template is
- * `null` or empty, returns `defaultPayload` unchanged. If substitution
- * produces invalid JSON, returns `defaultPayload` and (caller-visible)
- * the receiver gets the safe default rather than a broken body.
+ * `null`/empty, returns `defaultPayload` unchanged. If the template is
+ * unparseable JSON even after sentinel substitution, returns
+ * `defaultPayload` so receivers get the safe default rather than a
+ * broken body.
  */
 export function applyWebhookTemplate(
   template: string | null | undefined,
@@ -52,32 +104,51 @@ export function applyWebhookTemplate(
 ): unknown {
   if (!template) return defaultPayload;
 
-  // Pass 1: replace any `"{{key}}"` whose ENTIRE string-cell content is
-  // a single variable. JSON.stringify both the key resolution and the
-  // surrounding quotes so the result is valid JSON regardless of value
-  // type — strings keep their quotes, objects/arrays/bools/null drop them.
-  const afterPass1 = template.replace(
-    /"\{\{\s*([^}]+?)\s*\}\}"/g,
-    (_match: string, key: string): string => {
-      const v = resolveDotted(defaultPayload, key);
-      return v === undefined ? 'null' : JSON.stringify(v);
-    }
-  );
+  // Per-call random tag avoids any collision with a literal string a
+  // user might happen to have in their data.
+  const tag = `__CW_PH_${Math.random().toString(36).slice(2, 10)}_`;
+  const placeholders: string[] = [];
 
-  // Pass 2: any remaining `{{key}}` is mid-string interpolation. String-
-  // coerce so `"hello {{userId}}"` works without breaking the JSON.
-  const afterPass2 = afterPass1.replace(
-    /\{\{\s*([^}]+?)\s*\}\}/g,
-    (_match: string, key: string): string => {
-      const v = resolveDotted(defaultPayload, key);
-      if (v === undefined || v === null) return '';
-      return String(v);
-    }
-  );
-
+  let parsed: unknown;
   try {
-    return JSON.parse(afterPass2);
+    parsed = JSON.parse(stitchTemplate(template, tag, placeholders));
   } catch {
     return defaultPayload;
   }
+
+  const fullPattern = new RegExp(`^${escapeRegex(tag)}(\\d+)__$`);
+  const interpolatePattern = new RegExp(`${escapeRegex(tag)}(\\d+)__`, 'g');
+
+  function walk(node: unknown): unknown {
+    if (typeof node === 'string') {
+      const fullMatch = node.match(fullPattern);
+      if (fullMatch) {
+        // Lone-variable cell — return the typed value (or null if the
+        // key resolved to undefined, since `undefined` isn't valid JSON
+        // and the receiver should see an explicit "missing" signal).
+        const v = resolveDotted(defaultPayload, placeholders[parseInt(fullMatch[1]!, 10)]!);
+        return v === undefined ? null : v;
+      }
+      return node.replace(interpolatePattern, (_, idxStr: string) => {
+        const v = resolveDotted(defaultPayload, placeholders[parseInt(idxStr, 10)]!);
+        return v === undefined || v === null ? '' : String(v);
+      });
+    }
+    if (Array.isArray(node)) return node.map(walk);
+    if (node !== null && typeof node === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const k of Object.keys(node as Record<string, unknown>)) {
+        out[k] = walk((node as Record<string, unknown>)[k]);
+      }
+      return out;
+    }
+    return node;
+  }
+
+  return walk(parsed);
+}
+
+/** Escape regex metacharacters so a runtime-built tag turns into a literal. */
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
