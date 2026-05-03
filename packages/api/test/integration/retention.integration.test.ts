@@ -7,7 +7,7 @@
  * which imports `pool` from db/index.js, sees the same connection pool
  * the tests use for direct setup queries.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import type pg from 'pg';
 import { S3Client, PutObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { TEST_CONFIG, ensureS3Bucket, runMigrations } from './setup.js';
@@ -328,6 +328,84 @@ describe('reaper — advisory lock', () => {
     } finally {
       await blockingClient.query('SELECT pg_advisory_unlock($1)', [0xc0debeef]);
       blockingClient.release();
+    }
+  });
+});
+
+describe('reaper — reapRuns', () => {
+  beforeEach(async () => {
+    // Clean slate for each test.
+    await pool.query(`DELETE FROM retention_tombstones WHERE resource_kind = 'run'`);
+    await pool.query(`DELETE FROM runs WHERE id LIKE 'reap-test-%'`);
+  });
+
+  it('reaps finished runs older than retentionDays and writes tombstones with metadata', async () => {
+    // Insert: one old finished run (eligible), one new finished run (recent),
+    // one old unfinished run (no finished_at, ineligible). All reference the
+    // shared fixture actor inserted in beforeAll.
+    await pool.query(
+      `INSERT INTO runs (id, actor_id, user_id, status, finished_at, created_at)
+       VALUES
+         ('reap-test-old',   'ret-test-actor', 'ret-test-user', 'SUCCEEDED', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days'),
+         ('reap-test-new',   'ret-test-actor', 'ret-test-user', 'SUCCEEDED', NOW() - INTERVAL '1 day',   NOW() - INTERVAL '2 days'),
+         ('reap-test-zomb',  'ret-test-actor', 'ret-test-user', 'RUNNING',   NULL,                       NOW() - INTERVAL '60 days')`
+    );
+
+    const { reapRuns } = await import('../../src/retention.js');
+    const client = await pool.connect();
+    try {
+      const reaped = await reapRuns(client);
+      expect(reaped).toBe(1);
+    } finally {
+      client.release();
+    }
+
+    // Old finished run: gone.
+    const oldExists = await pool.query(`SELECT 1 FROM runs WHERE id = 'reap-test-old'`);
+    expect(oldExists.rows).toHaveLength(0);
+
+    // New finished + old unfinished: still there.
+    const newExists = await pool.query(`SELECT 1 FROM runs WHERE id = 'reap-test-new'`);
+    expect(newExists.rows).toHaveLength(1);
+    const zombExists = await pool.query(`SELECT 1 FROM runs WHERE id = 'reap-test-zomb'`);
+    expect(zombExists.rows).toHaveLength(1);
+
+    // Tombstone exists with metadata.
+    const tomb = await pool.query<{
+      resource_id: string;
+      reason: string;
+      metadata: { actor_id: string; status: string };
+    }>(
+      `SELECT resource_id, reason, metadata FROM retention_tombstones
+        WHERE resource_kind = 'run' AND resource_id = 'reap-test-old'`
+    );
+    expect(tomb.rows).toHaveLength(1);
+    expect(tomb.rows[0]?.reason).toBe('expired-run');
+    expect(tomb.rows[0]?.metadata).toEqual({ actor_id: 'ret-test-actor', status: 'SUCCEEDED' });
+  });
+
+  it('respects RETENTION_BATCH_SIZE per call', async () => {
+    // Insert 5 reapable runs; with batch size 3 only 3 should reap per call.
+    for (let i = 0; i < 5; i++) {
+      await pool.query(
+        `INSERT INTO runs (id, actor_id, user_id, status, finished_at, created_at)
+         VALUES ($1, 'ret-test-actor', 'ret-test-user', 'SUCCEEDED', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`,
+        [`reap-test-batch-${i}`]
+      );
+    }
+
+    process.env.RETENTION_BATCH_SIZE = '3';
+    vi.resetModules();
+    const { reapRuns } = await import('../../src/retention.js');
+    const client = await pool.connect();
+    try {
+      const reaped1 = await reapRuns(client);
+      expect(reaped1).toBe(3);
+      const reaped2 = await reapRuns(client);
+      expect(reaped2).toBe(2);
+    } finally {
+      client.release();
+      delete process.env.RETENTION_BATCH_SIZE;
     }
   });
 });

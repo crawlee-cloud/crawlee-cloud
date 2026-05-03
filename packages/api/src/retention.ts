@@ -11,6 +11,7 @@
  */
 
 import cron from 'node-cron';
+import type pg from 'pg';
 import { pool } from './db/index.js';
 import { config } from './config.js';
 
@@ -24,6 +25,46 @@ import { config } from './config.js';
 export const RETENTION_LOCK_ID = 0xc0debeef;
 
 let cronTask: cron.ScheduledTask | null = null;
+
+/**
+ * Phase 1: reap runs whose finished_at is older than retentionDays.
+ *
+ * Single CTE-with-recheck statement for atomicity. The inner SELECT acquires
+ * row locks via FOR UPDATE SKIP LOCKED; the outer DELETE re-checks the
+ * eligibility predicate (defense in depth — closes any window where a row's
+ * state could have flipped, even though the lock should prevent that). The
+ * outer INSERT writes one tombstone per deleted row, with metadata
+ * carrying actor_id + status for audit.
+ *
+ * Returns the number of rows reaped.
+ */
+export async function reapRuns(client: pg.PoolClient): Promise<number> {
+  const result = await client.query(
+    `WITH deleted AS (
+       DELETE FROM runs
+         WHERE id IN (
+           SELECT id FROM runs
+             WHERE finished_at IS NOT NULL
+               AND finished_at < NOW() - $1::int * INTERVAL '1 day'
+             ORDER BY finished_at ASC
+             LIMIT $2
+             FOR UPDATE SKIP LOCKED
+         )
+         AND finished_at IS NOT NULL
+         AND finished_at < NOW() - $1::int * INTERVAL '1 day'
+       RETURNING id, user_id, created_at, actor_id, status
+     )
+     INSERT INTO retention_tombstones
+       (resource_kind, resource_id, resource_name, user_id, reason,
+        original_created_at, metadata)
+     SELECT 'run', id, NULL, user_id, 'expired-run', created_at,
+            jsonb_build_object('actor_id', actor_id, 'status', status)
+       FROM deleted
+     RETURNING resource_id`,
+    [config.retentionDays, config.retentionBatchSize]
+  );
+  return result.rowCount ?? 0;
+}
 
 /**
  * Run a single reaper tick. Pins one pool connection for the entire window,
@@ -44,11 +85,13 @@ export async function runReaperTick(): Promise<void> {
       return;
     }
     try {
+      const stats = { runs: 0, datasets: 0, kvStores: 0, requestQueues: 0, tombstones: 0 };
       const tickStart = Date.now();
-      // Phases 1-5 plug in here; for now the skeleton just logs a no-op tick.
+      stats.runs = await reapRuns(client);
       console.log(
         `[retention] tick complete elapsed=${Date.now() - tickStart}ms ` +
-          `runs=0 datasets=0 kv=0 queues=0 tombstones-pruned=0`
+          `runs=${stats.runs} datasets=${stats.datasets} kv=${stats.kvStores} ` +
+          `queues=${stats.requestQueues} tombstones-pruned=${stats.tombstones}`
       );
     } finally {
       try {
