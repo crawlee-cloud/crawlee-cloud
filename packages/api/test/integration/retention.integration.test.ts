@@ -707,3 +707,63 @@ describe('GET /v2/system/retention/status', () => {
     }
   });
 });
+
+describe('reaper — runReaperTick orchestration', () => {
+  beforeEach(async () => {
+    await pool.query(`DELETE FROM retention_tombstones WHERE resource_id LIKE 'orch-%'`);
+    await pool.query(`DELETE FROM runs WHERE id LIKE 'orch-%'`);
+    await pool.query(`DELETE FROM datasets WHERE id LIKE 'orch-%'`);
+    await pool.query(`DELETE FROM key_value_stores WHERE id LIKE 'orch-%'`);
+    await pool.query(`DELETE FROM request_queues WHERE id LIKE 'orch-%'`);
+  });
+
+  it('runs all 5 phases in one tick and writes the tick-stats hash to Redis', async () => {
+    // Seed one eligible row per kind.
+    await pool.query(
+      `INSERT INTO runs (id, actor_id, user_id, status, finished_at, created_at)
+       VALUES ('orch-run', 'ret-test-actor', 'ret-test-user', 'SUCCEEDED', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
+    );
+    await pool.query(
+      `INSERT INTO datasets (id, name, user_id, accessed_at, created_at)
+       VALUES ('orch-ds', NULL, 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
+    );
+    await pool.query(
+      `INSERT INTO key_value_stores (id, name, user_id, accessed_at, created_at)
+       VALUES ('orch-kv', NULL, 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
+    );
+    await pool.query(
+      `INSERT INTO request_queues (id, name, user_id, accessed_at, created_at)
+       VALUES ('orch-rq', NULL, 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
+    );
+    // An old tombstone for the prune phase.
+    await pool.query(
+      `INSERT INTO retention_tombstones (resource_kind, resource_id, reason, deleted_at)
+       VALUES ('dataset', 'orch-old-tomb', 'expired-unnamed', NOW() - INTERVAL '400 days')`
+    );
+
+    const { runReaperTick } = await import('../../src/retention.js');
+    await runReaperTick();
+
+    // All four primary rows reaped.
+    expect((await pool.query(`SELECT 1 FROM runs WHERE id = 'orch-run'`)).rows).toHaveLength(0);
+    expect((await pool.query(`SELECT 1 FROM datasets WHERE id = 'orch-ds'`)).rows).toHaveLength(0);
+    expect(
+      (await pool.query(`SELECT 1 FROM key_value_stores WHERE id = 'orch-kv'`)).rows
+    ).toHaveLength(0);
+    expect(
+      (await pool.query(`SELECT 1 FROM request_queues WHERE id = 'orch-rq'`)).rows
+    ).toHaveLength(0);
+
+    // Old tombstone pruned.
+    expect(
+      (await pool.query(`SELECT 1 FROM retention_tombstones WHERE resource_id = 'orch-old-tomb'`))
+        .rows
+    ).toHaveLength(0);
+
+    // Tick-stats written to Redis.
+    const { redis } = await import('../../src/storage/redis.js');
+    const tick = await redis.hgetall('retention:last-tick');
+    expect(tick.at).toBeTruthy();
+    expect(parseInt(tick.elapsed_ms, 10)).toBeGreaterThanOrEqual(0);
+  });
+});
