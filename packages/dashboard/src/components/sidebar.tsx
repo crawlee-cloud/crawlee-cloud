@@ -18,6 +18,7 @@ import {
   Boxes,
   ListOrdered,
   Cpu,
+  Trash2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { LucideIcon } from 'lucide-react';
@@ -71,6 +72,7 @@ export const navGroups: Group[] = [
     label: 'System',
     items: [
       { href: '/runners', label: 'Runners', icon: Cpu },
+      { href: '/retention', label: 'Retention', icon: Trash2 },
       { href: '/settings', label: 'Settings', icon: Settings },
       { href: '/docs', label: 'Docs', icon: BookOpen },
     ],

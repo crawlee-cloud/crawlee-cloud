@@ -156,6 +156,24 @@ export interface ScalerStatus {
 }
 
 /**
+ * Wire shape returned by GET /v2/system/retention/status (admin-only).
+ * `lastTickAt` / `lastTickElapsedMs` are null when the reaper has never
+ * ticked since the Redis hash was last written or wiped.
+ */
+export interface RetentionStatus {
+  enabled: boolean;
+  lastTickAt: string | null;
+  lastTickElapsedMs: number | null;
+  reapedLast24h: {
+    dataset: number;
+    key_value_store: number;
+    request_queue: number;
+    run: number;
+  };
+  tombstoneRowCount: number;
+}
+
+/**
  * Wire shape returned by GET /v2/webhooks/:id/deliveries and
  * POST /v2/webhooks/:id/test. Field names mirror the API's `formatDelivery`
  * helper exactly — earlier this type used `statusCode` / `errorMessage` /
@@ -970,6 +988,11 @@ export async function findProducingRun(
 
 export async function getScalerStatus(): Promise<ScalerStatus> {
   const res = await fetchApi<{ data: ScalerStatus }>('/v2/scaler/status');
+  return res.data;
+}
+
+export async function getRetentionStatus(): Promise<RetentionStatus> {
+  const res = await fetchApi<{ data: RetentionStatus }>('/v2/system/retention/status');
   return res.data;
 }
 
