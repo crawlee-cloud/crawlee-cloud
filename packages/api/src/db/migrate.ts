@@ -331,6 +331,19 @@ ALTER TABLE runs ADD CONSTRAINT runs_default_key_value_store_id_fkey
 ALTER TABLE runs DROP CONSTRAINT IF EXISTS runs_default_request_queue_id_fkey;
 ALTER TABLE runs ADD CONSTRAINT runs_default_request_queue_id_fkey
   FOREIGN KEY (default_request_queue_id) REFERENCES request_queues(id) ON DELETE SET NULL;
+
+-- Retention slice #3: partial indexes matching the reaper's eligibility
+-- predicate, so the sweep query is O(eligible) regardless of total table
+-- size. Each storage index covers (accessed_at) over rows where name IS NULL;
+-- runs covers (finished_at) over rows where finished_at IS NOT NULL.
+CREATE INDEX IF NOT EXISTS idx_datasets_unnamed_accessed
+  ON datasets(accessed_at) WHERE name IS NULL;
+CREATE INDEX IF NOT EXISTS idx_kv_stores_unnamed_accessed
+  ON key_value_stores(accessed_at) WHERE name IS NULL;
+CREATE INDEX IF NOT EXISTS idx_request_queues_unnamed_accessed
+  ON request_queues(accessed_at) WHERE name IS NULL;
+CREATE INDEX IF NOT EXISTS idx_runs_finished
+  ON runs(finished_at) WHERE finished_at IS NOT NULL;
 `;
 
 export async function migrate(): Promise<void> {

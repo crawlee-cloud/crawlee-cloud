@@ -197,3 +197,29 @@ describe('retention schema — FK softening', () => {
     await pool.query(`DELETE FROM runs WHERE id = $1`, [runId]);
   });
 });
+
+describe('retention schema — sweep indexes', () => {
+  it('all four reaper sweep indexes exist with correct partial predicates', async () => {
+    const result = await pool.query<{ indexname: string; indexdef: string }>(
+      `SELECT indexname, indexdef
+         FROM pg_indexes
+        WHERE indexname IN (
+          'idx_datasets_unnamed_accessed',
+          'idx_kv_stores_unnamed_accessed',
+          'idx_request_queues_unnamed_accessed',
+          'idx_runs_finished'
+        )
+        ORDER BY indexname`
+    );
+    expect(result.rows).toHaveLength(4);
+    // Alphabetical ORDER BY indexname:
+    //   [0] idx_datasets_unnamed_accessed         WHERE name IS NULL
+    //   [1] idx_kv_stores_unnamed_accessed        WHERE name IS NULL
+    //   [2] idx_request_queues_unnamed_accessed   WHERE name IS NULL
+    //   [3] idx_runs_finished                     WHERE finished_at IS NOT NULL
+    expect(result.rows[0]?.indexdef).toMatch(/WHERE \(?name IS NULL\)?/);
+    expect(result.rows[1]?.indexdef).toMatch(/WHERE \(?name IS NULL\)?/);
+    expect(result.rows[2]?.indexdef).toMatch(/WHERE \(?name IS NULL\)?/);
+    expect(result.rows[3]?.indexdef).toMatch(/WHERE \(?finished_at IS NOT NULL\)?/);
+  });
+});
