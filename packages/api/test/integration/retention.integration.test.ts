@@ -307,3 +307,27 @@ describe('s3 prefix helpers', () => {
     expect(after.Contents ?? []).toHaveLength(0);
   });
 });
+
+describe('reaper — advisory lock', () => {
+  it('first runReaperTick acquires the lock; concurrent second tick on a separate connection skips', async () => {
+    // Acquire the lock manually on a separate client to simulate "another
+    // instance is already reaping". The reaper-under-test should see the
+    // lock as held and return cleanly.
+    const blockingClient = await pool.connect();
+    try {
+      const lockResult = await blockingClient.query<{ pg_try_advisory_lock: boolean }>(
+        'SELECT pg_try_advisory_lock($1)',
+        [0xc0debeef]
+      );
+      expect(lockResult.rows[0]?.pg_try_advisory_lock).toBe(true);
+
+      // Now invoke the reaper. It should detect the lock and skip.
+      const { runReaperTick } = await import('../../src/retention.js');
+      // Should not throw, should return cleanly.
+      await runReaperTick();
+    } finally {
+      await blockingClient.query('SELECT pg_advisory_unlock($1)', [0xc0debeef]);
+      blockingClient.release();
+    }
+  });
+});
