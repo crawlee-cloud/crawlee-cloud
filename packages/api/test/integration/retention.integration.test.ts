@@ -500,3 +500,72 @@ describe('reaper — reapDatasets', () => {
     await pool.query(`DELETE FROM datasets WHERE id IN ('reap-ds-named', 'reap-ds-new')`);
   });
 });
+
+describe('reaper — reapKVStores', () => {
+  let s3: S3Client;
+  beforeAll(async () => {
+    // Same async + initS3() pattern as reapDatasets — vi.resetModules() in
+    // earlier tests orphans the module-level S3 client; re-init it here.
+    const { initS3 } = await import('../../src/storage/s3.js');
+    await initS3();
+    s3 = new S3Client({
+      endpoint: TEST_CONFIG.s3Endpoint,
+      region: TEST_CONFIG.s3Region,
+      credentials: {
+        accessKeyId: TEST_CONFIG.s3AccessKey,
+        secretAccessKey: TEST_CONFIG.s3SecretKey,
+      },
+      forcePathStyle: true,
+    });
+  });
+
+  beforeEach(async () => {
+    await pool.query(`DELETE FROM retention_tombstones WHERE resource_kind = 'key_value_store'`);
+    await pool.query(`DELETE FROM key_value_stores WHERE id LIKE 'reap-kv-%'`);
+  });
+
+  it('reaps unnamed KV stores older than retentionDays with S3 cleanup', async () => {
+    await pool.query(
+      `INSERT INTO key_value_stores (id, name, user_id, accessed_at, created_at)
+       VALUES ('reap-kv-old', NULL, 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
+    );
+    await pool.query(
+      `INSERT INTO key_value_stores (id, name, user_id, accessed_at, created_at)
+       VALUES ('reap-kv-named', 'my-kv', 'u1', NOW() - INTERVAL '60 days', NOW() - INTERVAL '61 days')`
+    );
+
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: TEST_CONFIG.s3Bucket,
+        Key: `key-value-stores/reap-kv-old/INPUT`,
+        Body: '{"hello":"world"}',
+      })
+    );
+
+    const { reapKVStores } = await import('../../src/retention.js');
+    const client = await pool.connect();
+    try {
+      const reaped = await reapKVStores(client);
+      expect(reaped).toBe(1);
+    } finally {
+      client.release();
+    }
+
+    expect(
+      (await pool.query(`SELECT 1 FROM key_value_stores WHERE id = 'reap-kv-old'`)).rows
+    ).toHaveLength(0);
+    expect(
+      (await pool.query(`SELECT 1 FROM key_value_stores WHERE id = 'reap-kv-named'`)).rows
+    ).toHaveLength(1);
+
+    const after = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: TEST_CONFIG.s3Bucket,
+        Prefix: `key-value-stores/reap-kv-old/`,
+      })
+    );
+    expect(after.Contents ?? []).toHaveLength(0);
+
+    await pool.query(`DELETE FROM key_value_stores WHERE id = 'reap-kv-named'`);
+  });
+});
