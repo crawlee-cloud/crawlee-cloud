@@ -15,6 +15,7 @@ import type pg from 'pg';
 import { pool } from './db/index.js';
 import { config } from './config.js';
 import { deleteDatasetS3Prefix, deleteKVStoreS3Prefix } from './storage/s3.js';
+import { redis } from './storage/redis.js';
 
 /**
  * Fixed 32-bit unsigned hex constant identifying the retention reaper's
@@ -239,6 +240,15 @@ export async function runReaperTick(): Promise<void> {
           `runs=${stats.runs} datasets=${stats.datasets} kv=${stats.kvStores} ` +
           `queues=${stats.requestQueues} tombstones-pruned=${stats.tombstones}`
       );
+      // Persist last-tick stats for the admin status endpoint.
+      try {
+        await redis.hset('retention:last-tick', {
+          at: new Date().toISOString(),
+          elapsed_ms: String(Date.now() - tickStart),
+        });
+      } catch (err) {
+        console.error(`[retention] failed to write last-tick to Redis: ${(err as Error).message}`);
+      }
     } finally {
       try {
         const unlockResult = await client.query<{ pg_advisory_unlock: boolean }>(

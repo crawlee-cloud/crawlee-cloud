@@ -15,6 +15,8 @@ import { authenticate } from '../auth/middleware.js';
 import { runStorageHealthChecks, type StorageHealth } from '../health.js';
 import { getProviderExecutionDefaults, loadScalerConfig } from '../scaler/index.js';
 import { getApiVersion } from '../version.js';
+import { config } from '../config.js';
+import { query } from '../db/index.js';
 
 export interface SystemInfo {
   version: string;
@@ -84,5 +86,58 @@ export const systemRoutes: FastifyPluginAsync = async (fastify) => {
       },
     };
     return { data: body };
+  });
+
+  // GET /v2/system/retention/status — admin-only summary of reaper state.
+  fastify.get('/system/retention/status', async (request, reply) => {
+    if (request.user?.role !== 'admin') {
+      reply.status(403);
+      return { error: { type: 'forbidden', message: 'admin only' } };
+    }
+
+    const { redis } = await import('../storage/redis.js');
+    const tickInfo = await redis.hgetall('retention:last-tick');
+    const lastTickAt: string | null = tickInfo?.at ?? null;
+    const lastTickElapsedMs: number | null = tickInfo?.elapsed_ms
+      ? parseInt(tickInfo.elapsed_ms, 10)
+      : null;
+
+    const counts = await query<{
+      dataset: string;
+      key_value_store: string;
+      request_queue: string;
+      run: string;
+      total_tombstones: string;
+    }>(
+      `SELECT
+         COUNT(*) FILTER (WHERE deleted_at > NOW() - INTERVAL '24 hours' AND resource_kind = 'dataset')         AS dataset,
+         COUNT(*) FILTER (WHERE deleted_at > NOW() - INTERVAL '24 hours' AND resource_kind = 'key_value_store') AS key_value_store,
+         COUNT(*) FILTER (WHERE deleted_at > NOW() - INTERVAL '24 hours' AND resource_kind = 'request_queue')   AS request_queue,
+         COUNT(*) FILTER (WHERE deleted_at > NOW() - INTERVAL '24 hours' AND resource_kind = 'run')             AS run,
+         COUNT(*)                                                                                                AS total_tombstones
+       FROM retention_tombstones`
+    );
+    const row = counts.rows[0] ?? {
+      dataset: '0',
+      key_value_store: '0',
+      request_queue: '0',
+      run: '0',
+      total_tombstones: '0',
+    };
+
+    return {
+      data: {
+        enabled: config.retentionEnabled,
+        lastTickAt,
+        lastTickElapsedMs,
+        reapedLast24h: {
+          dataset: parseInt(row.dataset, 10),
+          key_value_store: parseInt(row.key_value_store, 10),
+          request_queue: parseInt(row.request_queue, 10),
+          run: parseInt(row.run, 10),
+        },
+        tombstoneRowCount: parseInt(row.total_tombstones, 10),
+      },
+    };
   });
 };

@@ -626,3 +626,84 @@ describe('reaper — pruneTombstones', () => {
     await pool.query(`DELETE FROM retention_tombstones WHERE resource_id = 'prune-new'`);
   });
 });
+
+describe('GET /v2/system/retention/status', () => {
+  it('returns shape with enabled/lastTickAt/lastTickElapsedMs/reapedLast24h/tombstoneRowCount', async () => {
+    // Seed Redis with a last-tick.
+    const { redis } = await import('../../src/storage/redis.js');
+    const ts = new Date().toISOString();
+    await redis.hset('retention:last-tick', { at: ts, elapsed_ms: '123' });
+
+    // Seed a tombstone row inside the 24h window.
+    await pool.query(
+      `INSERT INTO retention_tombstones (resource_kind, resource_id, reason, deleted_at)
+       VALUES ('dataset', 'status-test-1', 'expired-unnamed', NOW() - INTERVAL '1 hour')`
+    );
+
+    // Build app and inline-create an admin user (setup.ts ships
+    // createTestUser which only mints role='user'; for the admin role we
+    // INSERT directly and call createToken).
+    const { createTestApp } = await import('./setup.js');
+    const { hashPassword, createToken } = await import('../../src/auth/index.js');
+    const { nanoid } = await import('nanoid');
+    const app = await createTestApp();
+    try {
+      const adminId = nanoid();
+      await pool.query(
+        `INSERT INTO users (id, email, password_hash, role)
+         VALUES ($1, $2, $3, 'admin')
+         ON CONFLICT (email) DO UPDATE SET role = 'admin', password_hash = $3 RETURNING id`,
+        [adminId, 'retention-status-admin@test.local', await hashPassword('pw')]
+      );
+      const adminToken = createToken({
+        userId: adminId,
+        email: 'retention-status-admin@test.local',
+        role: 'admin',
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/system/retention/status',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body) as {
+        data: {
+          enabled: boolean;
+          lastTickAt: string | null;
+          lastTickElapsedMs: number | null;
+          reapedLast24h: Record<string, number>;
+          tombstoneRowCount: number;
+        };
+      };
+      expect(body.data.enabled).toBe(true);
+      expect(body.data.lastTickAt).toBe(ts);
+      expect(body.data.lastTickElapsedMs).toBe(123);
+      expect(body.data.reapedLast24h.dataset).toBeGreaterThanOrEqual(1);
+      expect(body.data.tombstoneRowCount).toBeGreaterThanOrEqual(1);
+
+      // Cleanup the admin row to keep the test repeatable.
+      await pool.query(`DELETE FROM users WHERE id = $1`, [adminId]);
+    } finally {
+      await app.close();
+      await pool.query(`DELETE FROM retention_tombstones WHERE resource_id = 'status-test-1'`);
+      await redis.del('retention:last-tick');
+    }
+  });
+
+  it('returns 403 for non-admin users', async () => {
+    const { createTestApp, createTestUser } = await import('./setup.js');
+    const app = await createTestApp();
+    try {
+      const { token } = await createTestUser('non-admin@retention-test.local');
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/system/retention/status',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(response.statusCode).toBe(403);
+    } finally {
+      await app.close();
+    }
+  });
+});
