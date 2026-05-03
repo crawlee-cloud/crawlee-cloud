@@ -6,7 +6,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { nanoid } from 'nanoid';
 import { CreateActorSchema, UpdateActorSchema, ActorRunSchema } from '../schemas/actors.js';
 import { query } from '../db/index.js';
-import { escapeLikePattern } from '../db/like.js';
+import { appendSearchCondition } from '../db/search.js';
 import { redis } from '../storage/redis.js';
 import { authenticate } from '../auth/middleware.js';
 
@@ -167,18 +167,14 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
   }>('/acts', async (request) => {
     const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
     const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
-    const q = (request.query.q || '').trim();
 
-    // Optional substring search across (id, name, title, description).
-    // ILIKE wildcards in user input are escaped; the % padding is added
-    // by the SQL itself so the search behaves as substring-match.
-    let where = 'user_id = $1';
     const params: unknown[] = [request.user!.id];
-    if (q) {
-      const idx = params.length + 1;
-      params.push(`%${escapeLikePattern(q)}%`);
-      where += ` AND (id ILIKE $${idx} OR name ILIKE $${idx} OR title ILIKE $${idx} OR description ILIKE $${idx})`;
-    }
+    const where = appendSearchCondition('user_id = $1', params, request.query.q || '', [
+      'id',
+      'name',
+      'title',
+      'description',
+    ]);
 
     // COUNT and SELECT run in parallel. Stable tiebreaker on `id` so
     // LIMIT/OFFSET paging doesn't drop or duplicate rows when two actors

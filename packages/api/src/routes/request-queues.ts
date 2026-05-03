@@ -11,7 +11,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { createHash } from 'node:crypto';
 import { nanoid } from 'nanoid';
 import { query, getClient as _getClient } from '../db/index.js';
-import { escapeLikePattern } from '../db/like.js';
+import { appendSearchCondition } from '../db/search.js';
 import {
   addToQueueHead,
   getQueueHead as _getQueueHead,
@@ -71,15 +71,12 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
   }>('/request-queues', async (request) => {
     const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
     const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
-    const q = (request.query.q || '').trim();
 
-    let where = 'user_id = $1';
     const params: unknown[] = [request.user!.id];
-    if (q) {
-      const idx = params.length + 1;
-      params.push(`%${escapeLikePattern(q)}%`);
-      where += ` AND (id ILIKE $${idx} OR name ILIKE $${idx})`;
-    }
+    const where = appendSearchCondition('user_id = $1', params, request.query.q || '', [
+      'id',
+      'name',
+    ]);
 
     const [countResult, pageResult] = await Promise.all([
       query<{ total: string }>(

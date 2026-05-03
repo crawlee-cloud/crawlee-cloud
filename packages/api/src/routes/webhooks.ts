@@ -6,7 +6,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { nanoid } from 'nanoid';
 import { CreateWebhookSchema, UpdateWebhookSchema } from '../schemas/webhooks.js';
 import { query } from '../db/index.js';
-import { escapeLikePattern } from '../db/like.js';
+import { appendSearchCondition } from '../db/search.js';
 import { authenticate } from '../auth/middleware.js';
 import { applyWebhookTemplate } from '../webhooks/apply-template.js';
 
@@ -88,18 +88,16 @@ export const webhooksRoutes: FastifyPluginAsync = async (fastify) => {
   }>('/webhooks', async (request) => {
     const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
     const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
-    const q = (request.query.q || '').trim();
 
     // Webhooks have no `name` column — search instead matches against id,
     // description, and request_url so operators can find a hook by what
     // they typed in the description field or by domain.
-    let where = 'user_id = $1';
     const params: unknown[] = [request.user!.id];
-    if (q) {
-      const idx = params.length + 1;
-      params.push(`%${escapeLikePattern(q)}%`);
-      where += ` AND (id ILIKE $${idx} OR description ILIKE $${idx} OR request_url ILIKE $${idx})`;
-    }
+    const where = appendSearchCondition('user_id = $1', params, request.query.q || '', [
+      'id',
+      'description',
+      'request_url',
+    ]);
 
     const [countResult, pageResult] = await Promise.all([
       query<{ total: string }>(
