@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-03
+
+### Added
+
+- **Retention reaper**: a periodic in-process job that cleans up unnamed datasets, key-value stores, request queues, and finished runs past TTL — the "platform survives months of operation" gating concern. Each tick acquires a Postgres advisory lock on a pinned `pool.connect()` client, runs five SQL phases (runs → datasets → KV → queues → tombstone-prune) bounded by `RETENTION_BATCH_SIZE`, releases the lock, then performs S3 prefix deletion with bounded concurrency. CTE-with-recheck pattern keeps DELETE + tombstone INSERT atomic. New env vars: `RETENTION_ENABLED` (default `true`), `RETENTION_DAYS` (default `30`), `RETENTION_TOMBSTONE_DAYS` (default `365`), `RETENTION_BATCH_SIZE` (default `500`), `RETENTION_CRON` (default `0 3 * * *`).
+- **`retention_tombstones` audit table** — every reaped row leaves a tombstone with kind, id, name, user, reason, and original creation timestamp before being pruned at `RETENTION_TOMBSTONE_DAYS`.
+- **`GET /v2/system/retention/status`** (admin-only) returns reaper config, last-tick timestamp/elapsed, last-24h reap counts, and live tombstone row count. Backed by Redis tick-stats (cheap to read) plus a single COUNT(\*) over `retention_tombstones`.
+- **Dashboard retention status page** at `/retention` with auto-refresh every 30s — surfaces whether the reaper is running, when it last ticked, and what it pruned.
+- **Pagination on six dashboard list pages** (actors, datasets, KV stores, request queues, schedules, webhooks) at production scale. Verified against 5,029 datasets / 5,033 KV / 5,029 queues with ~5–12 ms p50 latency on first-page fetches. URL-driven via `?page=N` (1-indexed, omitted on page 1) so pages are bookmarkable, shareable, and editable in the address bar.
+- **Page X / Y indicator with editable page-number input** — type a page number, Enter or blur to jump, clamped to `[1, totalPages]`. Out-of-range URLs (`?page=999` on a 12-page list) render an explicit "Page 999 doesn't exist" error with a "go to page N" CTA, distinct from the empty-state UI.
+- **Stress-fixture script** (`scripts/seed-stress-fixtures.ts`) — bulk-inserts datasets/KV/queues/runs/actors/schedules/webhooks via `generate_series` for QA at scale. Idempotent on re-run; `--teardown` removes everything with the `stress-` prefix. ~5,000 rows per table land in <300 ms.
+- **Deployment recipes** under `docs/deployment/`: a hobby-tier docker-compose recipe and a DigitalOcean Spaces (S3-compatible) recipe, both end-to-end runnable.
+
+### Changed
+
+- **`runs.default_dataset_id` / `default_key_value_store_id` / `default_request_queue_id` FKs softened to `ON DELETE SET NULL`** — previously RESTRICT, which would have blocked the reaper from deleting unnamed default storage of finished runs without a separate cascade pass.
+- **Root list endpoints (`/v2/acts`, `/v2/datasets`, `/v2/key-value-stores`, `/v2/request-queues`, `/v2/schedules`, `/v2/webhooks`) now return a real Apify-shape pagination envelope** with `total` from a parallel `COUNT(*)` query, `count`/`offset`/`limit`/`items`. Previously each route hardcoded `LIMIT 100` with no offset and a fake `total = items.length`, which silently truncated for any account with >100 of the resource and made the "have I shown everything?" question unanswerable. Stable `ORDER BY created_at DESC, id DESC` tiebreaker keeps results stable across pages.
+- **Dashboard centralizes constants** in `packages/dashboard/src/lib/constants.ts`: `PAGE_SIZE`, `FETCH_ALL_LIMIT`, `LOG_TAIL_LIMIT`, `DATASET_PREVIEW_LIMIT`, `KV_KEYS_PREVIEW_LIMIT`, `POLL_RETENTION_MS`, `POLL_RUNNERS_MS`, `COPY_FEEDBACK_MS`, `APP_VERSION`. Sweeps 7 inline `const LIMIT = 50`, 7 `limit: 1000` magic-number callsites, polling cadences, and the previously-hardcoded `OPERATOR · v0.1` sidebar/login label (now sourced from `package.json`).
+- **Retention reaper releases the advisory lock before S3 cleanup**, not after. With `RETENTION_BATCH_SIZE=500` and ~50 ms per S3 LIST+DELETE round-trip, holding the lock through S3 would block sibling-instance DB phases for ~50 s under load — for no benefit, since the rows are already committed when each `reap*()` returns. Each `reap*()` now returns the IDs it deleted; `runReaperTick()` runs the five DB phases under the lock, releases, then runs `cleanupDatasetS3Prefixes` / `cleanupKVStoreS3Prefixes` with bounded concurrency (10).
+- **Retention cron callback wraps `runReaperTick()` in `.catch()`.** `pool.connect()` runs outside any try block in the reaper, so a transient DB outage at fire time would otherwise produce an unhandled rejection — fatal under Node 20+'s default `--unhandled-rejections=throw`.
+
+### Tests
+
+- 20 retention integration tests covering each phase, the orchestration tick, advisory-lock contention, the FK softening, and the admin status endpoint (200 for admin, 403 for non-admin).
+- 6 config-validation unit tests for the new `envCron` helper and the five retention env vars.
+
 ## [0.8.6] - 2026-05-03
 
 ### Fixed
