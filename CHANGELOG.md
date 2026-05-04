@@ -2,9 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
-
 ## [0.9.2] - 2026-05-04
+
+### Fixed
+
+- **CLI: `APIFY_TOKEN` and `APIFY_API_BASE_URL` no longer shadow a saved `crc login`.** `getConfig()` used to fall back from `CRAWLEE_CLOUD_TOKEN` to `APIFY_TOKEN` (and from `CRAWLEE_CLOUD_API_URL` to `APIFY_API_BASE_URL?.replace('/v2', '')`) — an undocumented migration affordance that took precedence over the on-disk profile. In any shell that already had `APIFY_TOKEN` exported (common when the same machine drives both Apify scrapers and a Crawlee Cloud install), `crc login` would succeed because login validates with the `--token` flag directly, and the very next `crc ls` would fail with "Invalid token" because `getConfig()` picked up the foreign Apify token and sent it to the Crawlee Cloud server. The terse "Invalid token" message users saw was the server's response body, faithfully relayed by `list.ts:81`. The CLI now only reads `CRAWLEE_CLOUD_*` env vars; the `APIFY_*` aliases are gone. Fixed at `packages/cli/src/utils/config.ts:getConfig()`.
+
+  **Migration:** anyone implicitly relying on the alias should either run `crc login` once or add `export CRAWLEE_CLOUD_TOKEN=$APIFY_TOKEN` to their shell rc. The runner's injection of `APIFY_TOKEN` / `APIFY_API_BASE_URL` _into actor containers_ (so existing Apify-SDK actors run unmodified on Crawlee Cloud) is untouched — that's a runtime feature, not a CLI auth fallback.
 
 ### Added
 

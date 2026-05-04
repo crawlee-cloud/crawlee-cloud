@@ -91,11 +91,8 @@ function activeProfileName(file: ProfileFile): string {
  */
 export async function getConfig(): Promise<CLIConfig> {
   const envConfig: Partial<CLIConfig> = {
-    apiBaseUrl:
-      process.env.CRAWLEE_CLOUD_API_URL ||
-      process.env.APIFY_API_BASE_URL?.replace('/v2', '') ||
-      undefined,
-    token: process.env.CRAWLEE_CLOUD_TOKEN || process.env.APIFY_TOKEN || undefined,
+    apiBaseUrl: process.env.CRAWLEE_CLOUD_API_URL || undefined,
+    token: process.env.CRAWLEE_CLOUD_TOKEN || undefined,
     registryUrl: process.env.CRAWLEE_CLOUD_REGISTRY_URL,
   };
 
