@@ -617,6 +617,10 @@ function formatWebhook(row: WebhookRow) {
     requestUrl: row.request_url,
     payloadTemplate: row.payload_template,
     actorId: row.actor_id,
+    // Surfaces the per-run scope on GET /v2/webhooks/:id so operators
+    // debugging delivery can see which run a webhook belongs to without
+    // hitting the database directly. Always null for admin webhooks.
+    runId: row.run_id,
     headers: row.headers,
     description: row.description,
     isEnabled: row.is_enabled,

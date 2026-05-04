@@ -36,6 +36,7 @@ const createWebhookRow = (overrides = {}) => ({
   request_url: 'https://example.com/hook',
   payload_template: null,
   actor_id: null,
+  run_id: null,
   headers: null,
   description: 'Test webhook',
   is_enabled: true,
@@ -235,6 +236,22 @@ describe('Webhook Routes', () => {
       expect(response.statusCode).toBe(404);
       const body = JSON.parse(response.body);
       expect(body.error.message).toBe('Webhook not found');
+    });
+
+    // Per-run webhooks are reachable by exact ID even though they're hidden
+    // from the admin list — the formatter must surface `runId` so operators
+    // debugging delivery can see which run the webhook is bound to.
+    it('surfaces runId on per-run webhooks', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [createWebhookRow({ run_id: 'run-1', actor_id: null })],
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/v2/webhooks/webhook-1' });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.data.runId).toBe('run-1');
+      expect(body.data.actorId).toBeNull();
     });
   });
 

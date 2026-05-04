@@ -135,6 +135,12 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       failed: string;
       failed_last_24h: string;
     }>(
+      // `failed_last_24h` uses the same hour-aligned 24h window as
+      // /actor-runs/histogram (`date_trunc('hour', NOW()) - 23 hours`)
+      // so the "Failed · 24h" tile and the histogram's red caps cover
+      // the same span. A rolling `NOW() - 24 hours` window would drift
+      // up to 59 minutes from the histogram's hour-bucketed start at
+      // the top of each hour, making the two views silently disagree.
       `SELECT
          COUNT(*)::text AS total,
          COUNT(*) FILTER (WHERE status = 'RUNNING')::text AS running,
@@ -142,7 +148,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
          COUNT(*) FILTER (WHERE status IN ('FAILED', 'TIMED-OUT'))::text AS failed,
          COUNT(*) FILTER (
            WHERE status IN ('FAILED', 'TIMED-OUT')
-             AND created_at >= NOW() - INTERVAL '24 hours'
+             AND created_at >= date_trunc('hour', NOW()) - INTERVAL '23 hours'
          )::text AS failed_last_24h
        FROM runs
        WHERE user_id = $1`,

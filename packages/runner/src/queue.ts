@@ -315,17 +315,41 @@ async function processRun(run: RunJob): Promise<void> {
   } catch (err) {
     console.error(`Run ${runId} failed with error:`, err);
 
-    await pool.query(
+    // Same `WHERE status = 'RUNNING'` guard as the success path: if the
+    // run reached a terminal state via another path (Actor.fail() →
+    // PUT /v2/actor-runs/:id, or POST /v2/actor-runs/:id/abort) while
+    // we were processing, we MUST NOT overwrite that status with
+    // 'FAILED'. Common scenario: operator aborts → container is killed
+    // → kill signal surfaces here as a thrown error → without this
+    // guard, the run flips ABORTED → FAILED, hiding the operator
+    // intent on the dashboard, in webhooks, and in the runs API.
+    const updateResult = await pool.query<{ status: string }>(
       `
-      UPDATE runs 
+      UPDATE runs
       SET status = 'FAILED', status_message = $1, finished_at = NOW(), modified_at = NOW()
-      WHERE id = $2
+      WHERE id = $2 AND status = 'RUNNING'
+      RETURNING status
     `,
       [(err as Error).message, runId]
     );
 
-    await triggerWebhooks(runId, 'FAILED');
-    await maybeRetryRun(run, runId);
+    let webhookStatus = 'FAILED';
+    if (updateResult.rowCount === 0) {
+      // Terminal status was already set elsewhere — re-read so we fire
+      // the right ACTOR.RUN.* event (e.g. ABORTED, not FAILED).
+      const cur = await pool.query<{ status: string }>('SELECT status FROM runs WHERE id = $1', [
+        runId,
+      ]);
+      webhookStatus = cur.rows[0]?.status ?? 'FAILED';
+      console.log(
+        `Run ${runId} caught error but run was already ${webhookStatus} (kept that). Likely Actor.fail() or abort.`
+      );
+    }
+
+    await triggerWebhooks(runId, webhookStatus);
+    if (webhookStatus === 'FAILED') {
+      await maybeRetryRun(run, runId);
+    }
   }
 }
 

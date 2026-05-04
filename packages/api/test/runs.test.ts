@@ -134,6 +134,22 @@ describe('Actor Runs Routes', () => {
       expect(sql).toContain("status IN ('FAILED', 'TIMED-OUT')");
       expect(sql).not.toContain("'ABORTED'");
     });
+
+    // Pins the hour-aligned 24h window so the tile and the histogram's
+    // FAIL caps cover identical timespans. A drift back to NOW()-24h
+    // would silently reintroduce up to a 59-minute gap at the top of
+    // every hour.
+    it('uses the same hour-aligned 24h window as /actor-runs/histogram', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ total: '0', running: '0', succeeded: '0', failed: '0', failed_last_24h: '0' }],
+      });
+
+      await app.inject({ method: 'GET', url: '/v2/actor-runs/stats' });
+
+      const sql = mockQuery.mock.calls[0][0] as string;
+      expect(sql).toContain("date_trunc('hour', NOW()) - INTERVAL '23 hours'");
+      expect(sql).not.toContain("NOW() - INTERVAL '24 hours'");
+    });
   });
 
   describe('GET /v2/actor-runs/histogram', () => {

@@ -26,6 +26,9 @@ All notable changes to this project will be documented in this file.
 - **Pre-seeded chart buckets snap to the hour boundary.** Initial `useState` seed used `Date.now()` (subsecond), but the server returns hour-truncated ISO strings — mismatch caused all 24 React keys to change on the first server response, forcing a full bar remount. Now snaps via `setMinutes(0, 0, 0)`.
 - **Dashboard polling preserves chart state on transient API failure** rather than clearing the histogram to empty buckets. The previous catch handler returned `{ buckets: [] }` which set the state to empty on every polling glitch; histogram fetch now returns `null` on error and the setter is gated, so the last-known chart stays on screen.
 - **`formatBucketHour` uses `Math.floor` instead of `Math.round`** for "Xh ago" labels — buckets are hour-aligned, so the label flip should happen at the next hour boundary, not at the 30-minute mark.
+- **Runner no longer overwrites `ABORTED` with `FAILED` when a container kill surfaces as a thrown error.** The success path in `processRun` already had a `WHERE status = 'RUNNING'` guard with an extensive comment explaining the lifecycle invariant ("MUST NOT overwrite if `Actor.fail()` already set it") — but the `catch` block lacked the same guard, so an operator-initiated abort raced against the container's death throes could flip the run back to `FAILED`. The `catch` now mirrors the success path: same guard plus a re-read of the winning status so `triggerWebhooks` fires the right `ACTOR.RUN.*` event (e.g. `ACTOR.RUN.ABORTED`, not `ACTOR.RUN.FAILED`) and `maybeRetryRun` doesn't re-run an aborted job. Fixed at `packages/runner/src/queue.ts:processRun`.
+- **`GET /v2/webhooks/:webhookId` now surfaces `runId`** for per-run webhooks. The `WebhookRow` interface always carried `run_id`, but `formatWebhook` omitted it from the response — so operators debugging delivery had to query the DB directly to see which run a webhook was bound to. Always `null` for admin webhooks. Fixed at `packages/api/src/routes/webhooks.ts:formatWebhook`.
+- **`/v2/actor-runs/stats` `failed_last_24h` now uses the same hour-aligned 24h window as `/v2/actor-runs/histogram`** (`date_trunc('hour', NOW()) - INTERVAL '23 hours'`) instead of a rolling `NOW() - INTERVAL '24 hours'`. Both endpoints landed in this release; without the alignment, the "Failed · 24h" tile and the histogram's red caps could disagree by up to 59 minutes at the top of every hour. Pinned by an SQL-content assertion test.
 
 ### Changed
 
@@ -33,7 +36,7 @@ All notable changes to this project will be documented in this file.
 
 ### Tests
 
-- 269 → 275 passing tests on the api package (16 / 16 unchanged on the runner package). New coverage: per-run webhook INSERT, per-run rejection of unsupported events, admin rejection of unsupported events, stats endpoint shape, stats user-scoping, stats `FAILED ∪ TIMED-OUT` SQL pinning, histogram shape, histogram bind-param passthrough, histogram out-of-range hours rejection.
+- 269 → 277 passing tests on the api package (16 / 16 unchanged on the runner package). New coverage: per-run webhook INSERT, per-run rejection of unsupported events, admin rejection of unsupported events, stats endpoint shape, stats user-scoping, stats `FAILED ∪ TIMED-OUT` SQL pinning, stats hour-aligned 24h window pinning, histogram shape, histogram bind-param passthrough, histogram out-of-range hours rejection, per-run webhook surfacing `runId` on GET by id.
 
 ## [0.9.1] - 2026-05-03
 
