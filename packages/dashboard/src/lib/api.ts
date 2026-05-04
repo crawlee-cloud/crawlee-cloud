@@ -730,6 +730,26 @@ export async function getRunDatasetItems(
   }
 }
 
+export interface RunStats {
+  total: number;
+  running: number;
+  succeeded: number;
+  failed: number;
+  failedLast24h: number;
+}
+
+/**
+ * Server-side aggregate of run counters. Replaces the old "fetch first page
+ * of runs and filter the items array" logic — that approach silently
+ * under-counted everything (totalRuns, runningCount, failedLast24h, the
+ * succeeded/failed pair behind successRate) once a user crossed the 50-row
+ * page cap.
+ */
+export async function getRunStats(): Promise<RunStats> {
+  const res = await fetchApi<{ data: RunStats }>('/v2/actor-runs/stats');
+  return res.data;
+}
+
 export async function getDashboardStats(): Promise<{
   totalRuns: number;
   activeActors: number;
@@ -739,33 +759,34 @@ export async function getDashboardStats(): Promise<{
   failedLast24h: number;
 }> {
   try {
-    // Stat counts come from the page envelope's `total` (real COUNT(*) on
-    // the API side) rather than `items.length`. We pass `limit: 1` because
-    // the items themselves are unused — only the total matters for the
-    // counter tiles on the home dashboard.
+    // Counters come from server-side aggregates: `actors.total` and
+    // `datasets.total` from the page envelope's COUNT(*); run stats from
+    // /v2/actor-runs/stats which folds five COUNT FILTER aggregates into a
+    // single indexed scan. None of these scale with cluster volume.
     const emptyPage = <T>(): Page<T> => ({ items: [], total: 0, count: 0, offset: 0, limit: 0 });
-    const [runs, actors, datasets] = await Promise.all([
-      getRuns().catch(() => [] as Run[]),
+    const emptyStats: RunStats = {
+      total: 0,
+      running: 0,
+      succeeded: 0,
+      failed: 0,
+      failedLast24h: 0,
+    };
+    const [runStats, actors, datasets] = await Promise.all([
+      getRunStats().catch(() => emptyStats),
       getActors({ limit: 1 }).catch(() => emptyPage<Actor>()),
       getDatasets({ limit: 1 }).catch(() => emptyPage<Dataset>()),
     ]);
 
-    const succeeded = runs.filter((r) => r.status === 'SUCCEEDED').length;
-    const failed = runs.filter((r) => r.status === 'FAILED').length;
-    const successRate = succeeded + failed > 0 ? (succeeded / (succeeded + failed)) * 100 : 100;
-    const runningCount = runs.filter((r) => r.status === 'RUNNING').length;
-    const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
-    const failedLast24h = runs.filter(
-      (r) => r.status === 'FAILED' && new Date(r.createdAt).getTime() >= dayAgo
-    ).length;
+    const decided = runStats.succeeded + runStats.failed;
+    const successRate = decided > 0 ? Math.round((runStats.succeeded / decided) * 100) : 100;
 
     return {
-      totalRuns: runs.length,
+      totalRuns: runStats.total,
       activeActors: actors.total,
       totalDatasets: datasets.total,
-      successRate: Math.round(successRate),
-      runningCount,
-      failedLast24h,
+      successRate,
+      runningCount: runStats.running,
+      failedLast24h: runStats.failedLast24h,
     };
   } catch {
     return {

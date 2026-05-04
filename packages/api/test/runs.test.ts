@@ -82,6 +82,60 @@ describe('Actor Runs Routes', () => {
     });
   });
 
+  describe('GET /v2/actor-runs/stats', () => {
+    it('returns aggregate counts parsed from server-side COUNT FILTER', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [
+          {
+            total: '5234',
+            running: '12',
+            succeeded: '4200',
+            failed: '1022',
+            failed_last_24h: '7',
+          },
+        ],
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/v2/actor-runs/stats' });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.data).toEqual({
+        total: 5234,
+        running: 12,
+        succeeded: 4200,
+        failed: 1022,
+        failedLast24h: 7,
+      });
+    });
+
+    it('scopes to the authenticated user', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ total: '0', running: '0', succeeded: '0', failed: '0', failed_last_24h: '0' }],
+      });
+
+      await app.inject({ method: 'GET', url: '/v2/actor-runs/stats' });
+
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(mockQuery.mock.calls[0][1]).toEqual(['test-user-id']);
+    });
+
+    // Locks in the FAILED ∪ TIMED-OUT grouping so the dashboard tile can't
+    // silently diverge from the histogram's FAIL caps. ABORTED must stay out
+    // (operator-cancellation, not a failure).
+    it("groups TIMED-OUT into 'failed' but excludes ABORTED", async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ total: '0', running: '0', succeeded: '0', failed: '0', failed_last_24h: '0' }],
+      });
+
+      await app.inject({ method: 'GET', url: '/v2/actor-runs/stats' });
+
+      const sql = mockQuery.mock.calls[0][0] as string;
+      expect(sql).toContain("status IN ('FAILED', 'TIMED-OUT')");
+      expect(sql).not.toContain("'ABORTED'");
+    });
+  });
+
   describe('GET /v2/actor-runs/:runId', () => {
     it('should get run by id', async () => {
       mockQuery.mockResolvedValueOnce({

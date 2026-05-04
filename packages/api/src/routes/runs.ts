@@ -112,6 +112,55 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   /**
+   * GET /v2/actor-runs/stats - Aggregate counts for the operator dashboard.
+   *
+   * Single indexed query returns all status counters and the 24h failure
+   * count. Replaces the old client-side aggregation that filtered the first
+   * page of /v2/actor-runs (capped at 50 rows) and silently under-counted
+   * once a user crossed 50 runs total.
+   *
+   * Static path is registered before `/actor-runs/:runId` so Fastify's trie
+   * matches "stats" literally rather than as a runId.
+   */
+  fastify.get('/actor-runs/stats', async (request) => {
+    // `failed` counts FAILED and TIMED-OUT together — TIMED-OUT is
+    // operationally a failure (platform killed the run for missing its
+    // deadline) and the dashboard's hourly histogram already groups them
+    // the same way. ABORTED stays excluded: that's operator cancellation,
+    // not a failure.
+    const result = await query<{
+      total: string;
+      running: string;
+      succeeded: string;
+      failed: string;
+      failed_last_24h: string;
+    }>(
+      `SELECT
+         COUNT(*)::text AS total,
+         COUNT(*) FILTER (WHERE status = 'RUNNING')::text AS running,
+         COUNT(*) FILTER (WHERE status = 'SUCCEEDED')::text AS succeeded,
+         COUNT(*) FILTER (WHERE status IN ('FAILED', 'TIMED-OUT'))::text AS failed,
+         COUNT(*) FILTER (
+           WHERE status IN ('FAILED', 'TIMED-OUT')
+             AND created_at >= NOW() - INTERVAL '24 hours'
+         )::text AS failed_last_24h
+       FROM runs
+       WHERE user_id = $1`,
+      [request.user!.id]
+    );
+    const row = result.rows[0]!;
+    return {
+      data: {
+        total: parseInt(row.total, 10),
+        running: parseInt(row.running, 10),
+        succeeded: parseInt(row.succeeded, 10),
+        failed: parseInt(row.failed, 10),
+        failedLast24h: parseInt(row.failed_last_24h, 10),
+      },
+    };
+  });
+
+  /**
    * GET /v2/actor-runs/:runId - Get run (user-scoped)
    */
   fastify.get<{ Params: { runId: string } }>('/actor-runs/:runId', async (request, reply) => {
