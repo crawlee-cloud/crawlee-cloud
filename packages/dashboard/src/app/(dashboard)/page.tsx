@@ -4,8 +4,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { ArrowUpRight, Hammer, Plus, Webhook, Zap } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
 import { StatusChip } from '@/components/ui/badge';
-import type { Actor, Run } from '@/lib/api';
-import { getActors, getDashboardStats, getRuns } from '@/lib/api';
+import type { Actor, Run, RunsHistogramBucket } from '@/lib/api';
+import { getActors, getDashboardStats, getRuns, getRunsHistogram } from '@/lib/api';
 import { FETCH_ALL_LIMIT } from '@/lib/constants';
 import { cn } from '@/lib/utils';
 
@@ -23,23 +23,47 @@ export default function ConsolePage() {
   const [runs, setRuns] = useState<Run[]>([]);
   // Actor lookup so we can show names instead of opaque IDs in the feed.
   const [actorsById, setActorsById] = useState<Record<string, Actor>>({});
+  // Pre-seed 24 zero buckets so the chart renders its frame on first paint
+  // (before the server fetch lands) instead of flashing as an empty box.
+  // Snap the seed to the hour boundary — the server returns hour-truncated
+  // ISO strings, and React keys off `hour`. Sub-hour skew here would force
+  // a full bar remount the first time the server response lands.
+  const [histogramBuckets, setHistogramBuckets] = useState<RunsHistogramBucket[]>(() => {
+    const now = new Date();
+    now.setMinutes(0, 0, 0);
+    const base = now.getTime();
+    return Array.from({ length: 24 }, (_, i) => ({
+      hour: new Date(base - (23 - i) * 3600_000).toISOString(),
+      total: 0,
+      failed: 0,
+    }));
+  });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let alive = true;
     async function load() {
       try {
-        const [s, r, a] = await Promise.all([
+        // Critical promises (stats, runs) bubble through to the catch below;
+        // ancillary ones (actors, histogram) resolve to null on failure so a
+        // single 5xx can't blank the whole dashboard during 10s polling.
+        // Histogram returning null preserves the previous buckets, avoiding
+        // chart flicker on transient errors.
+        const [s, r, a, h] = await Promise.all([
           getDashboardStats(),
           getRuns(),
           getActors({ limit: FETCH_ALL_LIMIT }).catch(() => null),
+          getRunsHistogram(24).catch(() => null),
         ]);
         if (!alive) return;
         setStats(s);
         setRuns(r);
+        if (h) setHistogramBuckets(h.buckets);
         const map: Record<string, Actor> = {};
         if (a) a.items.forEach((x) => (map[x.id] = x));
         setActorsById(map);
+      } catch (err) {
+        console.error('dashboard refresh failed', err);
       } finally {
         if (alive) setLoading(false);
       }
@@ -53,28 +77,14 @@ export default function ConsolePage() {
   }, []);
 
   /*
-    A 24-bucket hourly histogram of runs over the last 24h.
-    Plain CSS bars — no chart library — keeps the page tiny and the aesthetic crisp.
+    Hourly histogram comes pre-bucketed from the server, so the client only
+    computes the max for bar scaling. This stays correct past 50 runs/24h —
+    the client-side aggregation it replaced was capped at the 50-run page size.
   */
   const histogram = useMemo(() => {
-    const now = Date.now();
-    const buckets = new Array(24).fill(0).map((_, i) => ({
-      hour: i,
-      total: 0,
-      failed: 0,
-    }));
-    for (const r of runs) {
-      const t = new Date(r.createdAt).getTime();
-      const ago = now - t;
-      if (ago < 0 || ago > 24 * 60 * 60 * 1000) continue;
-      const idx = 23 - Math.floor(ago / (60 * 60 * 1000));
-      if (idx < 0 || idx > 23) continue;
-      buckets[idx].total += 1;
-      if (r.status === 'FAILED' || r.status === 'TIMED-OUT') buckets[idx].failed += 1;
-    }
-    const max = Math.max(1, ...buckets.map((b) => b.total));
-    return { buckets, max };
-  }, [runs]);
+    const max = Math.max(1, ...histogramBuckets.map((b) => b.total));
+    return { buckets: histogramBuckets, max };
+  }, [histogramBuckets]);
 
   const recent = runs.slice(0, 8);
 
@@ -160,15 +170,15 @@ export default function ConsolePage() {
           </header>
 
           <div className="h-32 flex items-end gap-[3px]">
-            {histogram.buckets.map((b, i) => {
+            {histogram.buckets.map((b) => {
               const h =
                 b.total === 0 ? 2 : Math.max(2, Math.round((b.total / histogram.max) * 100));
-              const failedH = b.total === 0 ? 0 : Math.round((b.failed / b.total) * h);
+              const failedH = b.total === 0 ? 0 : Math.round((b.failed / b.total) * 100);
               return (
                 <div
-                  key={i}
-                  title={`${24 - i}h ago — ${b.total} runs (${b.failed} failed)`}
-                  className="flex-1 flex flex-col-reverse min-w-0 group"
+                  key={b.hour}
+                  title={`${formatBucketHour(b.hour)} — ${b.total} runs (${b.failed} failed)`}
+                  className="flex-1 h-full flex flex-col-reverse min-w-0 group"
                 >
                   <div
                     style={{ height: `${h}%` }}
@@ -362,6 +372,16 @@ function QuickAction({
       </AppLink>
     </li>
   );
+}
+
+function formatBucketHour(iso: string): string {
+  const d = new Date(iso);
+  // Floor (not round) — buckets are hour-aligned, so a label flip should
+  // happen at the next hour boundary, not at the 30-min mark.
+  const hours = Math.floor((Date.now() - d.getTime()) / 3600_000);
+  if (hours <= 0) return 'this hour';
+  if (hours === 1) return '1h ago';
+  return `${hours}h ago`;
 }
 
 function timeAgo(iso: string): string {

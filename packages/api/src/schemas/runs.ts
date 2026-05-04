@@ -29,3 +29,14 @@ export const ListRunsQuerySchema = z.object({
 });
 
 export type ListRunsQuery = z.infer<typeof ListRunsQuerySchema>;
+
+/**
+ * Querystring for GET /v2/actor-runs/histogram. `hours` controls the trailing
+ * window AND the bucket count (one bucket per hour). Capped at 168 = 7d so the
+ * generate_series spine never produces more than a week of rows.
+ */
+export const RunsHistogramQuerySchema = z.object({
+  hours: z.coerce.number().int().min(1).max(168).optional(),
+});
+
+export type RunsHistogramQuery = z.infer<typeof RunsHistogramQuerySchema>;

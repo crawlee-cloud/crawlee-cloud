@@ -136,6 +136,48 @@ describe('Actor Runs Routes', () => {
     });
   });
 
+  describe('GET /v2/actor-runs/histogram', () => {
+    it('returns server-shaped buckets with total + failed parsed as numbers', async () => {
+      const bucketA = new Date('2026-05-04T10:00:00Z');
+      const bucketB = new Date('2026-05-04T11:00:00Z');
+      mockQuery.mockResolvedValueOnce({
+        rows: [
+          { bucket: bucketA, total: '5', failed: '1' },
+          { bucket: bucketB, total: '0', failed: '0' },
+        ],
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/v2/actor-runs/histogram' });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.data.hours).toBe(24);
+      expect(body.data.buckets).toEqual([
+        { hour: bucketA.toISOString(), total: 5, failed: 1 },
+        { hour: bucketB.toISOString(), total: 0, failed: 0 },
+      ]);
+    });
+
+    it('passes through the user_id and the requested hours window to SQL', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({ method: 'GET', url: '/v2/actor-runs/histogram?hours=6' });
+
+      expect(response.statusCode).toBe(200);
+      // The route passes [userId, hours] as bind params; both must reach the DB.
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(mockQuery.mock.calls[0][1]).toEqual(['test-user-id', 6]);
+    });
+
+    it('rejects out-of-range hours', async () => {
+      const tooBig = await app.inject({ method: 'GET', url: '/v2/actor-runs/histogram?hours=999' });
+      expect(tooBig.statusCode).toBe(500); // Zod parse throws → Fastify 500 by default
+
+      const zero = await app.inject({ method: 'GET', url: '/v2/actor-runs/histogram?hours=0' });
+      expect(zero.statusCode).toBe(500);
+    });
+  });
+
   describe('GET /v2/actor-runs/:runId', () => {
     it('should get run by id', async () => {
       mockQuery.mockResolvedValueOnce({

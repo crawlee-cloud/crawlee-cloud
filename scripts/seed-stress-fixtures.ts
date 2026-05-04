@@ -9,10 +9,15 @@
  *
  * Usage:
  *   npx tsx scripts/seed-stress-fixtures.ts --seed --count 5000
+ *   npx tsx scripts/seed-stress-fixtures.ts --chart 100
  *   npx tsx scripts/seed-stress-fixtures.ts --teardown
  *
  * Flags:
  *   --seed                Insert fixtures (default if no flag).
+ *   --chart [N]           Insert N (default 100) runs with created_at spread
+ *                         uniformly across the last 24 hours, so the operator
+ *                         dashboard's hourly histogram has visible bars. Skips
+ *                         the rest of --seed; safe to run alongside it.
  *   --teardown            Delete every row with id LIKE 'stress-%'.
  *   --count N             Per-table row count (default 5000).
  *   --schedule-count N    Schedules count (default 100).
@@ -37,6 +42,16 @@ const count = parseInt(getArg('count', '5000'), 10);
 const scheduleCount = parseInt(getArg('schedule-count', '100'), 10);
 const webhookCount = parseInt(getArg('webhook-count', '100'), 10);
 const actorCount = parseInt(getArg('actor-count', '200'), 10);
+
+// `--chart` (no value) means default count; `--chart N` overrides. We can't use
+// getArg() here because it requires a value to follow.
+const chartIdx = args.indexOf('--chart');
+const chartMode = chartIdx !== -1;
+const chartCount = (() => {
+  if (!chartMode) return 0;
+  const next = args[chartIdx + 1];
+  return next && /^\d+$/.test(next) ? parseInt(next, 10) : 100;
+})();
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
@@ -212,6 +227,51 @@ async function seed(): Promise<void> {
   console.log(`[seed] done in ${Date.now() - t0}ms`);
 }
 
+/**
+ * Seed N runs whose `created_at` is jittered across the last 24 hours so the
+ * dashboard's hourly histogram has data to render. We set `created_at`
+ * explicitly because the column defaults to NOW() — the regular --seed path
+ * leaves it at NOW() and ends up with all rows in a single bucket.
+ *
+ * IDs use the 'stress-h24-' prefix (still 'stress-%' so --teardown picks them
+ * up) and don't collide with --seed's 'stress-rn-' run rows.
+ */
+async function seedChart(): Promise<void> {
+  const { userId, actorId } = await getSeedRefs();
+  console.log(`[chart] using user_id=${userId} actor_id=${actorId}`);
+  console.log(`[chart] seeding ${chartCount} runs across last 24 hours...`);
+
+  const t0 = Date.now();
+  // Status mix:
+  //   ~70% SUCCEEDED, ~14% FAILED, ~7% TIMED-OUT, ~7% RUNNING
+  // The RUNNING fraction also lights up the "Running now" tile so the
+  // operator can see the live-dot indicator in action.
+  const result = await pool.query(
+    `INSERT INTO runs
+       (id, actor_id, user_id, status, started_at, finished_at, created_at,
+        timeout_secs, memory_mbytes)
+     SELECT
+       'stress-h24-' || lpad(g::text, 10, '0'),
+       $1,
+       $2,
+       (ARRAY[
+         'SUCCEEDED','SUCCEEDED','SUCCEEDED','SUCCEEDED','SUCCEEDED',
+         'SUCCEEDED','SUCCEEDED','SUCCEEDED','SUCCEEDED','SUCCEEDED',
+         'FAILED','FAILED','TIMED-OUT','RUNNING'
+       ])[1 + (random() * 13)::int],
+       NOW() - (random() * 24 || ' hours')::interval,
+       NOW() - (random() * 24 || ' hours')::interval,
+       NOW() - (random() * 24 || ' hours')::interval,
+       3600,
+       1024
+     FROM generate_series(1, $3) AS g
+     ON CONFLICT (id) DO NOTHING`,
+    [actorId, userId, chartCount]
+  );
+  console.log(`[chart] inserted ${result.rowCount} runs in ${Date.now() - t0}ms`);
+  console.log(`[chart] reload the operator console — bars should populate now.`);
+}
+
 async function teardownAll(): Promise<void> {
   const t0 = Date.now();
   // Order matters: rows that FK to actors must be deleted before actors
@@ -238,6 +298,8 @@ async function main(): Promise<void> {
   try {
     if (teardown) {
       await teardownAll();
+    } else if (chartMode) {
+      await seedChart();
     } else {
       await seed();
     }

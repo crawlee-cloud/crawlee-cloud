@@ -5,7 +5,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { query } from '../db/index.js';
 import { authenticate } from '../auth/middleware.js';
-import { UpdateRunSchema, ListRunsQuerySchema } from '../schemas/runs.js';
+import { UpdateRunSchema, ListRunsQuerySchema, RunsHistogramQuerySchema } from '../schemas/runs.js';
 
 interface RunRow {
   id: string;
@@ -156,6 +156,67 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
         succeeded: parseInt(row.succeeded, 10),
         failed: parseInt(row.failed, 10),
         failedLast24h: parseInt(row.failed_last_24h, 10),
+      },
+    };
+  });
+
+  /**
+   * GET /v2/actor-runs/histogram - Hourly run counts for the dashboard.
+   *
+   * Returns exactly `hours` rows, one per wall-clock hour ending at the current
+   * hour. Empty hours come back as zero-count buckets (via generate_series spine
+   * + LEFT JOIN), so the client can render a fixed-width chart without holes.
+   *
+   * Aggregation is server-side: we never ship row-level run data for this view,
+   * which keeps the payload bounded (≤168 rows) regardless of cluster volume.
+   *
+   * Static path is registered before `/actor-runs/:runId` so Fastify's trie
+   * matches "histogram" literally rather than as a runId.
+   *
+   * Failure semantics match the `/stats` endpoint: FAILED ∪ TIMED-OUT.
+   */
+  fastify.get('/actor-runs/histogram', async (request) => {
+    const q = RunsHistogramQuerySchema.parse(request.query);
+    const hours = q.hours ?? 24;
+
+    // make_interval keeps `hours` parameterised — no SQL string-building. The
+    // spine is `hours` rows: [now-hour - (hours-1)h, ..., now-hour].
+    const result = await query<{ bucket: Date; total: string; failed: string }>(
+      `WITH spine AS (
+         SELECT generate_series(
+           date_trunc('hour', NOW()) - make_interval(hours => $2 - 1),
+           date_trunc('hour', NOW()),
+           INTERVAL '1 hour'
+         ) AS bucket
+       ),
+       agg AS (
+         SELECT
+           date_trunc('hour', created_at) AS bucket,
+           COUNT(*)::text AS total,
+           COUNT(*) FILTER (WHERE status IN ('FAILED', 'TIMED-OUT'))::text AS failed
+         FROM runs
+         WHERE user_id = $1
+           AND created_at >= date_trunc('hour', NOW()) - make_interval(hours => $2 - 1)
+         GROUP BY bucket
+       )
+       SELECT
+         spine.bucket,
+         COALESCE(agg.total, '0') AS total,
+         COALESCE(agg.failed, '0') AS failed
+       FROM spine
+       LEFT JOIN agg USING (bucket)
+       ORDER BY spine.bucket ASC`,
+      [request.user!.id, hours]
+    );
+
+    return {
+      data: {
+        hours,
+        buckets: result.rows.map((r) => ({
+          hour: r.bucket instanceof Date ? r.bucket.toISOString() : String(r.bucket),
+          total: parseInt(r.total, 10),
+          failed: parseInt(r.failed, 10),
+        })),
       },
     };
   });

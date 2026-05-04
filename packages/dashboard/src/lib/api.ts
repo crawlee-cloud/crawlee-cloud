@@ -570,6 +570,27 @@ export async function getRuns(): Promise<Run[]> {
   return page.items;
 }
 
+export interface RunsHistogramBucket {
+  /** Bucket start, ISO datetime, hour-aligned in server time. */
+  hour: string;
+  total: number;
+  failed: number;
+}
+
+/**
+ * Pre-bucketed run counts for the dashboard. Server aggregates with
+ * date_trunc + generate_series so the response is bounded at `hours` rows
+ * and stays correct above the 200-run page cap of /v2/actor-runs.
+ */
+export async function getRunsHistogram(
+  hours = 24
+): Promise<{ hours: number; buckets: RunsHistogramBucket[] }> {
+  const res = await fetchApi<{ data: { hours: number; buckets: RunsHistogramBucket[] } }>(
+    `/v2/actor-runs/histogram?hours=${hours}`
+  );
+  return res.data;
+}
+
 export async function getRun(id: string): Promise<Run> {
   const res = await fetchApi<{ data: Run }>(`/v2/actor-runs/${id}`);
   return res.data;
