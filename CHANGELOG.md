@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-05-04
+
+### Added
+
+- **Per-run webhooks** — `POST /v2/acts/:actorId/runs` now accepts a `webhooks[]` array of `{ eventTypes, requestUrl, payloadTemplate?, headersTemplate? }` (max 20). Persisted as rows scoped via the new `webhooks.run_id` column with a `chk_webhooks_scope` CHECK that makes per-run and actor-scoped mutually exclusive, plus `ON DELETE CASCADE`. Admin `GET /webhooks` excludes per-run rows from the operator catalog; `PUT` rejects them; `DELETE` allows them as a cancel-pending-delivery escape hatch. Closes the per-run-webhooks Apify-compat gap (`docs/apify-compatibility.md`).
+- **`GET /v2/actor-runs/stats`** — single indexed query returning `total`, `running`, `succeeded`, `failed`, and `failed_last_24h`. Replaces the dashboard's old client-side aggregation that filtered the first page of `/v2/actor-runs` (capped at 50 rows), which silently under-counted past 50 runs total. Failure semantics: `FAILED ∪ TIMED-OUT` (TIMED-OUT is operationally a failure); `ABORTED` stays excluded as operator-cancellation. Locked in by a SQL-content assertion test so the grouping can't silently regress.
+- **`GET /v2/actor-runs/histogram?hours=24`** — server-side hourly bucket aggregation via `date_trunc('hour', ...)` + `generate_series` spine + `LEFT JOIN`, returning exactly N rows even for empty hours. The dashboard's "Runs · last 24h" chart now consumes this endpoint instead of building buckets client-side from a 50-row page (which silently dropped older buckets at scale). Same `FAILED ∪ TIMED-OUT` grouping as `/stats` so the chart's red caps and the "Failed · 24h" tile tell the same story.
+- **`SUPPORTED_WEBHOOK_EVENTS` const + tightened `eventTypes` Zod enum** for both `CreateWebhookSchema` (admin) and `RunWebhookSchema` (per-run). Subscriptions to `ACTOR.RUN.CREATED` or `ACTOR.RUN.RESURRECTED` (Apify defines them; Crawlee Cloud doesn't fire them yet) now fail with 400 instead of silently never delivering. Gap row in `docs/apify-compatibility.md` tracks the firing TODO for those two events.
+- **`--chart [N]` mode in `scripts/seed-stress-fixtures.ts`** — inserts N runs (default 100) with `created_at` jittered across the last 24h, status mix biased ~70% SUCCEEDED with FAILED/TIMED-OUT/RUNNING in the remainder. Lets the histogram be exercised locally without waiting on real activity.
+
+### Fixed
+
+- **Webhook event-type emission matches Apify's wire format.** Apify uses HYPHEN for `run.status` (`'TIMED-OUT'`) but UNDERSCORE for the event type (`'ACTOR.RUN.TIMED_OUT'`); both are intentional. Crawlee Cloud now mirrors both: status strings stay hyphen-form (Apify-canonical), event-type construction translates via `status.replace(/-/g, '_')` at the runner emission seam (`packages/runner/src/queue.ts:387`). Inverse translation in test-webhook delivery for synthetic-run shape parity.
+- **Hourly throughput chart rendering bug** — bucket div had no defined height, so the inner bar's `height: %` resolved to 0 against an auto-sized parent (`items-end` on the flex parent prevents the default stretch). Added `h-full` so the bucket fills the parent and percentage heights resolve correctly.
+- **Hourly throughput chart math bug** — the FAIL cap was double-scaled: `(failed/total) * h` was applied as a percent of the bar, but the bar was already `h%` of the bucket. Changed to `(failed/total) * 100` so the cap reads as the failure share of the bar.
+- **Pre-seeded chart buckets snap to the hour boundary.** Initial `useState` seed used `Date.now()` (subsecond), but the server returns hour-truncated ISO strings — mismatch caused all 24 React keys to change on the first server response, forcing a full bar remount. Now snaps via `setMinutes(0, 0, 0)`.
+- **Dashboard polling preserves chart state on transient API failure** rather than clearing the histogram to empty buckets. The previous catch handler returned `{ buckets: [] }` which set the state to empty on every polling glitch; histogram fetch now returns `null` on error and the setter is gated, so the last-known chart stays on screen.
+- **`formatBucketHour` uses `Math.floor` instead of `Math.round`** for "Xh ago" labels — buckets are hour-aligned, so the label flip should happen at the next hour boundary, not at the 30-minute mark.
+
+### Changed
+
+- **`resource.usageTotalUsd` field** in webhook payloads (always `0`) — Apify-shape parity placeholder until usage tracking lands. Mirrored across `packages/runner/src/queue.ts defaultPayload.resource` and `packages/api/src/routes/webhooks.ts buildWebhookPayload` (KEEP IN SYNC pair).
+
+### Tests
+
+- 269 → 275 passing tests on the api package (16 / 16 unchanged on the runner package). New coverage: per-run webhook INSERT, per-run rejection of unsupported events, admin rejection of unsupported events, stats endpoint shape, stats user-scoping, stats `FAILED ∪ TIMED-OUT` SQL pinning, histogram shape, histogram bind-param passthrough, histogram out-of-range hours rejection.
+
 ## [0.9.1] - 2026-05-03
 
 ### Added
