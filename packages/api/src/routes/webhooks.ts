@@ -17,6 +17,7 @@ interface WebhookRow {
   request_url: string;
   payload_template: string | null;
   actor_id: string | null;
+  run_id: string | null;
   headers: Record<string, string> | null;
   description: string | null;
   is_enabled: boolean;
@@ -92,12 +93,20 @@ export const webhooksRoutes: FastifyPluginAsync = async (fastify) => {
     // Webhooks have no `name` column — search instead matches against id,
     // description, and request_url so operators can find a hook by what
     // they typed in the description field or by domain.
+    //
+    // `run_id IS NULL` excludes per-run webhooks from the admin list:
+    // those rows are created by `POST /v2/acts/:id/runs` for one-shot
+    // delivery to a specific run and are immutable post-dispatch. They
+    // remain accessible by exact ID via GET /:id and /deliveries (legit
+    // for delivery debugging) but should never appear in the operator's
+    // catalog of configured hooks.
     const params: unknown[] = [request.user!.id];
-    const where = appendSearchCondition('user_id = $1', params, request.query.q || '', [
-      'id',
-      'description',
-      'request_url',
-    ]);
+    const where = appendSearchCondition(
+      'user_id = $1 AND run_id IS NULL',
+      params,
+      request.query.q || '',
+      ['id', 'description', 'request_url']
+    );
 
     const [countResult, pageResult] = await Promise.all([
       query<{ total: string }>(
@@ -199,9 +208,16 @@ export const webhooksRoutes: FastifyPluginAsync = async (fastify) => {
 
     // Add user_id filter for authorization
     values.push(request.user!.id);
+    // `run_id IS NULL` rejects updates to per-run webhooks: they're
+    // immutable post-dispatch and would race with delivery if mutated.
+    // The 0-row RETURNING falls through to the existing 404 path — same
+    // shape as "wrong owner" or "missing", which is fine: per-run rows
+    // are an internal mechanism, not a separate user-facing resource.
+    // (DELETE allows per-run rows on purpose — see comment below.)
     const result = await query<WebhookRow>(
       `UPDATE webhooks SET ${setClauses.join(', ')}
        WHERE id = $${paramIndex} AND user_id = $${paramIndex + 1}
+         AND run_id IS NULL
        RETURNING *`,
       values
     );
@@ -221,6 +237,12 @@ export const webhooksRoutes: FastifyPluginAsync = async (fastify) => {
     '/webhooks/:webhookId',
     async (request, reply) => {
       const { webhookId } = request.params;
+      // Per-run webhooks (run_id IS NOT NULL) ARE allowed to be deleted —
+      // this is an explicit "cancel pending deliveries" affordance for
+      // operators. The CASCADE on runs deletion handles the common case;
+      // manual DELETE is the rare-but-useful escape hatch. Inverse decision
+      // vs. PUT (which is rejected) because DELETE is unambiguous in intent
+      // while PUT could accidentally race with delivery.
       const result = await query(
         'DELETE FROM webhooks WHERE id = $1 AND user_id = $2 RETURNING id',
         [webhookId, request.user!.id]
@@ -390,6 +412,7 @@ export interface WebhookPayload {
     id: string;
     actId: string; // Apify alias for actorId
     userId: string;
+    usageTotalUsd: number;
     status: string;
     startedAt: string | null;
     finishedAt: string | null;
@@ -420,6 +443,7 @@ export function buildWebhookPayload(
       id: run.id,
       actId: run.actorId,
       userId: run.userId,
+      usageTotalUsd: 0, // Apify-shape parity; Crawlee Cloud has no usage tracking yet
       status: run.status,
       startedAt: run.startedAt,
       finishedAt: run.finishedAt,
@@ -500,10 +524,15 @@ async function deliverTestWebhook(
 
   // Derive `status` from the eventType so the synthetic run mirrors what
   // production would produce for a real run reaching this state. Production
-  // event format is `ACTOR.RUN.${status}` (SUCCEEDED, FAILED, TIMED-OUT,
-  // ABORTED), so the last segment is the status. Falls back to SUCCEEDED
-  // for non-ACTOR.RUN events (future-proofing).
-  const statusFromEventType = eventType.split('.').pop() ?? 'SUCCEEDED';
+  // event format is `ACTOR.RUN.${status.replace(/-/g, '_')}` — Apify uses
+  // underscore in the event type but hyphen in the status string itself
+  // (e.g., status='TIMED-OUT' -> event='ACTOR.RUN.TIMED_OUT'). The forward
+  // translation lives in packages/runner/src/queue.ts:382; here we apply the
+  // inverse so synthetic run rows carry Apify-canonical hyphen-form status.
+  // Event types here are SUCCEEDED, FAILED, TIMED_OUT, ABORTED. Falls back
+  // to SUCCEEDED for non-ACTOR.RUN events (future-proofing).
+  const eventSegment = eventType.split('.').pop() ?? 'SUCCEEDED';
+  const statusFromEventType = eventSegment === 'TIMED_OUT' ? 'TIMED-OUT' : eventSegment;
 
   // Synthetic run with realistic timing/IDs so receivers can exercise their
   // full parsing path. `test-` prefixed IDs let receivers tell test runs

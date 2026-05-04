@@ -379,7 +379,12 @@ async function ingestCrawlerStats(runId: string): Promise<void> {
  * Creates delivery records and attempts immediate delivery.
  */
 async function triggerWebhooks(runId: string, status: string): Promise<void> {
-  const eventType = `ACTOR.RUN.${status}`;
+  // Apify convention: status string uses HYPHEN ('TIMED-OUT') but event
+  // type uses UNDERSCORE ('ACTOR.RUN.TIMED_OUT'). Translate at this seam
+  // so the rest of the codebase carries Apify-canonical status strings
+  // while webhook receivers (apify-client and other external consumers)
+  // get the canonical event-type form.
+  const eventType = `ACTOR.RUN.${status.replace(/-/g, '_')}`;
 
   // Get run details for payload
   const runResult = await pool.query<RunJob>('SELECT * FROM runs WHERE id = $1', [runId]);
@@ -396,8 +401,9 @@ async function triggerWebhooks(runId: string, status: string): Promise<void> {
   }>(
     `SELECT * FROM webhooks
      WHERE is_enabled = true AND $1 = ANY(event_types)
-       AND (actor_id IS NULL OR actor_id = $2)`,
-    [eventType, run.actor_id]
+       AND (actor_id IS NULL OR actor_id = $2)
+       AND (run_id IS NULL OR run_id = $3)`,
+    [eventType, run.actor_id, runId]
   );
 
   if (webhooks.rows.length === 0) return;
@@ -550,6 +556,7 @@ async function attemptWebhookDelivery(
         id: run.id,
         actId: run.actor_id,
         userId: run.user_id,
+        usageTotalUsd: 0, // Apify-shape parity; Crawlee Cloud has no usage tracking yet
         status: run.status,
         startedAt: run.started_at?.toISOString() ?? null,
         finishedAt: run.finished_at?.toISOString() ?? null,

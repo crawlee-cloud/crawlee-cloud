@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { SUPPORTED_WEBHOOK_EVENTS } from './webhooks.js';
+
 export const CreateActorSchema = z.object({
   name: z
     .string()
@@ -41,9 +43,17 @@ export const CreateActorSchema = z.object({
 
 export const UpdateActorSchema = CreateActorSchema.partial();
 
+export const RunWebhookSchema = z.object({
+  eventTypes: z.array(z.enum(SUPPORTED_WEBHOOK_EVENTS)).min(1),
+  requestUrl: z.string().url(),
+  payloadTemplate: z.string().max(10_000).optional(),
+  headersTemplate: z.string().max(10_000).optional(),
+});
+
 export const ActorRunSchema = z.object({
   input: z.unknown().optional(),
-  timeout: z.number().int().positive().max(86400).optional(), // Max 24h
-  memory: z.number().int().positive().max(16384).optional(), // Max 16GB
+  timeout: z.number().int().positive().max(86_400).optional(), // Max 24h
+  memory: z.number().int().positive().max(16_384).optional(), // Max 16GB
   envVars: z.record(z.string()).optional(),
+  webhooks: z.array(RunWebhookSchema).max(20).optional(),
 });

@@ -41,7 +41,7 @@ export const WEBHOOK_EVENTS: WebhookEventGroup[] = [
         common: true,
       },
       {
-        id: 'ACTOR.RUN.TIMED-OUT',
+        id: 'ACTOR.RUN.TIMED_OUT',
         label: 'Run timed out',
         blurb: 'Run exceeded its configured timeout and was killed.',
       },

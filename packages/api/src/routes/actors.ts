@@ -405,6 +405,12 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
       timeout?: number;
       memory?: number;
       envVars?: Record<string, string>;
+      webhooks?: Array<{
+        eventTypes: string[];
+        requestUrl: string;
+        payloadTemplate?: string;
+        headersTemplate?: string;
+      }>;
     };
   }>('/acts/:actorId/runs', async (request, reply) => {
     const { actorId } = request.params;
@@ -413,6 +419,7 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
       timeout = 3600,
       memory = 1024,
       envVars,
+      webhooks,
     } = ActorRunSchema.parse(request.body || {});
 
     // Get actor by ID or name, scoped to user
@@ -502,6 +509,43 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
     // Store runtime env vars in Redis if provided
     if (envVars && Object.keys(envVars).length > 0) {
       await redis.set(`run:${runId}:envVars`, JSON.stringify(envVars), 'EX', 86400);
+    }
+
+    // Persist per-run webhooks. Inserted as rows in the existing `webhooks`
+    // table with run_id set so the runner's match query unions them in
+    // alongside admin-configured (actor-scoped or global) webhooks. Headers
+    // arrive Apify-shape as a JSON-string `headersTemplate` and are parsed
+    // once at INSERT — Crawlee Cloud doesn't yet run header values through
+    // the templating engine. Known SDK clients don't use {{vars}} in headers,
+    // so this is non-blocking; full templating is tracked as a TODO in
+    // docs/apify-compatibility.md.
+    if (Array.isArray(webhooks) && webhooks.length > 0) {
+      const persistedRunId = result.rows[0]!.id;
+      for (const wh of webhooks) {
+        let parsedHeaders: Record<string, string> | null = null;
+        if (wh.headersTemplate) {
+          try {
+            parsedHeaders = JSON.parse(wh.headersTemplate) as Record<string, string>;
+          } catch {
+            // Malformed headersTemplate — webhook delivers without those headers,
+            // operator can inspect via webhook_deliveries.
+            parsedHeaders = null;
+          }
+        }
+        await query(
+          `INSERT INTO webhooks (id, user_id, event_types, request_url, payload_template, run_id, headers, is_enabled)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, true)`,
+          [
+            nanoid(),
+            request.user!.id,
+            wh.eventTypes,
+            wh.requestUrl,
+            wh.payloadTemplate ?? null,
+            persistedRunId,
+            parsedHeaders ? JSON.stringify(parsedHeaders) : null,
+          ]
+        );
+      }
     }
 
     // Notify Runner about new job

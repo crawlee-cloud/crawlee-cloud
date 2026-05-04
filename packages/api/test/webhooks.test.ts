@@ -124,6 +124,24 @@ describe('Webhook Routes', () => {
 
       expect(response.statusCode).toBe(400);
     });
+
+    // Apify defines ACTOR.RUN.CREATED and ACTOR.RUN.RESURRECTED but Crawlee
+    // Cloud doesn't fire them yet — accepting subscriptions would create rows
+    // that silently never deliver. The Zod enum closes that off; this asserts
+    // the rejection. See docs/apify-compatibility.md "ACTOR.RUN.CREATED +
+    // ACTOR.RUN.RESURRECTED events" row.
+    it('rejects subscription to events Crawlee Cloud does not fire', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/webhooks',
+        payload: {
+          eventTypes: ['ACTOR.RUN.CREATED'],
+          requestUrl: 'https://example.com/hook',
+        },
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
   });
 
   describe('GET /v2/webhooks', () => {
@@ -162,6 +180,18 @@ describe('Webhook Routes', () => {
       const body = JSON.parse(response.body);
       expect(body.data.items).toHaveLength(0);
       expect(body.data.total).toBe(0);
+    });
+
+    it('excludes per-run webhooks (run_id IS NOT NULL) from admin list', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] }) // COUNT(*)
+        .mockResolvedValueOnce({ rows: [] }); // page
+
+      const response = await app.inject({ method: 'GET', url: '/v2/webhooks' });
+      expect(response.statusCode).toBe(200);
+
+      const queries = mockQuery.mock.calls.map((c) => c[0] as string);
+      expect(queries.some((q) => /run_id\s+IS\s+NULL/i.test(q))).toBe(true);
     });
 
     it('honours ?q for substring search across (id, description, request_url)', async () => {
@@ -235,6 +265,22 @@ describe('Webhook Routes', () => {
       });
 
       expect(response.statusCode).toBe(404);
+    });
+
+    it('rejects PUT on a per-run webhook (run_id IS NOT NULL) with 404', async () => {
+      // UPDATE returns 0 rows because of the run_id IS NULL filter
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/v2/webhooks/webhook-1',
+        payload: { isEnabled: false },
+      });
+
+      expect(response.statusCode).toBe(404);
+      // The UPDATE query must include run_id IS NULL
+      const queries = mockQuery.mock.calls.map((c) => c[0] as string);
+      expect(queries.some((q) => /run_id\s+IS\s+NULL/i.test(q))).toBe(true);
     });
   });
 
@@ -520,6 +566,7 @@ describe('Webhook Routes', () => {
         id: expect.any(String),
         actId: expect.any(String),
         userId: 'owner-123',
+        usageTotalUsd: 0,
         status: 'SUCCEEDED',
         defaultDatasetId: expect.stringMatching(/^test-dataset-/),
         defaultKeyValueStoreId: expect.stringMatching(/^test-kv-/),
@@ -539,11 +586,11 @@ describe('Webhook Routes', () => {
     });
 
     it('exitCode reflects the eventType for terminal states', async () => {
-      // FAILED/TIMED-OUT/ABORTED → non-zero exit. SUCCEEDED → 0. RUNNING → null.
+      // FAILED/TIMED_OUT/ABORTED → non-zero exit. SUCCEEDED → 0. RUNNING → null.
       const cases = [
         { eventType: 'ACTOR.RUN.SUCCEEDED', expectedExit: 0 },
         { eventType: 'ACTOR.RUN.FAILED', expectedExit: 1 },
-        { eventType: 'ACTOR.RUN.TIMED-OUT', expectedExit: 1 },
+        { eventType: 'ACTOR.RUN.TIMED_OUT', expectedExit: 1 },
         { eventType: 'ACTOR.RUN.ABORTED', expectedExit: 1 },
       ];
       for (const { eventType, expectedExit } of cases) {
@@ -577,7 +624,7 @@ describe('Webhook Routes', () => {
       // resource.status (Apify-compat shape), and is derived from eventType.
       const cases: { eventType: string; expectedStatus: string }[] = [
         { eventType: 'ACTOR.RUN.FAILED', expectedStatus: 'FAILED' },
-        { eventType: 'ACTOR.RUN.TIMED-OUT', expectedStatus: 'TIMED-OUT' },
+        { eventType: 'ACTOR.RUN.TIMED_OUT', expectedStatus: 'TIMED-OUT' },
         { eventType: 'ACTOR.RUN.ABORTED', expectedStatus: 'ABORTED' },
         { eventType: 'ACTOR.RUN.SUCCEEDED', expectedStatus: 'SUCCEEDED' },
       ];

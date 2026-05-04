@@ -282,6 +282,15 @@ ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS actor_id VARCHAR(21) REFERENCES ac
 ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS headers JSONB;
 ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS description TEXT;
 ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS modified_at TIMESTAMPTZ DEFAULT NOW();
+ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS run_id VARCHAR(21) REFERENCES runs(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_webhooks_run_id ON webhooks(run_id) WHERE run_id IS NOT NULL;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_webhooks_scope') THEN
+    ALTER TABLE webhooks ADD CONSTRAINT chk_webhooks_scope
+      CHECK (NOT (actor_id IS NOT NULL AND run_id IS NOT NULL));
+  END IF;
+END $$;
 
 -- Add retry columns to actors table
 ALTER TABLE actors ADD COLUMN IF NOT EXISTS max_retries INTEGER DEFAULT 0;

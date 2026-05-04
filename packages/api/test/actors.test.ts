@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import Fastify from 'fastify';
+import { ZodError } from 'zod';
 
 // Mock authenticate middleware BEFORE importing routes
 vi.mock('../src/auth/middleware.js', () => ({
@@ -48,6 +49,22 @@ describe('Actor Routes', () => {
 
   beforeAll(async () => {
     app = Fastify();
+    // Mirror the prod ZodError handler from src/index.ts so validation
+    // failures surface as 400 (not 500). Required for tests that assert
+    // schema-level rejection — e.g. unsupported webhook event types.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    app.setErrorHandler((error: any, _request, reply) => {
+      if (error instanceof ZodError) {
+        return reply.status(400).send({
+          error: {
+            type: 'validation_error',
+            message: 'Validation failed',
+            details: error.errors,
+          },
+        });
+      }
+      reply.status(500).send({ error: { message: error.message } });
+    });
     app.register(actorsRoutes, { prefix: '/v2' });
     await app.ready();
   });
@@ -344,6 +361,90 @@ describe('Actor Routes', () => {
       });
 
       expect(response.statusCode).toBe(404);
+    });
+
+    it('accepts a per-run webhooks array and persists rows scoped to run_id', async () => {
+      // 1. Actor lookup
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ id: 'actor-1', name: 'bravo-com', user_id: 'test-user-id' }],
+      });
+      // 2-4. Storage inserts (datasets, kv, request_queues) — return empty rows
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+      // 5. Build lookup
+      mockQuery.mockResolvedValueOnce({ rows: [{ build_id: 'build-1', version_number: '0.0' }] });
+      // 6. Run INSERT
+      mockQuery.mockResolvedValueOnce({
+        rows: [
+          {
+            id: 'run-1',
+            actor_id: 'actor-1',
+            status: 'READY',
+            started_at: new Date(),
+            default_dataset_id: 'ds-1',
+            default_key_value_store_id: 'kv-1',
+            default_request_queue_id: 'rq-1',
+            timeout_secs: 3600,
+            memory_mbytes: 1024,
+            created_at: new Date(),
+          },
+        ],
+      });
+      // 7. Per-run webhook INSERT
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+      // 8. redis.publish('run:new', ...) — required, otherwise undefined
+      mockRedisPublish.mockResolvedValueOnce(1);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/acts/bravo-com/runs',
+        payload: {
+          input: { startUrls: [] },
+          timeout: 3600,
+          memory: 1024,
+          webhooks: [
+            {
+              eventTypes: ['ACTOR.RUN.SUCCEEDED', 'ACTOR.RUN.FAILED'],
+              requestUrl: 'https://client.example.com/webhooks/items',
+              payloadTemplate: '{"sourceId":"abc","resource":{{resource}}}',
+              headersTemplate: '{"Authorization":"Bearer secret"}',
+            },
+          ],
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      // Find the per-run webhook INSERT call. `if (!x) throw` narrows TS
+      // so the [1] dereference type-checks; toBeDefined() doesn't narrow.
+      const webhookInsertCall = mockQuery.mock.calls.find(
+        (c) => typeof c[0] === 'string' && c[0].includes('INSERT INTO webhooks')
+      );
+      if (!webhookInsertCall) throw new Error('per-run webhook INSERT call not made');
+      const params = webhookInsertCall[1] as unknown[];
+      expect(params).toContain('run-1'); // run_id
+      expect(params).toContain(JSON.stringify({ Authorization: 'Bearer secret' })); // parsed headers as JSON string
+    });
+
+    it('rejects per-run webhooks subscribing to events Crawlee Cloud does not fire', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ id: 'actor-1', name: 'bravo-com', user_id: 'test-user-id' }],
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/acts/bravo-com/runs',
+        payload: {
+          webhooks: [
+            {
+              eventTypes: ['ACTOR.RUN.RESURRECTED'],
+              requestUrl: 'https://example.com/hook',
+            },
+          ],
+        },
+      });
+
+      expect(response.statusCode).toBe(400);
     });
   });
 });
