@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Plus, Search, Drama } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
+import { CopyButton } from '@/components/ui/copy-button';
 import { Pagination } from '@/components/pagination';
 import type { Actor } from '@/lib/api';
 import { getActors } from '@/lib/api';
@@ -101,8 +102,12 @@ export default function ActorsPage() {
                   <div className="h-9 w-9 rounded-sm border border-border bg-secondary/60 grid place-items-center text-muted-foreground group-hover:text-signal group-hover:border-signal/40 transition-colors">
                     <Drama className="h-4 w-4" />
                   </div>
-                  <span className="font-mono text-[10px] tracking-widest text-muted-foreground border border-border px-1.5 py-0.5 rounded-sm">
+                  {/* ID chip + copy. Copy button is nested inside the
+                      parent Link card; CopyButton stops propagation so the
+                      click doesn't also navigate to the actor detail. */}
+                  <span className="inline-flex items-center gap-1 font-mono text-[10px] tracking-widest text-muted-foreground border border-border px-1.5 py-0.5 rounded-sm">
                     {a.id.slice(0, 8)}
+                    <CopyButton value={a.id} label="Actor ID" />
                   </span>
                 </div>
                 <h3 className="text-[15px] leading-tight text-foreground group-hover:text-signal transition-colors">

@@ -13,6 +13,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
+import { CopyButton } from '@/components/ui/copy-button';
 import { prefixPath } from '@/lib/path-prefix';
 import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
@@ -189,7 +190,10 @@ function DatasetDetailContent() {
           <h1 className="text-[28px] leading-none font-medium tracking-tight truncate">
             {dataset.name || 'Untitled dataset'}
           </h1>
-          <p className="font-mono text-[11px] text-muted-foreground">{dataset.id}</p>
+          <p className="font-mono text-[11px] text-muted-foreground inline-flex items-center gap-1.5">
+            {dataset.id}
+            <CopyButton value={dataset.id} label="Dataset ID" />
+          </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <button

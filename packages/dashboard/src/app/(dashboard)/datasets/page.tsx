@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useState } from 'react';
 import { Database, Download, Eye, Search, Trash2 } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
+import { CopyButton } from '@/components/ui/copy-button';
 import { Pagination } from '@/components/pagination';
 import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
@@ -133,12 +134,15 @@ function DatasetsContent() {
                       </div>
                       <div className="min-w-0">
                         {d.name && <p className="text-foreground text-[13px] truncate">{d.name}</p>}
-                        <AppLink
-                          href={`/datasets/${d.id}`}
-                          className="font-mono text-[11px] text-muted-foreground hover:text-foreground"
-                        >
-                          {d.id.slice(0, 16)}
-                        </AppLink>
+                        <span className="inline-flex items-center gap-1">
+                          <AppLink
+                            href={`/datasets/${d.id}`}
+                            className="font-mono text-[11px] text-muted-foreground hover:text-foreground"
+                          >
+                            {d.id.slice(0, 16)}
+                          </AppLink>
+                          <CopyButton value={d.id} label="Dataset ID" />
+                        </span>
                       </div>
                     </div>
                   </td>

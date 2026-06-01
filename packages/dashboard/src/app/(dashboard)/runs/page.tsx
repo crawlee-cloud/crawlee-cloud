@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
 import { StatusChip } from '@/components/ui/badge';
+import { CopyButton } from '@/components/ui/copy-button';
 import type { Actor, Run } from '@/lib/api';
 import { getActors, listRuns } from '@/lib/api';
 import { FETCH_ALL_LIMIT, PAGE_SIZE } from '@/lib/constants';
@@ -325,12 +326,15 @@ export default function RunsPage() {
                     className="border-b border-border/60 last:border-0 hover:bg-secondary/40"
                   >
                     <td className="px-5 py-3 font-mono">
-                      <AppLink
-                        href={`/runs/${run.id}`}
-                        className="text-foreground hover:text-signal"
-                      >
-                        {run.id.slice(0, 12)}
-                      </AppLink>
+                      <span className="inline-flex items-center gap-1">
+                        <AppLink
+                          href={`/runs/${run.id}`}
+                          className="text-foreground hover:text-signal"
+                        >
+                          {run.id.slice(0, 12)}
+                        </AppLink>
+                        <CopyButton value={run.id} label="Run ID" />
+                      </span>
                     </td>
                     <td className="px-5 py-3">
                       {actor ? (

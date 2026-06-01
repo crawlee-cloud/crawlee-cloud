@@ -13,6 +13,71 @@ import { applyWebhookTemplate } from './webhook-template.js';
 
 const { Pool } = pg;
 
+/**
+ * Cap and redact the rendered webhook body before persisting it to
+ * `webhook_deliveries.request_body`. The actual bytes sent to the receiver
+ * stay raw — only the stored copy gets transformed.
+ *
+ * Why both: (a) `Authorization` headers are masked in the dashboard, so
+ * leaving rendered tokens in stored payloads breaks the operator's mental
+ * model of "credentials are masked end-to-end"; (b) `response_body` is
+ * capped at 1024 chars, so an unbounded `request_body` would be a
+ * surprising asymmetry for anyone reading the column comments.
+ *
+ * Matches dashboard's header-mask heuristic — see RunWebhookCard's HEADERS
+ * section. KEEP IN SYNC with `packages/api/src/routes/webhooks.ts` (the
+ * test endpoint uses an identical helper); if the regex changes here, it
+ * must change there too — webhook_deliveries gets writes from both paths.
+ */
+const REQUEST_BODY_STORAGE_CAP = 4096;
+// `key$` (suffix-anchored) catches credential-style endings (apiKey,
+// secretKey, accessKey, privateKey) WITHOUT false-positive-matching
+// resource id fields like `defaultKeyValueStoreId`, `keyValueStoreId`,
+// `keyName`. Bare-substring `key` would mask the KV store id on every
+// single Apify-shape delivery — high-frequency noise that erodes the
+// signal value of the mask. Other tokens (`auth`, `token`, ...) are kept
+// as substrings because they don't have the same "appears in benign id
+// fields" problem.
+const SECRET_KEY_PATTERN = /auth|token|password|secret|cookie|signature|hmac|key$/i;
+const MIN_REDACTED_VALUE_LEN = 8;
+
+function redactSecretsForStorage(jsonString: string): string {
+  // If the rendered body isn't JSON (shouldn't happen — we JSON.stringify
+  // ourselves — but a defensive fallback for future template engines),
+  // just cap-and-store the raw form. No keys to walk = nothing to redact.
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonString);
+  } catch {
+    return jsonString.slice(0, REQUEST_BODY_STORAGE_CAP);
+  }
+  return JSON.stringify(walkAndRedact(parsed)).slice(0, REQUEST_BODY_STORAGE_CAP);
+}
+
+function walkAndRedact(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(walkAndRedact);
+  if (node && typeof node === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+      // Only mask string values longer than 8 chars — shorter strings are
+      // unlikely to be real credentials and masking them ("abc" → "••• abc")
+      // would be noise. Numbers / booleans for secret-named keys (e.g.,
+      // `apiKey: true`) are passed through unchanged.
+      if (
+        typeof v === 'string' &&
+        v.length > MIN_REDACTED_VALUE_LEN &&
+        SECRET_KEY_PATTERN.test(k)
+      ) {
+        out[k] = `••• ${v.slice(-4)}`;
+      } else {
+        out[k] = walkAndRedact(v);
+      }
+    }
+    return out;
+  }
+  return node;
+}
+
 interface RunJob {
   id: string;
   actor_id: string;
@@ -559,6 +624,15 @@ async function attemptWebhookDelivery(
   eventType: string
 ): Promise<void> {
   const RETRY_DELAYS = [10, 30, 60, 300, 900]; // seconds
+  // Declared outside try so the catch path can still record what we tried
+  // to send when fetch throws *after* we built the body (e.g., AbortSignal
+  // timeout). Pre-render-failure errors leave this null, which is honest:
+  // nothing was sent.
+  //
+  // Note: this holds the REDACTED + CAPPED form for storage. The raw
+  // unredacted bytes (sent to the receiver) live as a local const inside
+  // the try block — never escapes the function, never lands in the DB.
+  let requestBodyForStorage: string | null = null;
 
   try {
     // Default Apify-compatible payload. KEEP IN SYNC with
@@ -607,6 +681,14 @@ async function attemptWebhookDelivery(
       },
     };
     const payload = applyWebhookTemplate(webhook.payload_template, defaultPayload);
+    // `rawBody` is the exact bytes sent to the receiver — never persisted.
+    // `requestBodyForStorage` is the secrets-redacted, length-capped form
+    // that lands in webhook_deliveries.request_body. Keeping them as
+    // separate identifiers prevents the "stored copy diverged from sent
+    // copy" bug class — and prevents the inverse: never accidentally
+    // sending the redacted form to the receiver (they'd authenticate-fail).
+    const rawBody = JSON.stringify(payload);
+    requestBodyForStorage = redactSecretsForStorage(rawBody);
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -619,10 +701,11 @@ async function attemptWebhookDelivery(
       await pool.query(
         `UPDATE webhook_deliveries
          SET status = 'FAILED', attempt_count = attempt_count + 1,
+             request_body = $1,
              response_body = 'Webhook URL targets a private/internal network address',
              finished_at = NOW(), next_retry_at = NULL
-         WHERE id = $1`,
-        [deliveryId]
+         WHERE id = $2`,
+        [requestBodyForStorage, deliveryId]
       );
       return;
     }
@@ -630,7 +713,7 @@ async function attemptWebhookDelivery(
     const response = await fetch(webhook.request_url, {
       method: 'POST',
       headers,
-      body: JSON.stringify(payload),
+      body: rawBody,
       signal: AbortSignal.timeout(30_000),
     });
 
@@ -641,28 +724,49 @@ async function attemptWebhookDelivery(
       await pool.query(
         `UPDATE webhook_deliveries
          SET status = 'DELIVERED', attempt_count = attempt_count + 1,
-             response_status = $1, response_body = $2,
+             request_body = $1,
+             response_status = $2, response_body = $3,
              finished_at = NOW(), next_retry_at = NULL
-         WHERE id = $3`,
-        [response.status, responseBody.slice(0, 1024), deliveryId]
+         WHERE id = $4`,
+        [requestBodyForStorage, response.status, responseBody.slice(0, 1024), deliveryId]
       );
     } else {
       // HTTP error — schedule retry
-      await scheduleRetry(deliveryId, response.status, responseBody.slice(0, 1024), RETRY_DELAYS);
+      await scheduleRetry(
+        deliveryId,
+        response.status,
+        responseBody.slice(0, 1024),
+        requestBodyForStorage,
+        RETRY_DELAYS
+      );
     }
   } catch (err) {
-    // Network error — schedule retry
-    await scheduleRetry(deliveryId, null, (err as Error).message.slice(0, 1024), RETRY_DELAYS);
+    // Network error — schedule retry. requestBodyForStorage may be null if
+    // the exception fired before we built it (e.g., template rendering
+    // threw), in which case `null` is honest: nothing was sent.
+    await scheduleRetry(
+      deliveryId,
+      null,
+      (err as Error).message.slice(0, 1024),
+      requestBodyForStorage,
+      RETRY_DELAYS
+    );
   }
 }
 
 /**
  * Schedule a retry with exponential backoff, or mark as failed if max attempts reached.
+ *
+ * `requestBody` is the JSON we attempted to send on this attempt; null means
+ * we never got far enough to render it (e.g., a template-rendering exception).
+ * Stored on every UPDATE path so the dashboard always shows what was last
+ * tried, not a stale body from a previous attempt.
  */
 async function scheduleRetry(
   deliveryId: string,
   responseStatus: number | null,
   responseBody: string,
+  requestBody: string | null,
   retryDelays: number[]
 ): Promise<void> {
   // Get current attempt count
@@ -680,20 +784,23 @@ async function scheduleRetry(
     await pool.query(
       `UPDATE webhook_deliveries
        SET status = 'FAILED', attempt_count = $1,
-           response_status = $2, response_body = $3,
+           request_body = $2,
+           response_status = $3, response_body = $4,
            finished_at = NOW(), next_retry_at = NULL
-       WHERE id = $4`,
-      [newAttempt, responseStatus, responseBody, deliveryId]
+       WHERE id = $5`,
+      [newAttempt, requestBody, responseStatus, responseBody, deliveryId]
     );
   } else {
     // Schedule next retry
     const delaySecs = retryDelays[newAttempt - 1] ?? retryDelays[retryDelays.length - 1]!;
     await pool.query(
       `UPDATE webhook_deliveries
-       SET attempt_count = $1, response_status = $2, response_body = $3,
-           next_retry_at = NOW() + INTERVAL '1 second' * $4
-       WHERE id = $5`,
-      [newAttempt, responseStatus, responseBody, delaySecs, deliveryId]
+       SET attempt_count = $1,
+           request_body = $2,
+           response_status = $3, response_body = $4,
+           next_retry_at = NOW() + INTERVAL '1 second' * $5
+       WHERE id = $6`,
+      [newAttempt, requestBody, responseStatus, responseBody, delaySecs, deliveryId]
     );
   }
 }

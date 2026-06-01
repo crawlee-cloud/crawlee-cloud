@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { ListOrdered, Search, Trash2 } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
+import { CopyButton } from '@/components/ui/copy-button';
 import { Pagination } from '@/components/pagination';
 import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
@@ -119,12 +120,15 @@ export default function RequestQueuesPage() {
                       </div>
                       <div className="min-w-0">
                         {q.name && <p className="text-foreground text-[13px] truncate">{q.name}</p>}
-                        <AppLink
-                          href={`/request-queues/${q.id}`}
-                          className="font-mono text-[11px] text-muted-foreground hover:text-foreground"
-                        >
-                          {q.id.slice(0, 16)}
-                        </AppLink>
+                        <span className="inline-flex items-center gap-1">
+                          <AppLink
+                            href={`/request-queues/${q.id}`}
+                            className="font-mono text-[11px] text-muted-foreground hover:text-foreground"
+                          >
+                            {q.id.slice(0, 16)}
+                          </AppLink>
+                          <CopyButton value={q.id} label="Queue ID" />
+                        </span>
                       </div>
                     </div>
                   </td>

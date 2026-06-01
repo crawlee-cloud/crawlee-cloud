@@ -13,9 +13,11 @@ import {
   ListOrdered,
   Loader2,
   Terminal,
+  Webhook as WebhookIcon,
 } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
 import { StatusChip } from '@/components/ui/badge';
+import { CopyButton } from '@/components/ui/copy-button';
 import {
   abortRun,
   downloadAsBlob,
@@ -24,16 +26,20 @@ import {
   getRunDatasetItems,
   getRunInput,
   getRunLogs,
+  getWebhookDeliveries,
+  getWebhooks,
   openInTabAsBlob,
   type Actor,
   type Run,
+  type Webhook,
+  type WebhookDelivery,
 } from '@/lib/api';
 import { DATASET_PREVIEW_LIMIT, LOG_TAIL_LIMIT } from '@/lib/constants';
 import { cn } from '@/lib/utils';
 import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
 
-type Tab = 'logs' | 'input' | 'output';
+type Tab = 'logs' | 'input' | 'output' | 'webhooks';
 
 const TERMINAL = new Set<Run['status']>(['SUCCEEDED', 'FAILED', 'TIMED-OUT', 'ABORTED']);
 
@@ -58,6 +64,15 @@ function RunDetail() {
   const [inputLoading, setInputLoading] = useState(false);
   const [dataset, setDataset] = useState<unknown[] | null>(null); // null = not fetched
   const [datasetLoading, setDatasetLoading] = useState(false);
+  // Per-run hooks are immutable post-dispatch — one fetch on run-load is
+  // enough. `null` distinguishes "not fetched yet" from "fetched, empty".
+  const [runWebhooks, setRunWebhooks] = useState<Webhook[] | null>(null);
+  // Deliveries per webhook, lazy-loaded when the Webhooks tab is opened.
+  // Keyed by webhook id so multiple hooks can have their delivery history
+  // shown simultaneously without re-fetching as the user expands rows.
+  const [deliveriesByWebhook, setDeliveriesByWebhook] = useState<Record<string, WebhookDelivery[]>>(
+    {}
+  );
 
   const logsEndRef = useRef<HTMLDivElement>(null);
 
@@ -118,6 +133,21 @@ function RunDetail() {
     };
   }, [run]);
 
+  // Per-run webhooks: fetch once on first load. They can't be mutated after
+  // dispatch (PUT is rejected server-side via `run_id IS NULL`), so polling
+  // adds no value — only the deliveries can change, and operators see those
+  // on /webhooks if they need detail.
+  useEffect(() => {
+    if (!run || runWebhooks !== null) return;
+    let alive = true;
+    getWebhooks({ scope: 'run', runId: run.id, limit: 50 })
+      .then((page) => alive && setRunWebhooks(page.items))
+      .catch(() => alive && setRunWebhooks([]));
+    return () => {
+      alive = false;
+    };
+  }, [run, runWebhooks]);
+
   // Lazy-load tab data on demand
   useEffect(() => {
     if (tab === 'input' && input === undefined && !inputLoading) {
@@ -134,7 +164,28 @@ function RunDetail() {
         .catch(() => setDataset([]))
         .finally(() => setDatasetLoading(false));
     }
-  }, [tab, id, input, inputLoading, dataset, datasetLoading]);
+    // Fetch deliveries for every per-run webhook the first time the
+    // Webhooks tab is opened. Parallel — webhook count is small (1-3
+    // typically). Subsequent tab visits reuse the cached results.
+    if (tab === 'webhooks' && runWebhooks && runWebhooks.length > 0) {
+      const missing = runWebhooks.filter((w) => !(w.id in deliveriesByWebhook));
+      if (missing.length > 0) {
+        void Promise.all(
+          missing.map((w) =>
+            getWebhookDeliveries(w.id)
+              .then((items) => [w.id, items] as const)
+              .catch(() => [w.id, [] as WebhookDelivery[]] as const)
+          )
+        ).then((results) => {
+          setDeliveriesByWebhook((prev) => {
+            const next = { ...prev };
+            for (const [id, items] of results) next[id] = items;
+            return next;
+          });
+        });
+      }
+    }
+  }, [tab, id, input, inputLoading, dataset, datasetLoading, runWebhooks, deliveriesByWebhook]);
 
   // Auto-scroll log tail
   useEffect(() => {
@@ -194,6 +245,14 @@ function RunDetail() {
     { id: 'logs', label: 'Logs', icon: Terminal },
     { id: 'input', label: 'Input', icon: FileInput },
     { id: 'output', label: 'Output', icon: Database },
+    // Show Webhooks tab only when this run actually has per-run hooks.
+    // Most runs don't, so a permanent tab would be dead UI on every page.
+    // Conditional rendering matches the "negative space = no hooks" pattern
+    // — when the tab is absent, no hooks; when present, it's a strong
+    // affordance to look there.
+    ...((runWebhooks?.length ?? 0) > 0
+      ? [{ id: 'webhooks' as Tab, label: 'Webhooks', icon: WebhookIcon }]
+      : []),
   ];
 
   return (
@@ -209,12 +268,15 @@ function RunDetail() {
       {/* Header strip */}
       <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4 pb-5 border-b border-border">
         <div className="space-y-2 min-w-0">
-          <p className="eyebrow">RUN · {run.id.slice(0, 12)}</p>
+          <p className="eyebrow inline-flex items-center gap-1.5">
+            RUN · {run.id.slice(0, 12)}
+            <CopyButton value={run.id} label="Run ID" />
+          </p>
           <div className="flex items-center gap-3">
             <h1 className="text-[28px] leading-none font-medium tracking-tight">Execution</h1>
             <StatusChip status={run.status} />
           </div>
-          <p className="font-mono text-[11px] text-muted-foreground">
+          <p className="font-mono text-[11px] text-muted-foreground inline-flex items-center gap-1.5">
             actor ·{' '}
             {actor ? (
               <AppLink href={`/actors/${actor.name}`} className="text-foreground hover:text-signal">
@@ -225,6 +287,11 @@ function RunDetail() {
                 {run.actId}
               </AppLink>
             )}
+            {/* Copy the ACTOR ID (nanoid) not the slug — the ID is what the
+                SDK / API consumers need; slug is for human-readable URLs.
+                Falls back to run.actId when the actor resolution hasn't
+                completed; same value either way (Actor.id == run.actId). */}
+            <CopyButton value={actor?.id ?? run.actId} label="Actor ID" />
           </p>
         </div>
         {isLive && (
@@ -255,7 +322,7 @@ function RunDetail() {
             {run.options?.timeoutSecs ? `${run.options.timeoutSecs}s` : '—'}
           </DefRow>
           {run.defaultDatasetId && (
-            <DefRow icon={Database} label="Dataset">
+            <DefRow icon={Database} label="Dataset" copyValue={run.defaultDatasetId}>
               <AppLink
                 href={`/datasets/${run.defaultDatasetId}`}
                 className="font-mono text-[11px] text-foreground hover:text-signal break-all"
@@ -265,7 +332,7 @@ function RunDetail() {
             </DefRow>
           )}
           {run.defaultKeyValueStoreId && (
-            <DefRow icon={Boxes} label="KV store">
+            <DefRow icon={Boxes} label="KV store" copyValue={run.defaultKeyValueStoreId}>
               <AppLink
                 href={`/key-value-stores/${run.defaultKeyValueStoreId}`}
                 className="font-mono text-[11px] text-foreground hover:text-signal break-all"
@@ -275,7 +342,7 @@ function RunDetail() {
             </DefRow>
           )}
           {run.defaultRequestQueueId && (
-            <DefRow icon={ListOrdered} label="Request queue">
+            <DefRow icon={ListOrdered} label="Request queue" copyValue={run.defaultRequestQueueId}>
               <AppLink
                 href={`/request-queues/${run.defaultRequestQueueId}`}
                 className="font-mono text-[11px] text-foreground hover:text-signal break-all"
@@ -388,9 +455,24 @@ function RunDetail() {
                     <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
                   </div>
                 ) : input && Object.keys(input as object).length > 0 ? (
-                  <pre className="font-mono text-[12px] text-foreground whitespace-pre-wrap p-4 border border-border rounded-sm bg-background/60">
-                    {JSON.stringify(input, null, 2)}
-                  </pre>
+                  // Wrap the pre in a relative container so the copy button
+                  // can sit in the top-right corner regardless of content
+                  // length. Pretty-printed JSON is stored once and reused
+                  // for both display and copy — keeps the visible text and
+                  // clipboard payload byte-identical.
+                  <div className="relative">
+                    <pre className="font-mono text-[12px] text-foreground whitespace-pre-wrap p-4 pr-20 border border-border rounded-sm bg-background/60">
+                      {JSON.stringify(input, null, 2)}
+                    </pre>
+                    <div className="absolute top-2 right-2">
+                      <CopyButton
+                        value={JSON.stringify(input, null, 2)}
+                        label="Input JSON"
+                        variant="button"
+                        title="Copy run input as pretty-printed JSON"
+                      />
+                    </div>
+                  </div>
                 ) : (
                   <div className="h-full grid place-items-center text-center">
                     <div>
@@ -426,6 +508,25 @@ function RunDetail() {
                   </div>
                 ) : (
                   <DatasetTable items={dataset} />
+                )}
+              </div>
+            )}
+
+            {tab === 'webhooks' && (
+              <div className="absolute inset-0 overflow-auto p-4 space-y-3">
+                {runWebhooks && runWebhooks.length > 0 ? (
+                  runWebhooks.map((w) => (
+                    <RunWebhookCard key={w.id} webhook={w} deliveries={deliveriesByWebhook[w.id]} />
+                  ))
+                ) : (
+                  <div className="h-full grid place-items-center text-center">
+                    <div>
+                      <WebhookIcon className="h-6 w-6 text-muted-foreground/40 mx-auto mb-2" />
+                      <p className="font-mono text-[11px] tracking-wider text-muted-foreground">
+                        [ NO PER-RUN WEBHOOKS ]
+                      </p>
+                    </div>
+                  </div>
                 )}
               </div>
             )}
@@ -523,19 +624,258 @@ function DatasetTable({ items }: { items: unknown[] }) {
 function DefRow({
   icon: Icon,
   label,
+  copyValue,
   children,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   label: string;
+  /**
+   * When provided, a small copy-to-clipboard button appears on the right of
+   * the label row. Use the same string that the user would want to paste
+   * into a curl / SDK call (e.g., the full ID, not its truncated display
+   * form). Omit for non-identifier rows (Started / Finished / Memory etc).
+   */
+  copyValue?: string;
   children: React.ReactNode;
 }) {
   return (
     <div>
-      <p className="eyebrow flex items-center gap-1.5 mb-1">
-        <Icon className="h-3 w-3" /> {label}
-      </p>
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <p className="eyebrow flex items-center gap-1.5">
+          <Icon className="h-3 w-3" /> {label}
+        </p>
+        {copyValue && <CopyButton value={copyValue} label={label} />}
+      </div>
       <p className="text-[12px] text-foreground">{children}</p>
     </div>
+  );
+}
+
+/**
+ * Full-detail card for one per-run webhook on the run page's Webhooks tab.
+ * Focused on debug-by-evidence: the rendered request body (what we sent)
+ * is the centerpiece, paired with the response (what came back) for each
+ * delivery attempt. Headers are kept inline at the top; the configured
+ * template is only shown as a fallback when no deliveries exist yet
+ * (because once a delivery exists, the rendered body is strictly more
+ * useful than the unresolved template).
+ *
+ * Read-only: editing/deletion lives on /webhooks.
+ */
+function RunWebhookCard({
+  webhook,
+  deliveries,
+}: {
+  webhook: Webhook;
+  deliveries: WebhookDelivery[] | undefined;
+}) {
+  return (
+    <article className="panel">
+      <header className="px-4 py-3 border-b border-border space-y-2">
+        <div className="flex items-start gap-3">
+          <span
+            className={cn(
+              'shrink-0 font-mono text-[10px] tracking-widest px-1.5 py-0.5 rounded-sm border',
+              webhook.isEnabled
+                ? 'text-signal border-signal/40'
+                : 'text-muted-foreground border-border'
+            )}
+          >
+            {webhook.isEnabled ? '[LIVE]' : '[OFF]'}
+          </span>
+          <p className="font-mono text-[12px] text-foreground break-all flex-1">
+            {webhook.requestUrl}
+          </p>
+        </div>
+        {webhook.description && (
+          <p className="text-[12px] text-muted-foreground">{webhook.description}</p>
+        )}
+        <div className="flex flex-wrap items-center gap-1">
+          {webhook.eventTypes.map((e) => (
+            <span
+              key={e}
+              className="font-mono text-[10px] text-muted-foreground border border-border px-1.5 py-0.5 rounded-sm"
+            >
+              {e}
+            </span>
+          ))}
+        </div>
+        <p className="font-mono text-[10px] tracking-wider text-muted-foreground">
+          id · {webhook.id}
+        </p>
+      </header>
+
+      <section className="px-4 py-3 border-b border-border">
+        <p className="eyebrow mb-2">HEADERS</p>
+        {webhook.headers && Object.keys(webhook.headers).length > 0 ? (
+          <ul className="space-y-1">
+            {Object.entries(webhook.headers).map(([k, v]) => (
+              <li key={k} className="font-mono text-[11px]">
+                <span className="text-muted-foreground">{k}</span>
+                <span className="text-muted-foreground/60"> · </span>
+                <span className="text-foreground break-all">
+                  {/* Mask values whose key NAME suggests a credential.
+                      Substring match (no anchors) covers the long tail:
+                      `x-hub-signature`, `x-webhook-secret`,
+                      `x-amz-security-token`, `cookie`, `x-shopify-hmac-sha256`,
+                      etc. False positives (e.g. masking `event-key` when
+                      harmless) are much cheaper than false negatives that
+                      leak credentials into a debug surface. Last 4 chars
+                      stay visible so the operator can still tell which
+                      credential is configured. KEEP IN SYNC with the
+                      runner/API redactSecretsForStorage heuristic. */}
+                  {/auth|token|password|secret|cookie|signature|hmac|key$/i.test(k)
+                    ? `••• ${v.slice(-4)}`
+                    : v}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="font-mono text-[11px] text-muted-foreground">none configured</p>
+        )}
+      </section>
+
+      <section>
+        <p className="eyebrow px-4 pt-3 pb-2">DELIVERIES</p>
+        {deliveries === undefined ? (
+          <div className="px-4 py-6 grid place-items-center">
+            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+          </div>
+        ) : deliveries.length === 0 ? (
+          // Fallback: no deliveries yet, so we show the configured template
+          // as a stand-in. This is the only case where the template (with
+          // unresolved {{placeholders}}) is genuinely useful — once a real
+          // delivery exists, its rendered body supersedes it for debugging.
+          <NoDeliveriesFallback template={webhook.payloadTemplate} />
+        ) : (
+          <ul className="divide-y divide-border">
+            {deliveries.map((d) => (
+              <DeliveryRowExpanded key={d.id} delivery={d} />
+            ))}
+          </ul>
+        )}
+      </section>
+    </article>
+  );
+}
+
+function NoDeliveriesFallback({ template }: { template?: string | null }) {
+  const pretty = (() => {
+    if (!template) return null;
+    try {
+      return JSON.stringify(JSON.parse(template), null, 2);
+    } catch {
+      // Templates contain `{{placeholders}}` which break JSON.parse —
+      // show the raw form so the operator can read what's configured.
+      return template;
+    }
+  })();
+  return (
+    <div className="px-4 pb-4 space-y-2">
+      <p className="font-mono text-[11px] text-muted-foreground">no deliveries yet</p>
+      <p className="font-mono text-[10px] tracking-wider text-muted-foreground uppercase">
+        configured payload template
+      </p>
+      {pretty ? (
+        <pre className="font-mono text-[11px] text-foreground bg-secondary/40 border border-border rounded-sm p-3 overflow-auto max-h-64 whitespace-pre-wrap break-all">
+          {pretty}
+        </pre>
+      ) : (
+        <p className="font-mono text-[11px] text-muted-foreground">
+          default — Apify-shape payload (resource, eventData, …)
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Single delivery row showing what was sent and what came back. Both bodies
+ * are pretty-printed when they parse as JSON — operators reading webhook
+ * payloads expect indented form, and the receiver's response is often JSON
+ * too. Fallback to raw on parse failure.
+ */
+function DeliveryRowExpanded({ delivery: d }: { delivery: WebhookDelivery }) {
+  const prettyRequest = prettyJson(d.requestBody);
+  const prettyResponse = prettyJson(d.responseBody);
+
+  return (
+    <li className="px-4 py-3 space-y-3">
+      <div className="flex items-center gap-2 flex-wrap font-mono text-[11px]">
+        <DeliveryBadge status={d.status} />
+        <span className="text-foreground">{d.eventType}</span>
+        {d.responseStatus !== null && (
+          <span
+            className={cn(
+              'px-1.5 py-0.5 rounded-sm border',
+              d.responseStatus >= 200 && d.responseStatus < 300
+                ? 'border-signal/40 text-signal'
+                : 'border-fail/40 text-fail'
+            )}
+          >
+            HTTP {d.responseStatus}
+          </span>
+        )}
+        <span className="text-muted-foreground">
+          attempt {d.attemptCount}/{d.maxAttempts}
+        </span>
+        <span className="text-muted-foreground">{new Date(d.createdAt).toLocaleString()}</span>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <p className="eyebrow">REQUEST BODY · sent</p>
+          {d.requestBody ? (
+            <pre className="font-mono text-[11px] text-foreground bg-secondary/40 border border-border rounded-sm p-2 overflow-auto max-h-64 whitespace-pre-wrap break-all">
+              {prettyRequest}
+            </pre>
+          ) : (
+            // Null body means the delivery failed before render — usually
+            // a template-rendering exception or the private-URL guard.
+            // Explicit messaging beats a blank pre.
+            <p className="font-mono text-[11px] text-muted-foreground">
+              not recorded (delivery failed before render)
+            </p>
+          )}
+        </div>
+        <div className="space-y-1">
+          <p className="eyebrow">RESPONSE BODY · received</p>
+          {d.responseBody ? (
+            <pre className="font-mono text-[11px] text-muted-foreground bg-secondary/40 border border-border rounded-sm p-2 overflow-auto max-h-64 whitespace-pre-wrap break-all">
+              {prettyResponse}
+            </pre>
+          ) : (
+            <p className="font-mono text-[11px] text-muted-foreground">no response body</p>
+          )}
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function prettyJson(s: string | null | undefined): string {
+  if (!s) return '';
+  try {
+    return JSON.stringify(JSON.parse(s), null, 2);
+  } catch {
+    return s;
+  }
+}
+
+function DeliveryBadge({ status }: { status: string }) {
+  const cls =
+    status === 'DELIVERED'
+      ? 'border-signal/40 text-signal'
+      : status === 'FAILED'
+        ? 'border-fail/40 text-fail'
+        : 'border-border text-muted-foreground';
+  return (
+    <span
+      className={cn('font-mono text-[10px] tracking-wider border px-1.5 py-0.5 rounded-sm', cls)}
+    >
+      {status}
+    </span>
   );
 }
 

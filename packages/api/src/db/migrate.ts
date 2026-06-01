@@ -277,6 +277,13 @@ CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_pending
 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_webhook
   ON webhook_deliveries(webhook_id);
 
+-- Captures the rendered JSON body actually sent to the receiver. Distinct
+-- from webhooks.payload_template (the configured form with {{placeholders}})
+-- because operators triaging "the receiver rejected this" need to see the
+-- exact bytes, not the pre-render shape. NULL for legacy deliveries written
+-- before this column existed.
+ALTER TABLE webhook_deliveries ADD COLUMN IF NOT EXISTS request_body TEXT;
+
 -- Add columns to webhooks table
 ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS actor_id VARCHAR(21) REFERENCES actors(id) ON DELETE SET NULL;
 ALTER TABLE webhooks ADD COLUMN IF NOT EXISTS headers JSONB;

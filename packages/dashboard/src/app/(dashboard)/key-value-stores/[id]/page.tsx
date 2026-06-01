@@ -13,6 +13,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
+import { CopyButton } from '@/components/ui/copy-button';
 import { prefixPath } from '@/lib/path-prefix';
 import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
@@ -177,7 +178,10 @@ export default function KVStoreDetail({ params }: { params: Promise<{ id: string
           <h1 className="text-[28px] leading-none font-medium tracking-tight truncate">
             {store.name || 'Unnamed store'}
           </h1>
-          <p className="font-mono text-[11px] text-muted-foreground">{store.id}</p>
+          <p className="font-mono text-[11px] text-muted-foreground inline-flex items-center gap-1.5">
+            {store.id}
+            <CopyButton value={store.id} label="KV store ID" />
+          </p>
         </div>
         <button
           type="button"

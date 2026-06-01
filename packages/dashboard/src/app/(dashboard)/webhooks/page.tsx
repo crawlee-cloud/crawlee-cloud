@@ -15,6 +15,7 @@ import {
   Webhook as WebhookIcon,
 } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
+import { CopyButton } from '@/components/ui/copy-button';
 import { Pagination } from '@/components/pagination';
 import {
   createWebhook,
@@ -27,6 +28,7 @@ import {
   type Actor,
   type Webhook,
   type WebhookDelivery,
+  type WebhookScope,
 } from '@/lib/api';
 import { FETCH_ALL_LIMIT, PAGE_SIZE } from '@/lib/constants';
 import { usePageParam } from '@/lib/use-page-param';
@@ -39,8 +41,14 @@ export default function WebhooksPage() {
   const confirm = useConfirm();
   const toast = useToast();
   const { offset, setOffset, query } = usePageParam();
+  const [activeScope, setActiveScope] = useState<WebhookScope>('catalog');
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
   const [total, setTotal] = useState(0);
+  // Independent count for each tab so the labels show what's behind the
+  // other one without forcing a tab switch. Probed via limit=1 alongside
+  // the active scope's full fetch — same `q` filter so a search narrows
+  // both tab labels coherently.
+  const [counts, setCounts] = useState<{ catalog: number; run: number }>({ catalog: 0, run: 0 });
   const [actors, setActors] = useState<Actor[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -59,14 +67,21 @@ export default function WebhooksPage() {
 
   useEffect(() => {
     let alive = true;
+    const otherScope: WebhookScope = activeScope === 'catalog' ? 'run' : 'catalog';
     void Promise.all([
-      getWebhooks({ offset, limit: PAGE_SIZE, q: query }).catch(() => null),
+      getWebhooks({ offset, limit: PAGE_SIZE, q: query, scope: activeScope }).catch(() => null),
+      // Tiny probe to populate the other tab's count without paging it.
+      getWebhooks({ offset: 0, limit: 1, q: query, scope: otherScope }).catch(() => null),
       getActors({ limit: FETCH_ALL_LIMIT }).catch(() => null),
-    ]).then(([w, a]) => {
+    ]).then(([w, other, a]) => {
       if (!alive) return;
       if (w) {
         setWebhooks(w.items);
         setTotal(w.total);
+        setCounts((prev) => ({ ...prev, [activeScope]: w.total }));
+      }
+      if (other) {
+        setCounts((prev) => ({ ...prev, [otherScope]: other.total }));
       }
       if (a) setActors(a.items);
       setLoading(false);
@@ -74,7 +89,19 @@ export default function WebhooksPage() {
     return () => {
       alive = false;
     };
-  }, [offset, query]);
+  }, [offset, query, activeScope]);
+
+  function switchScope(next: WebhookScope) {
+    if (next === activeScope) return;
+    // Reset pagination + close any in-flight forms/drawers. Each tab gets a
+    // fresh top-of-list view; the user-typed `q` is preserved on purpose so
+    // a search like "coupons" carries across tabs (matches the count probe).
+    setActiveScope(next);
+    setOffset(0);
+    setShowForm(false);
+    setEditingId(null);
+    setExpandedId(null);
+  }
 
   function handleSaved(w: Webhook) {
     if (editingId) {
@@ -139,15 +166,22 @@ export default function WebhooksPage() {
     }
   }
 
-  async function handleTest(w: Webhook) {
+  async function handleTest(w: Webhook, mode: 'single' | 'all') {
     setTestingId(w.id);
     try {
-      // Multi-event webhooks: fire one delivery per subscribed event in
-      // parallel. Receivers often branch by event (SUCCEEDED → queue,
-      // FAILED → Slack), so testing only the first event hides bugs in the
-      // other branches. allSettled instead of all so a single network
-      // failure doesn't drop the rest of the results.
-      const events = w.eventTypes.length > 0 ? w.eventTypes : [undefined];
+      // `single` mirrors production: a run has ONE terminal status, so the
+      // receiver gets ONE delivery per webhook per run. Default to the
+      // FIRST subscribed event — the user mentally ordered the event list
+      // when configuring, and slot 0 is conventionally the happy path.
+      // Passing `undefined` to the API also makes it pick the first event,
+      // so behavior matches a bare `POST /v2/webhooks/:id/test`.
+      //
+      // `all` fires one synthetic delivery per subscribed event in parallel.
+      // Useful when receivers branch by event (SUCCEEDED → queue,
+      // FAILED → Slack) — testing only the first hides bugs in other
+      // branches. NOT what production does for a single run.
+      const events =
+        mode === 'all' ? (w.eventTypes.length > 0 ? w.eventTypes : [undefined]) : [undefined];
       const settled = await Promise.allSettled(events.map((evt) => testWebhook(w.id, evt)));
 
       const deliveries: WebhookDelivery[] = [];
@@ -207,6 +241,8 @@ export default function WebhooksPage() {
 
   const actorById = new Map(actors.map((a) => [a.id, a]));
 
+  const isRunScope = activeScope === 'run';
+
   return (
     <div className="space-y-6">
       <div className="flex items-end justify-between gap-6 pb-4 border-b border-border">
@@ -217,21 +253,43 @@ export default function WebhooksPage() {
             Forward run lifecycle events to your services.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            // Opening "new" cancels any in-progress edit so we don't show
-            // two forms simultaneously.
-            setEditingId(null);
-            setShowForm((v) => !v);
-          }}
-          className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm"
-        >
-          <Plus className="h-3.5 w-3.5" /> new webhook
-        </button>
+        {/* Suppress "new webhook" on the per-run tab: per-run hooks are only
+            created via POST /v2/acts/:id/runs with a `webhooks: [...]` body,
+            never from this UI. Showing the button would let an operator
+            create a catalog hook while looking at per-run rows, which is
+            confusing — they'd end up on the wrong tab. */}
+        {!isRunScope && (
+          <button
+            type="button"
+            onClick={() => {
+              // Opening "new" cancels any in-progress edit so we don't show
+              // two forms simultaneously.
+              setEditingId(null);
+              setShowForm((v) => !v);
+            }}
+            className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm"
+          >
+            <Plus className="h-3.5 w-3.5" /> new webhook
+          </button>
+        )}
       </div>
 
-      {showForm && !editingId && (
+      <div className="flex items-center gap-1 border-b border-border -mt-2">
+        <ScopeTab
+          label="Catalog"
+          count={counts.catalog}
+          active={activeScope === 'catalog'}
+          onClick={() => switchScope('catalog')}
+        />
+        <ScopeTab
+          label="Per-run"
+          count={counts.run}
+          active={activeScope === 'run'}
+          onClick={() => switchScope('run')}
+        />
+      </div>
+
+      {showForm && !editingId && !isRunScope && (
         <CreateForm actors={actors} onSaved={handleSaved} onCancel={() => setShowForm(false)} />
       )}
 
@@ -243,10 +301,12 @@ export default function WebhooksPage() {
         <div className="panel grid-bg p-16 text-center">
           <WebhookIcon className="h-6 w-6 text-muted-foreground/40 mx-auto mb-3" />
           <p className="font-mono text-[11px] tracking-wider text-muted-foreground">
-            [ NO WEBHOOKS CONFIGURED ]
+            [ NO {isRunScope ? 'PER-RUN WEBHOOKS' : 'WEBHOOKS CONFIGURED'} ]
           </p>
           <p className="text-[13px] text-muted-foreground mt-2">
-            Create one to get notified when runs succeed, fail, or time out.
+            {isRunScope
+              ? 'Per-run webhooks are created when a run is started with a `webhooks` parameter. They appear here for debugging.'
+              : 'Create one to get notified when runs succeed, fail, or time out.'}
           </p>
         </div>
       ) : (
@@ -289,8 +349,20 @@ export default function WebhooksPage() {
                       ))}
                     </div>
                     <div className="flex items-center gap-3 mt-2 font-mono text-[10px] text-muted-foreground tracking-wider">
-                      <span>id · {w.id.slice(0, 12)}</span>
-                      {actor ? (
+                      <span className="inline-flex items-center gap-1">
+                        id · {w.id.slice(0, 12)}
+                        <CopyButton value={w.id} label="Webhook ID" />
+                      </span>
+                      {w.runId ? (
+                        // Per-run hooks: link to the originating run so the
+                        // operator can pivot to logs / status / outcome
+                        // without copy-pasting the id. The check constraint
+                        // chk_webhooks_scope guarantees actor_id is null
+                        // when run_id is set, so this branch is exclusive.
+                        <AppLink href={`/runs/${w.runId}`} className="hover:text-foreground">
+                          scope · run · {w.runId.slice(0, 8)}
+                        </AppLink>
+                      ) : actor ? (
                         <AppLink href={`/actors/${actor.name}`} className="hover:text-foreground">
                           scope · {actor.name}
                         </AppLink>
@@ -302,11 +374,25 @@ export default function WebhooksPage() {
                   </div>
 
                   <div className="flex items-center gap-1 shrink-0">
+                    {/* Two test buttons, intentionally split:
+                          "test"     → fires ONE synthetic event (first
+                                       subscribed). Mirrors production —
+                                       a real run only ever triggers one
+                                       event (its terminal status).
+                          "test all" → fires one synthetic per subscribed
+                                       event. Useful when receivers branch
+                                       by event (success → queue, fail →
+                                       Slack); NOT representative of any
+                                       single run.
+                        The split exists because "fire all on test" caused
+                        confusion: the delivery log looked like 4 webhooks
+                        fired for one run, contradicting production semantics.
+                        Now the button label honestly advertises behavior. */}
                     <button
                       type="button"
-                      onClick={() => void handleTest(w)}
+                      onClick={() => void handleTest(w, 'single')}
                       disabled={testingId === w.id}
-                      title="Fire a synthetic test event (no retries, 10s timeout)"
+                      title="Fire one synthetic event (first subscribed). Mirrors production: one delivery per run."
                       className="h-7 px-2 inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider border border-border rounded-sm text-muted-foreground hover:text-foreground hover:border-signal/40 disabled:opacity-50"
                     >
                       {testingId === w.id ? (
@@ -316,6 +402,21 @@ export default function WebhooksPage() {
                       )}
                       test
                     </button>
+                    {/* Only show "test all" when the webhook has 2+ events —
+                        for a single-event webhook the two buttons would do
+                        the exact same thing, so the second one is noise. */}
+                    {w.eventTypes.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => void handleTest(w, 'all')}
+                        disabled={testingId === w.id}
+                        title={`Fire ${String(w.eventTypes.length)} synthetic events in parallel — one per subscribed event. Useful to exercise per-event receiver branches; NOT what a real run does.`}
+                        className="h-7 px-2 inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider border border-border rounded-sm text-muted-foreground hover:text-foreground hover:border-signal/40 disabled:opacity-50"
+                      >
+                        <Send className="h-3 w-3" />
+                        test all · {w.eventTypes.length}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => void handleToggleDrawer(w)}
@@ -329,24 +430,30 @@ export default function WebhooksPage() {
                       )}
                       log
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        // Toggle: clicking edit on the already-being-edited
-                        // row collapses the form. Also closes the create form.
-                        setShowForm(false);
-                        setEditingId((cur) => (cur === w.id ? null : w.id));
-                      }}
-                      title="Edit webhook"
-                      className={cn(
-                        'h-7 w-7 grid place-items-center border rounded-sm transition-colors',
-                        editingId === w.id
-                          ? 'border-signal/50 text-signal bg-signal/5'
-                          : 'border-border text-muted-foreground hover:text-foreground hover:border-signal/40'
-                      )}
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </button>
+                    {/* Per-run hooks reject PUT server-side (run_id IS NULL
+                        guard in the API) — they're immutable post-dispatch
+                        to avoid racing with delivery. Hiding the button is
+                        clearer than letting the user click and get a 404. */}
+                    {!w.runId && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // Toggle: clicking edit on the already-being-edited
+                          // row collapses the form. Also closes the create form.
+                          setShowForm(false);
+                          setEditingId((cur) => (cur === w.id ? null : w.id));
+                        }}
+                        title="Edit webhook"
+                        className={cn(
+                          'h-7 w-7 grid place-items-center border rounded-sm transition-colors',
+                          editingId === w.id
+                            ? 'border-signal/50 text-signal bg-signal/5'
+                            : 'border-border text-muted-foreground hover:text-foreground hover:border-signal/40'
+                        )}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => void handleDelete(w.id)}
@@ -708,6 +815,47 @@ function DeliveryStatusBadge({ status }: { status: string }) {
   const entry = map[status] ?? { icon: AlertCircle, className: 'text-muted-foreground' };
   const Icon = entry.icon;
   return <Icon className={cn('h-3.5 w-3.5 shrink-0 mt-0.5', entry.className)} />;
+}
+
+/**
+ * Underline-style tab for the Catalog / Per-run split. Count badge sits on the
+ * right of the label so widths stay roughly equal as numbers change. The
+ * active tab gets a solid bottom border that overlaps the parent border, so
+ * the bar visually connects to the list below.
+ */
+function ScopeTab({
+  label,
+  count,
+  active,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'h-9 px-3 -mb-px inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-wider border-b-2 transition-colors',
+        active
+          ? 'text-foreground border-signal'
+          : 'text-muted-foreground border-transparent hover:text-foreground'
+      )}
+    >
+      {label}
+      <span
+        className={cn(
+          'inline-flex items-center justify-center min-w-[1.5rem] h-4 px-1.5 rounded-sm border text-[10px]',
+          active ? 'border-signal/40 text-signal' : 'border-border text-muted-foreground'
+        )}
+      >
+        {count}
+      </span>
+    </button>
+  );
 }
 
 function timeAgo(iso: string): string {

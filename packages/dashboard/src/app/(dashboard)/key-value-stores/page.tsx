@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Boxes, Search, Trash2 } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
+import { CopyButton } from '@/components/ui/copy-button';
 import { Pagination } from '@/components/pagination';
 import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
@@ -116,12 +117,15 @@ export default function KeyValueStoresPage() {
                       </div>
                       <div className="min-w-0">
                         {s.name && <p className="text-foreground text-[13px] truncate">{s.name}</p>}
-                        <AppLink
-                          href={`/key-value-stores/${s.id}`}
-                          className="font-mono text-[11px] text-muted-foreground hover:text-foreground"
-                        >
-                          {s.id.slice(0, 16)}
-                        </AppLink>
+                        <span className="inline-flex items-center gap-1">
+                          <AppLink
+                            href={`/key-value-stores/${s.id}`}
+                            className="font-mono text-[11px] text-muted-foreground hover:text-foreground"
+                          >
+                            {s.id.slice(0, 16)}
+                          </AppLink>
+                          <CopyButton value={s.id} label="KV store ID" />
+                        </span>
                       </div>
                     </div>
                   </td>

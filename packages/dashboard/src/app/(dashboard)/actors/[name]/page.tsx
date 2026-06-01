@@ -20,6 +20,7 @@ import {
   CircleDot,
 } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
+import { CopyButton } from '@/components/ui/copy-button';
 import { prefixPath } from '@/lib/path-prefix';
 import { StatusChip } from '@/components/ui/badge';
 import {
@@ -65,6 +66,10 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
   const [runs, setRuns] = useState<Run[]>([]);
   const [builds, setBuilds] = useState<ActorBuild[]>([]);
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
+  // Per-run webhooks across runs of this actor — separate state from
+  // catalog `webhooks` so the sub-section can show its own count and
+  // empty state without conflating with the configured-hook list.
+  const [runWebhooks, setRunWebhooks] = useState<Webhook[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>('overview');
 
@@ -77,10 +82,18 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
         if (!alive) return;
         setActor(a);
         // Fan-out the secondary fetches; let any individual one fail without blocking the page.
-        const [r, b, w] = await Promise.all([
+        const [r, b, w, rw] = await Promise.all([
           getActorRuns(a.id).catch(() => []),
           getBuilds(a.id).catch(() => []),
           getWebhooks({ limit: FETCH_ALL_LIMIT })
+            .then((p) => p.items)
+            .catch(() => [] as Webhook[]),
+          // Per-run hooks for runs of this actor. Server-side filter via
+          // runActorId — much cheaper than pulling all per-run hooks and
+          // filtering client-side. When runActorId is set the API
+          // defaults scope to 'all', but we pass scope=run explicitly so
+          // the intent is clear from the call site.
+          getWebhooks({ scope: 'run', runActorId: a.id, limit: FETCH_ALL_LIMIT })
             .then((p) => p.items)
             .catch(() => [] as Webhook[]),
         ]);
@@ -88,6 +101,7 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
         setRuns(r);
         setBuilds(b);
         setWebhooks(w.filter((wh) => !wh.actorId || wh.actorId === a.id));
+        setRunWebhooks(rw);
       } finally {
         if (alive) setLoading(false);
       }
@@ -161,7 +175,10 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
 
         <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4 pb-5 border-b border-border">
           <div className="space-y-2 min-w-0">
-            <p className="eyebrow">ACTOR · {actor.id.slice(0, 12)}</p>
+            <p className="eyebrow inline-flex items-center gap-1.5">
+              ACTOR · {actor.id.slice(0, 12)}
+              <CopyButton value={actor.id} label="Actor ID" />
+            </p>
             <h1 className="text-[28px] leading-none font-medium tracking-tight truncate">
               {actor.title || actor.name}
             </h1>
@@ -250,7 +267,12 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
         {tab === 'config' && <ConfigPanel actor={actor} onSaved={(updated) => setActor(updated)} />}
         {tab === 'builds' && <BuildsPanel actor={actor} builds={builds} setBuilds={setBuilds} />}
         {tab === 'webhooks' && (
-          <WebhooksPanel actor={actor} webhooks={webhooks} setWebhooks={setWebhooks} />
+          <WebhooksPanel
+            actor={actor}
+            webhooks={webhooks}
+            setWebhooks={setWebhooks}
+            runWebhooks={runWebhooks}
+          />
         )}
         {tab === 'runs' && <RunsPanel runs={runs} />}
       </div>
@@ -801,7 +823,10 @@ function BuildsPanel({
                   className="border-b border-border/60 last:border-0 hover:bg-secondary/40 align-top"
                 >
                   <td className="px-5 py-3">
-                    <p className="font-mono text-foreground">{b.id.slice(0, 12)}</p>
+                    <p className="font-mono text-foreground inline-flex items-center gap-1">
+                      {b.id.slice(0, 12)}
+                      <CopyButton value={b.id} label="Build ID" />
+                    </p>
                     <p className="font-mono text-[10px] text-muted-foreground tracking-wider mt-1">
                       {b.logCount.toLocaleString()} log lines
                     </p>
@@ -892,10 +917,13 @@ function WebhooksPanel({
   actor,
   webhooks,
   setWebhooks,
+  runWebhooks,
 }: {
   actor: Actor;
   webhooks: Webhook[];
   setWebhooks: React.Dispatch<React.SetStateAction<Webhook[]>>;
+  /** Per-run hooks created via POST /v2/acts/:id/runs across recent runs of this actor. */
+  runWebhooks: Webhook[];
 }) {
   const confirm = useConfirm();
   const toast = useToast();
@@ -1120,6 +1148,53 @@ function WebhooksPanel({
           ))}
         </ul>
       )}
+
+      {/* Per-run history: hooks created via POST /acts/:id/runs across this
+          actor's recent runs. Only rendered when at least one exists, so
+          actors that don't use per-run hooks don't carry empty chrome.
+          Full detail (payload template, headers, deliveries) lives on the
+          run detail page Webhooks tab — this is a "you have per-run hooks,
+          here's where to look" affordance. */}
+      {runWebhooks.length > 0 && (
+        <section className="border-t border-border">
+          <header className="px-5 py-3 bg-secondary/30">
+            <p className="eyebrow">PER-RUN HISTORY · {runWebhooks.length}</p>
+            <p className="text-[12px] text-muted-foreground mt-1">
+              Webhooks attached to specific runs of this actor. Open the run to see payload &amp;
+              deliveries.
+            </p>
+          </header>
+          <ul className="divide-y divide-border">
+            {runWebhooks.map((w) => (
+              <li key={w.id} className="px-5 py-3 hover:bg-secondary/30">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <p className="font-mono text-[12px] text-foreground truncate">{w.requestUrl}</p>
+                    <div className="flex flex-wrap gap-1">
+                      {w.eventTypes.map((e) => (
+                        <span
+                          key={e}
+                          className="font-mono text-[9px] text-muted-foreground border border-border px-1 py-0.5 rounded-sm"
+                        >
+                          {e.replace(/^ACTOR\.RUN\./, '')}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  {w.runId && (
+                    <AppLink
+                      href={`/runs/${w.runId}`}
+                      className="shrink-0 font-mono text-[10px] tracking-widest text-muted-foreground hover:text-signal uppercase"
+                    >
+                      run · {w.runId.slice(0, 8)} →
+                    </AppLink>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
     </section>
   );
 }
@@ -1157,9 +1232,12 @@ function RunsPanel({ runs }: { runs: Run[] }) {
               className="border-b border-border/60 last:border-0 hover:bg-secondary/40"
             >
               <td className="px-5 py-3 font-mono">
-                <AppLink href={`/runs/${r.id}`} className="text-foreground hover:text-signal">
-                  {r.id.slice(0, 12)}
-                </AppLink>
+                <span className="inline-flex items-center gap-1">
+                  <AppLink href={`/runs/${r.id}`} className="text-foreground hover:text-signal">
+                    {r.id.slice(0, 12)}
+                  </AppLink>
+                  <CopyButton value={r.id} label="Run ID" />
+                </span>
               </td>
               <td className="px-5 py-3">
                 <StatusChip status={r.status} />

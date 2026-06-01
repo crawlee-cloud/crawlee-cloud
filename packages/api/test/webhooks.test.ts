@@ -209,6 +209,81 @@ describe('Webhook Routes', () => {
       expect(sql).toContain('request_url ILIKE');
       expect(mockQuery.mock.calls[0]?.[1]).toEqual(['test-user-id', '%example.com%']);
     });
+
+    it('?scope=run flips the filter to include only per-run webhooks', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ total: '0' }] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      await app.inject({ method: 'GET', url: '/v2/webhooks?scope=run' });
+
+      const sql = mockQuery.mock.calls[0]?.[0] as string;
+      // scope=run uses `run_id IS NOT NULL`; the default catalog filter
+      // (run_id IS NULL) MUST NOT appear or the predicate contradicts.
+      expect(sql).toMatch(/run_id\s+IS\s+NOT\s+NULL/i);
+      expect(sql).not.toMatch(/run_id\s+IS\s+NULL/i);
+    });
+
+    it('?scope=bogus is rejected with 400 and the valid-scope list', async () => {
+      const response = await app.inject({ method: 'GET', url: '/v2/webhooks?scope=bogus' });
+
+      expect(response.statusCode).toBe(400);
+      const body = JSON.parse(response.body);
+      expect(body.error.type).toBe('invalid-scope');
+      // The error message echoes the valid scopes so API users self-recover
+      // without reading docs.
+      expect(body.error.message).toMatch(/catalog, run, actor, global, all/);
+      // Importantly, no DB query was issued — the validation short-circuits
+      // before touching the connection pool.
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('?runActorId binds user_id INSIDE the runs subquery (cross-user isolation)', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ total: '0' }] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      // Adversarial scenario: caller (authenticated as test-user-id) tries
+      // to enumerate per-run hooks belonging to ANOTHER user's actor by
+      // passing that actor's id. The subquery MUST scope to the caller's
+      // user_id, not the target actor's owner — otherwise we leak the
+      // existence (and configured URL / template) of hooks across users.
+      await app.inject({
+        method: 'GET',
+        url: '/v2/webhooks?runActorId=actor-belonging-to-other-user',
+      });
+
+      const sql = mockQuery.mock.calls[0]?.[0] as string;
+      const params = mockQuery.mock.calls[0]?.[1] as unknown[];
+
+      // The subquery must filter runs by BOTH user_id AND actor_id, in
+      // that order, against the caller's authenticated user_id ($1).
+      // Without the user_id bind, a guessed runActorId would leak data.
+      expect(sql).toMatch(
+        /run_id\s+IN\s*\(\s*SELECT\s+id\s+FROM\s+runs\s+WHERE\s+user_id\s*=\s*\$1\s+AND\s+actor_id\s*=/i
+      );
+      // params[0] is the authenticated user's id (test-user-id from the
+      // mocked authenticate middleware). The runActorId rides in a later
+      // slot, NOT in $1 — verifying the bind order matches the SQL.
+      expect(params[0]).toBe('test-user-id');
+      expect(params).toContain('actor-belonging-to-other-user');
+    });
+
+    it('?runId narrows to one specific run and auto-relaxes the default scope', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ total: '0' }] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      await app.inject({ method: 'GET', url: '/v2/webhooks?runId=run-xyz' });
+
+      const sql = mockQuery.mock.calls[0]?.[0] as string;
+      // When a context filter (runId) is set, the API auto-defaults scope
+      // to 'all' instead of 'catalog' — otherwise the user'd get an empty
+      // result (catalog requires run_id IS NULL, contradicting run_id = X).
+      expect(sql).not.toMatch(/run_id\s+IS\s+NULL/i);
+      expect(sql).toContain('run_id = $');
+      expect(mockQuery.mock.calls[0]?.[1]).toContain('run-xyz');
+    });
   });
 
   describe('GET /v2/webhooks/:webhookId', () => {

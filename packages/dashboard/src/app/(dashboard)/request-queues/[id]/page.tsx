@@ -4,6 +4,7 @@ import { use, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, ListOrdered, Loader2, Trash2 } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
+import { CopyButton } from '@/components/ui/copy-button';
 import { prefixPath } from '@/lib/path-prefix';
 import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
@@ -115,7 +116,10 @@ export default function RequestQueueDetail({ params }: { params: Promise<{ id: s
           <h1 className="text-[28px] leading-none font-medium tracking-tight truncate">
             {queue.name || 'Unnamed queue'}
           </h1>
-          <p className="font-mono text-[11px] text-muted-foreground">{queue.id}</p>
+          <p className="font-mono text-[11px] text-muted-foreground inline-flex items-center gap-1.5">
+            {queue.id}
+            <CopyButton value={queue.id} label="Queue ID" />
+          </p>
         </div>
         <button
           type="button"

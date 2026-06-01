@@ -10,6 +10,49 @@ import { appendSearchCondition } from '../db/search.js';
 import { authenticate } from '../auth/middleware.js';
 import { applyWebhookTemplate } from '../webhooks/apply-template.js';
 
+/**
+ * Redaction + length cap for the rendered webhook body before persisting
+ * to `webhook_deliveries.request_body`. The receiver still gets the raw
+ * bytes — only the stored copy is transformed. See the runner's identical
+ * helper in `packages/runner/src/queue.ts` for full rationale; KEEP IN
+ * SYNC with it (both code paths write to the same column from the same
+ * threat model).
+ */
+const REQUEST_BODY_STORAGE_CAP = 4096;
+// See packages/runner/src/queue.ts for the `key$` suffix-anchor rationale.
+const SECRET_KEY_PATTERN = /auth|token|password|secret|cookie|signature|hmac|key$/i;
+const MIN_REDACTED_VALUE_LEN = 8;
+
+function redactSecretsForStorage(jsonString: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonString);
+  } catch {
+    return jsonString.slice(0, REQUEST_BODY_STORAGE_CAP);
+  }
+  return JSON.stringify(walkAndRedact(parsed)).slice(0, REQUEST_BODY_STORAGE_CAP);
+}
+
+function walkAndRedact(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(walkAndRedact);
+  if (node && typeof node === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+      if (
+        typeof v === 'string' &&
+        v.length > MIN_REDACTED_VALUE_LEN &&
+        SECRET_KEY_PATTERN.test(k)
+      ) {
+        out[k] = `••• ${v.slice(-4)}`;
+      } else {
+        out[k] = walkAndRedact(v);
+      }
+    }
+    return out;
+  }
+  return node;
+}
+
 interface WebhookRow {
   id: string;
   user_id: string;
@@ -36,6 +79,7 @@ interface DeliveryRow {
   next_retry_at: Date | null;
   response_status: number | null;
   response_body: string | null;
+  request_body: string | null;
   created_at: Date;
   finished_at: Date | null;
 }
@@ -83,30 +127,99 @@ export const webhooksRoutes: FastifyPluginAsync = async (fastify) => {
 
   /**
    * GET /v2/webhooks - List user's webhooks
+   *
+   * `scope` selects which webhook flavor to return. Default `catalog`
+   * preserves the original behavior (excludes per-run hooks), so existing
+   * API consumers and the historical dashboard see no change. The other
+   * scopes exist so operators can introspect per-run hooks for debugging
+   * (e.g. "why isn't my receiver getting hit when I POST /acts/:id/runs
+   * with a webhooks: [...] body?") without polluting the catalog view.
+   *
+   *   catalog (default) — anything that's NOT per-run (actor-scoped + global).
+   *                       This is the "configured hooks" operator list.
+   *   run               — per-run hooks only. One-shot, immutable post-dispatch,
+   *                       created via POST /v2/acts/:id/runs. Accumulate.
+   *   actor             — actor-bound hooks only.
+   *   global            — neither actor- nor run-bound (fires on every run).
+   *   all               — no scope filter at all.
+   *
+   * Context filters (compose with `scope` via AND):
+   *   runId=X           — narrow to webhooks bound to a specific run. Used by
+   *                       the run detail page to surface "the hooks for THIS
+   *                       run". Pair with scope=all (or just don't pass scope)
+   *                       — defaults to 'catalog' would zero-out the result.
+   *   runActorId=X      — narrow to per-run webhooks whose run belongs to
+   *                       actor X (via a subquery against runs). Used by the
+   *                       actor detail page to surface the per-run history
+   *                       without dumping every actor's hooks. Pair with
+   *                       scope=run for the intended result.
+   *
+   * When `runId` or `runActorId` is set, the scope param defaults to `all`
+   * (not `catalog`) so callers get the obvious result without having to
+   * remember to pass `scope=all`. Explicit scope wins if both are passed.
    */
   fastify.get<{
-    Querystring: { offset?: string; limit?: string; q?: string };
-  }>('/webhooks', async (request) => {
+    Querystring: {
+      offset?: string;
+      limit?: string;
+      q?: string;
+      scope?: string;
+      runId?: string;
+      runActorId?: string;
+    };
+  }>('/webhooks', async (request, reply) => {
     const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
     const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
+
+    const SCOPE_CLAUSES: Record<string, string> = {
+      catalog: 'run_id IS NULL',
+      run: 'run_id IS NOT NULL',
+      actor: 'actor_id IS NOT NULL AND run_id IS NULL',
+      global: 'actor_id IS NULL AND run_id IS NULL',
+      all: 'TRUE',
+    };
+    // Auto-relax default scope when a context filter is present, so callers
+    // don't have to pair runId/runActorId with `scope=all` to get a result.
+    const hasContextFilter = !!(request.query.runId || request.query.runActorId);
+    const scope = request.query.scope ?? (hasContextFilter ? 'all' : 'catalog');
+    const scopeClause = SCOPE_CLAUSES[scope];
+    if (!scopeClause) {
+      reply.status(400);
+      return {
+        error: {
+          type: 'invalid-scope',
+          message: `Unknown scope "${scope}". Valid: ${Object.keys(SCOPE_CLAUSES).join(', ')}`,
+        },
+      };
+    }
 
     // Webhooks have no `name` column — search instead matches against id,
     // description, and request_url so operators can find a hook by what
     // they typed in the description field or by domain.
-    //
-    // `run_id IS NULL` excludes per-run webhooks from the admin list:
-    // those rows are created by `POST /v2/acts/:id/runs` for one-shot
-    // delivery to a specific run and are immutable post-dispatch. They
-    // remain accessible by exact ID via GET /:id and /deliveries (legit
-    // for delivery debugging) but should never appear in the operator's
-    // catalog of configured hooks.
     const params: unknown[] = [request.user!.id];
-    const where = appendSearchCondition(
-      'user_id = $1 AND run_id IS NULL',
-      params,
-      request.query.q || '',
-      ['id', 'description', 'request_url']
-    );
+    let where = `user_id = $1 AND ${scopeClause}`;
+
+    if (request.query.runId) {
+      params.push(request.query.runId);
+      where += ` AND run_id = $${params.length}`;
+    }
+    if (request.query.runActorId) {
+      // Subquery (not JOIN) keeps the row shape clean — no risk of
+      // duplicating webhook rows if multiple runs of the same actor
+      // somehow shared a webhook (they can't today, but the constraint
+      // is a UNIQUE on runs.id, not on the subquery result). Postgres
+      // turns this into a semi-join either way. user_id scope on the
+      // subquery prevents leaking webhooks for runs of other users'
+      // actors via a guessed runActorId.
+      params.push(request.query.runActorId);
+      where += ` AND run_id IN (SELECT id FROM runs WHERE user_id = $1 AND actor_id = $${params.length})`;
+    }
+
+    where = appendSearchCondition(where, params, request.query.q || '', [
+      'id',
+      'description',
+      'request_url',
+    ]);
 
     const [countResult, pageResult] = await Promise.all([
       query<{ total: string }>(
@@ -573,6 +686,12 @@ async function deliverTestWebhook(
     webhook.payload_template,
     defaultPayload as unknown as Record<string, unknown>
   );
+  // `rawBody` goes to the receiver (they need their real secrets to auth).
+  // `requestBodyForStorage` is the redacted/capped form that lands in
+  // webhook_deliveries — mirrors the runner's production-delivery path so
+  // a test delivery and a real delivery store identically-shaped bytes.
+  const rawBody = JSON.stringify(payload);
+  const requestBodyForStorage = redactSecretsForStorage(rawBody);
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(webhook.headers ?? {}),
@@ -586,7 +705,7 @@ async function deliverTestWebhook(
     const response = await fetch(webhook.request_url, {
       method: 'POST',
       headers,
-      body: JSON.stringify(payload),
+      body: rawBody,
       signal: AbortSignal.timeout(10_000),
     });
     responseStatus = response.status;
@@ -600,11 +719,12 @@ async function deliverTestWebhook(
   const updated = await query<DeliveryRow>(
     `UPDATE webhook_deliveries
      SET status = $1, attempt_count = 1,
-         response_status = $2, response_body = $3,
+         request_body = $2,
+         response_status = $3, response_body = $4,
          finished_at = NOW()
-     WHERE id = $4
+     WHERE id = $5
      RETURNING *`,
-    [finalStatus, responseStatus, responseBody, deliveryId]
+    [finalStatus, requestBodyForStorage, responseStatus, responseBody, deliveryId]
   );
   return updated.rows[0] ?? initial;
 }
@@ -639,6 +759,12 @@ function formatDelivery(row: DeliveryRow) {
     attemptCount: row.attempt_count,
     maxAttempts: row.max_attempts,
     nextRetryAt: row.next_retry_at,
+    // The actual JSON body sent to the receiver on the latest attempt.
+    // NULL for legacy rows (pre-migration) and for deliveries that failed
+    // before the body was rendered (e.g., template rendering threw, or the
+    // private-URL guard fired before render). Surfaced verbatim — receivers
+    // and operators need to see the exact bytes for debugging.
+    requestBody: row.request_body,
     responseStatus: row.response_status,
     responseBody: row.response_body,
     createdAt: row.created_at,

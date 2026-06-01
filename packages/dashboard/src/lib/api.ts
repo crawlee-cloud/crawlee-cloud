@@ -123,6 +123,14 @@ export interface Webhook {
   requestUrl: string;
   payloadTemplate?: string | null;
   actorId?: string | null;
+  /**
+   * Set when this hook was created via `POST /v2/acts/:id/runs` with a
+   * `webhooks: [...]` body — i.e. a per-run hook that only fires for that
+   * one run. Null for catalog hooks (actor-scoped + global). The dashboard
+   * uses this to drive the Catalog/Per-run tab split and to link per-run
+   * rows back to the originating run.
+   */
+  runId?: string | null;
   headers?: Record<string, string> | null;
   description?: string | null;
   isEnabled: boolean;
@@ -228,6 +236,14 @@ export interface WebhookDelivery {
   responseStatus: number | null;
   /** First 1024 chars of the response body OR the error message on a network failure */
   responseBody: string | null;
+  /**
+   * The actual JSON body sent to the receiver on this attempt. Null for
+   * legacy deliveries (pre-migration) and for failures that happened before
+   * the body could be rendered. Distinct from `Webhook.payloadTemplate` —
+   * the template is the configured form with `{{placeholders}}`, this is
+   * what those placeholders resolved to.
+   */
+  requestBody: string | null;
   createdAt: string;
   finishedAt: string | null;
 }
@@ -890,8 +906,31 @@ export async function getVersions(actorId: string): Promise<ActorVersion[]> {
 // Webhooks
 // ---------------------------------------------------------------------------
 
-export async function getWebhooks(params?: PageParams): Promise<Page<Webhook>> {
-  const res = await fetchApi<{ data: Page<Webhook> }>(`/v2/webhooks${pageQuery(params)}`);
+/** Webhook flavor returned by `getWebhooks`. See API `webhooks.ts` for semantics. */
+export type WebhookScope = 'catalog' | 'run' | 'actor' | 'global' | 'all';
+
+export interface WebhookListParams extends PageParams {
+  /** Defaults to 'catalog' server-side. Pass 'run' for per-run hooks. */
+  scope?: WebhookScope;
+  /** Narrow to a specific run's per-run hooks (drives the run page Webhooks section). */
+  runId?: string;
+  /** Narrow to per-run hooks whose run belongs to this actor (drives the actor page per-run history). */
+  runActorId?: string;
+}
+
+export async function getWebhooks(params?: WebhookListParams): Promise<Page<Webhook>> {
+  // Build the querystring manually so we can omit defaults (scope=catalog)
+  // and any unset optional fields. The server tolerates extra params but a
+  // clean URL is easier to debug in devtools.
+  const qs = new URLSearchParams();
+  if (params?.offset !== undefined) qs.set('offset', String(params.offset));
+  if (params?.limit !== undefined) qs.set('limit', String(params.limit));
+  if (params?.q) qs.set('q', params.q);
+  if (params?.scope && params.scope !== 'catalog') qs.set('scope', params.scope);
+  if (params?.runId) qs.set('runId', params.runId);
+  if (params?.runActorId) qs.set('runActorId', params.runActorId);
+  const s = qs.toString();
+  const res = await fetchApi<{ data: Page<Webhook> }>(`/v2/webhooks${s ? `?${s}` : ''}`);
   return res.data;
 }
 

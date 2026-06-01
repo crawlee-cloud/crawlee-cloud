@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { GitBranch, GitCommit, Hammer, RotateCw } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
 import { StatusChip } from '@/components/ui/badge';
+import { CopyButton } from '@/components/ui/copy-button';
 import { getActors, getBuilds, type Actor, type ActorBuild } from '@/lib/api';
 import { FETCH_ALL_LIMIT } from '@/lib/constants';
 import { cn } from '@/lib/utils';
@@ -160,7 +161,10 @@ export default function BuildsPage() {
                   className="border-b border-border/60 last:border-0 hover:bg-secondary/40 align-top"
                 >
                   <td className="px-5 py-3">
-                    <p className="font-mono text-foreground">{b.id.slice(0, 12)}</p>
+                    <p className="font-mono text-foreground inline-flex items-center gap-1">
+                      {b.id.slice(0, 12)}
+                      <CopyButton value={b.id} label="Build ID" />
+                    </p>
                     <p className="font-mono text-[10px] text-muted-foreground tracking-wider mt-1">
                       {b.logCount.toLocaleString()} log lines
                     </p>
