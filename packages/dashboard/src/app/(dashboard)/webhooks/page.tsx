@@ -65,6 +65,23 @@ export default function WebhooksPage() {
   const [loadingDeliveriesId, setLoadingDeliveriesId] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
 
+  // Actors are presentation data (resolving actor_id → name on catalog
+  // rows), not page data. Loading once on mount avoids re-fetching the
+  // full actor list every time the user paginates / searches / switches
+  // tabs. setLoading stays tied to the webhook fetches below — actor
+  // resolution is async-best-effort.
+  useEffect(() => {
+    let alive = true;
+    getActors({ limit: FETCH_ALL_LIMIT })
+      .then((a) => {
+        if (alive) setActors(a.items);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   useEffect(() => {
     let alive = true;
     const otherScope: WebhookScope = activeScope === 'catalog' ? 'run' : 'catalog';
@@ -72,8 +89,7 @@ export default function WebhooksPage() {
       getWebhooks({ offset, limit: PAGE_SIZE, q: query, scope: activeScope }).catch(() => null),
       // Tiny probe to populate the other tab's count without paging it.
       getWebhooks({ offset: 0, limit: 1, q: query, scope: otherScope }).catch(() => null),
-      getActors({ limit: FETCH_ALL_LIMIT }).catch(() => null),
-    ]).then(([w, other, a]) => {
+    ]).then(([w, other]) => {
       if (!alive) return;
       if (w) {
         setWebhooks(w.items);
@@ -83,7 +99,6 @@ export default function WebhooksPage() {
       if (other) {
         setCounts((prev) => ({ ...prev, [otherScope]: other.total }));
       }
-      if (a) setActors(a.items);
       setLoading(false);
     });
     return () => {

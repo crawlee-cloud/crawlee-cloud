@@ -744,10 +744,18 @@ async function attemptWebhookDelivery(
     // Network error — schedule retry. requestBodyForStorage may be null if
     // the exception fired before we built it (e.g., template rendering
     // threw), in which case `null` is honest: nothing was sent.
+    //
+    // Defensive `String(err instanceof Error ? err.message : err)`: any
+    // value can be `throw`n in JS — a string, null, a plain object — and
+    // a bare `(err as Error).message.slice()` crashes on those. A crash
+    // here would leave the delivery stuck PENDING forever (no UPDATE
+    // fires, retry loop never runs). The wrapped form is cheap and keeps
+    // the delivery moving toward a terminal state regardless of what
+    // the upstream throw looked like.
     await scheduleRetry(
       deliveryId,
       null,
-      (err as Error).message.slice(0, 1024),
+      String(err instanceof Error ? err.message : err).slice(0, 1024),
       requestBodyForStorage,
       RETRY_DELAYS
     );
