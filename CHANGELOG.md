@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.3] - 2026-06-01
+
+### Added
+
+- **Per-run webhook scope filter on `GET /v2/webhooks`.** New `?scope` query param accepts `catalog` (default — actor-scoped + global, preserves existing operator-catalog behavior), `run` (per-run hooks only), `actor`, `global`, or `all`. Plus two context filters: `?runId=X` (a specific run's hooks) and `?runActorId=X` (per-run hooks across runs of an actor, via a subquery with `user_id` bound inside the subquery so a guessed actor id cannot enumerate another user's hooks). When `runId` or `runActorId` is set, scope auto-defaults to `all` instead of `catalog`. Invalid scopes return 400 with the valid-scope list and short-circuit before any DB query.
+- **`webhook_deliveries.request_body` column.** Stores the rendered JSON body actually sent to the receiver on the latest delivery attempt — distinct from `webhooks.payload_template` (which carries unresolved `{{placeholders}}`). Captured on every UPDATE path: success, private-URL refusal, HTTP error retry, network error retry, max-retries-exhausted, and the test endpoint. Persisted in both the runner (`attemptWebhookDelivery`) and the API (test endpoint) — `KEEP IN SYNC` pair.
+- **Secret redaction on stored `request_body`.** String values longer than 8 chars whose key matches `/auth|token|password|secret|cookie|signature|hmac|key$/i` are stored as `••• <last4>`. The receiver still gets the unredacted bytes — only the persisted copy is masked. `key$` (suffix-anchored) rather than bare `key` substring so resource id fields like `defaultKeyValueStoreId` are NOT false-positive-masked while credential-style keys (`apiKey`, `secretKey`, `accessKey`) still are. Capped at 4 KB on insert.
+- **Run detail page Webhooks tab.** Conditionally rendered when the run has per-run hooks (no dead tab on normal runs). Each hook is a card with headers (credential-like keys auto-masked using the same regex set as redaction), and a per-delivery panel showing **REQUEST BODY · sent** and **RESPONSE BODY · received** side-by-side, pretty-printed when JSON. The configured template only shows as a fallback when no deliveries exist yet — once a delivery exists, the rendered body is strictly more useful.
+- **Per-run history sub-section on the actor detail Webhooks tab.** Fed by `?scope=run&runActorId=<actor.id>`. Each row links to the originating run, where full payload + delivery detail is available.
+- **Catalog / Per-run tabs on `/webhooks`** with counts (probed via a `limit=1` request on the inactive scope, so the labels stay accurate without paging both lists). Per-run rows link to their originating run. Edit hidden for per-run rows (server rejects PUT on them via the `run_id IS NULL` guard); delete remains as a cancel-pending-delivery affordance.
+- **Webhook test button split.** Old "test" fired one synthetic event per subscribed event type — producing delivery logs that looked like a single run had triggered N webhooks, contradicting production semantics (one terminal status per run → one delivery per webhook). Now split into "test" (one event, mirrors production — defaults to the first subscribed event, matching the API's bare-`POST /v2/webhooks/:id/test` behavior) and "test all · N" (one delivery per subscribed event, only rendered for hooks subscribed to 2+ events).
+- **Shared `CopyButton` component** at `packages/dashboard/src/components/ui/copy-button.tsx`. Two variants: `inline` (icon-only, for end-of-row placement next to displayed IDs) and `button` (labeled, for the run Input tab JSON viewer). Stops event propagation + prevents default so it works correctly when nested inside a `<Link>` card. Applied across every ID display in the dashboard — actors (list + detail + builds tab + runs tab), builds (list), datasets (list + detail), key-value-stores (list + detail), request-queues (list + detail), runs (list + detail header + aside resource rows), webhooks (list), plus the run Input tab. Every copy passes the full unsliced ID; `.slice()` only affects display.
+
+### Changed
+
+- **Dashboard `/webhooks` page actor fetching hoisted to its own mount-only `useEffect`** instead of re-running on every pagination / search / tab switch. Actors are presentation data (resolving `actor_id` → name for catalog rows), not page data.
+
+### Fixed
+
+- **Defensive error coercion in the webhook-delivery network-error catch.** `(err as Error).message.slice(0, 1024)` would crash with a `TypeError` if a non-`Error` value was thrown (string, null, plain object) — leaving the delivery stuck `PENDING` forever because the catch handler itself threw before reaching `scheduleRetry`. Now wraps via `String(err instanceof Error ? err.message : err).slice(0, 1024)`. Fixed at `packages/runner/src/queue.ts:attemptWebhookDelivery`.
+
+### Tests
+
+- API webhook test count goes from 26 → 31. New coverage: `?scope=run` SQL shape, `?scope=bogus` 400 short-circuit (no DB query issued), `?runActorId` cross-user isolation (`run_id IN (SELECT id FROM runs WHERE user_id = $1 AND actor_id = ...)` bind order pinned by a regex match against the SQL), `?runId` auto-scope-relax.
+
 ## [0.9.2] - 2026-05-04
 
 ### Fixed
