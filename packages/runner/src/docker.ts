@@ -395,6 +395,9 @@ export function buildActorEnv(options: {
   defaultRequestQueueId: string;
   memoryMbytes?: number;
   timeoutSecs?: number;
+  proxyPassword?: string | null;
+  proxyHostname?: string | null;
+  proxyPort?: number | null;
 }): Record<string, string> {
   const {
     runId,
@@ -412,7 +415,7 @@ export function buildActorEnv(options: {
   const timeoutAt = new Date(Date.now() + timeoutSecs * 1000).toISOString();
   const containerApiBaseUrl = translateLocalhostForContainer(apiBaseUrl);
 
-  return {
+  const env: Record<string, string> = {
     // Identity
     APIFY_ACTOR_ID: actorId,
     APIFY_ACTOR_RUN_ID: runId,
@@ -445,6 +448,16 @@ export function buildActorEnv(options: {
     // Also set CRAWLEE_ variants for newer crawlers
     CRAWLEE_STORAGE_DIR: '/tmp/storage',
   };
+
+  // Apify proxy env injection — only when non-null. An empty env var
+  // routes the SDK through the present-path with a bad value (confusing
+  // 401s); absent var activates the well-tested API fallback to
+  // /v2/users/me. See proxy-resolver.ts for resolution semantics.
+  if (options.proxyPassword) env.APIFY_PROXY_PASSWORD = options.proxyPassword;
+  if (options.proxyHostname) env.APIFY_PROXY_HOSTNAME = options.proxyHostname;
+  if (options.proxyPort) env.APIFY_PROXY_PORT = String(options.proxyPort);
+
+  return env;
 }
 
 /**

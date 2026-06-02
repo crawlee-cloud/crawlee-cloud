@@ -28,6 +28,16 @@ export interface Config {
   defaultTimeoutSecs: number;
   maxConcurrentRuns: number;
 
+  // Apify proxy defaults — injected into actor containers as the
+  // platform-level fallback. Per-actor and per-user overrides resolved
+  // in queue.ts → proxy-resolver.ts take precedence over these.
+  apifyProxyPassword: string;
+  apifyProxyHostname: string; // '' → SDK default (proxy.apify.com)
+  apifyProxyPort: number; // 0  → SDK default (8000)
+
+  // Encryption key for proxy_password_encrypted columns.
+  proxyEncryptionKey: string;
+
   // Logging
   logLevel: string;
 }
@@ -61,6 +71,12 @@ export const config: Config = {
   defaultMemoryMb: envInt('DEFAULT_MEMORY_MB', 1024),
   defaultTimeoutSecs: envInt('DEFAULT_TIMEOUT_SECS', 3600),
   maxConcurrentRuns: envInt('MAX_CONCURRENT_RUNS', 10),
+
+  apifyProxyPassword: env('APIFY_PROXY_PASSWORD', ''),
+  apifyProxyHostname: env('APIFY_PROXY_HOSTNAME', ''),
+  apifyProxyPort: envInt('APIFY_PROXY_PORT', 0),
+
+  proxyEncryptionKey: env('PROXY_ENCRYPTION_KEY', ''),
 
   logLevel: env('LOG_LEVEL', 'info'),
 };

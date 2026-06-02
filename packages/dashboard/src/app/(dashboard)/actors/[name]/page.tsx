@@ -18,11 +18,13 @@ import {
   Plus,
   X,
   CircleDot,
+  Globe,
+  CheckCircle2,
 } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
 import { CopyButton } from '@/components/ui/copy-button';
 import { prefixPath } from '@/lib/path-prefix';
-import { StatusChip } from '@/components/ui/badge';
+import { Badge, StatusChip } from '@/components/ui/badge';
 import {
   abortBuild,
   createWebhook,
@@ -431,6 +433,7 @@ function OverviewPanel({ actor, onStarted }: { actor: Actor; onStarted: (run: Ru
 
 function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => void }) {
   const toast = useToast();
+  const confirm = useConfirm();
   const [title, setTitle] = useState(actor.title ?? '');
   const [description, setDescription] = useState(actor.description ?? '');
   const [image, setImage] = useState(actor.defaultRunOptions?.image ?? '');
@@ -449,6 +452,47 @@ function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  const [overrideInput, setOverrideInput] = useState('');
+  const [overrideBusy, setOverrideBusy] = useState(false);
+  const [overrideReplaceMode, setOverrideReplaceMode] = useState(false);
+
+  async function handleSaveOverride() {
+    if (!overrideInput.trim()) return;
+    setOverrideBusy(true);
+    try {
+      const updated = await updateActor(actor.id, { proxyPassword: overrideInput.trim() });
+      setOverrideInput('');
+      setOverrideReplaceMode(false);
+      onSaved(updated);
+      toast.success('Proxy override saved for this actor');
+    } catch (err) {
+      toast.error('Failed to save', { description: (err as Error).message });
+    } finally {
+      setOverrideBusy(false);
+    }
+  }
+
+  async function handleClearOverride() {
+    const ok = await confirm({
+      tone: 'danger',
+      title: 'Remove actor proxy override?',
+      description:
+        'This actor will fall back to your account proxy password (or the platform default).',
+      confirmLabel: 'remove',
+    });
+    if (!ok) return;
+    setOverrideBusy(true);
+    try {
+      const updated = await updateActor(actor.id, { proxyPassword: null });
+      onSaved(updated);
+      toast.success('Override removed');
+    } catch (err) {
+      toast.error('Failed to remove', { description: (err as Error).message });
+    } finally {
+      setOverrideBusy(false);
+    }
+  }
 
   async function handleSave() {
     setSaving(true);
@@ -484,184 +528,285 @@ function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => 
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      <section className="panel p-6 lg:col-span-2 space-y-6">
-        <header>
-          <p className="eyebrow">CONFIG · METADATA</p>
-          <h2 className="text-base mt-1">Identity & description</h2>
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <section className="panel p-6 lg:col-span-2 space-y-6">
+          <header>
+            <p className="eyebrow">CONFIG · METADATA</p>
+            <h2 className="text-base mt-1">Identity & description</h2>
+          </header>
+
+          <Field label="Title">
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Human-readable title"
+              className="w-full h-9 px-3 rounded-sm border border-border bg-background text-[13px] text-foreground focus:outline-none focus:border-signal/50"
+            />
+          </Field>
+
+          <Field label="Description">
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={3}
+              className="w-full px-3 py-2 rounded-sm border border-border bg-background text-[13px] text-foreground resize-y focus:outline-none focus:border-signal/50"
+            />
+          </Field>
+
+          <header className="pt-4 border-t border-border">
+            <p className="eyebrow">CONFIG · DEFAULT RUN OPTIONS</p>
+            <h2 className="text-base mt-1">Container defaults</h2>
+          </header>
+
+          <Field
+            label="Image"
+            hint="Full image reference. Set by `crc push` — usually leave blank."
+          >
+            <input
+              value={image}
+              onChange={(e) => setImage(e.target.value)}
+              placeholder="ghcr.io/org/repo/actor-foo:latest"
+              className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
+            />
+          </Field>
+
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Build tag">
+              <input
+                value={build}
+                onChange={(e) => setBuild(e.target.value)}
+                placeholder="latest"
+                className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
+              />
+            </Field>
+            <Field label="Default timeout · seconds">
+              <input
+                type="number"
+                value={timeoutSecs}
+                onChange={(e) =>
+                  setTimeoutSecs(e.target.value === '' ? '' : Number(e.target.value))
+                }
+                placeholder="3600"
+                className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
+              />
+            </Field>
+            <Field label="Default memory · MB">
+              <input
+                type="number"
+                value={memoryMbytes}
+                onChange={(e) =>
+                  setMemoryMbytes(e.target.value === '' ? '' : Number(e.target.value))
+                }
+                placeholder="1024"
+                className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
+              />
+            </Field>
+            <Field label="Max retries">
+              <input
+                type="number"
+                value={maxRetries}
+                onChange={(e) => setMaxRetries(e.target.value === '' ? '' : Number(e.target.value))}
+                placeholder="0"
+                className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
+              />
+            </Field>
+            <Field label="Retry delay · seconds">
+              <input
+                type="number"
+                value={retryDelaySecs}
+                onChange={(e) =>
+                  setRetryDelaySecs(e.target.value === '' ? '' : Number(e.target.value))
+                }
+                placeholder="60"
+                className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
+              />
+            </Field>
+          </div>
+
+          {/* Env vars editor */}
+          <div className="space-y-2">
+            <Label>Environment variables</Label>
+            <div className="space-y-1.5">
+              {envVars.map((row, idx) => (
+                <div key={idx} className="flex items-center gap-1.5">
+                  <input
+                    value={row.key}
+                    onChange={(e) =>
+                      setEnvVars((prev) =>
+                        prev.map((r, i) => (i === idx ? { ...r, key: e.target.value } : r))
+                      )
+                    }
+                    placeholder="KEY"
+                    className="w-44 h-8 px-2 rounded-sm border border-border bg-background font-mono text-[11px] text-foreground focus:outline-none focus:border-signal/50"
+                  />
+                  <span className="text-muted-foreground font-mono text-[11px]">=</span>
+                  <input
+                    value={row.value}
+                    onChange={(e) =>
+                      setEnvVars((prev) =>
+                        prev.map((r, i) => (i === idx ? { ...r, value: e.target.value } : r))
+                      )
+                    }
+                    placeholder="value"
+                    className="flex-1 h-8 px-2 rounded-sm border border-border bg-background font-mono text-[11px] text-foreground focus:outline-none focus:border-signal/50"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setEnvVars((prev) => prev.filter((_, i) => i !== idx))}
+                    className="h-8 w-8 grid place-items-center text-muted-foreground hover:text-fail border border-border rounded-sm"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => setEnvVars((prev) => [...prev, { key: '', value: '' }])}
+                className="h-8 px-3 inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider border border-dashed border-border text-muted-foreground hover:border-signal/50 hover:text-signal rounded-sm"
+              >
+                <Plus className="h-3 w-3" /> add var
+              </button>
+            </div>
+          </div>
+
+          {error && (
+            <p className="font-mono text-[11px] text-fail border border-fail/30 bg-fail/5 p-2 rounded-sm">
+              [ERR] {error}
+            </p>
+          )}
+
+          <div className="flex items-center justify-end gap-3 pt-2 border-t border-border">
+            {savedAt && (
+              <span className="font-mono text-[10px] text-signal tracking-widest">
+                [SAVED · {new Date(savedAt).toISOString().split('T')[1].slice(0, 8)}]
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => void handleSave()}
+              disabled={saving}
+              className="h-9 px-4 inline-flex items-center gap-2 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm disabled:opacity-50"
+            >
+              {saving ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Save className="h-3.5 w-3.5" />
+              )}
+              Save
+            </button>
+          </div>
+        </section>
+
+        {/* Side panel — operator notes */}
+        <aside className="panel p-6 space-y-4">
+          <p className="eyebrow">NOTES</p>
+          <p className="text-[12px] text-muted-foreground leading-relaxed">
+            Defaults here apply to every run unless overridden at run time (
+            <code className="font-mono text-foreground">crc run -e KEY=val</code>).
+          </p>
+          <p className="text-[12px] text-muted-foreground leading-relaxed">
+            Env precedence:{' '}
+            <span className="font-mono text-foreground">base &lt; actor &lt; runtime</span>.
+          </p>
+          <p className="text-[12px] text-muted-foreground leading-relaxed">
+            Image is set automatically by{' '}
+            <code className="font-mono text-foreground">crc push</code>; only override if
+            you&apos;re pulling from an external registry.
+          </p>
+        </aside>
+      </div>
+
+      {/* PROXY OVERRIDE */}
+      <section className="panel">
+        <header className="px-5 py-4 border-b border-border flex items-center gap-3">
+          <Globe className="h-4 w-4 text-signal" />
+          <div>
+            <p className="eyebrow">CONFIG · PROXY OVERRIDE</p>
+            <h2 className="text-[15px] mt-1">Per-actor Apify Proxy password</h2>
+          </div>
         </header>
 
-        <Field label="Title">
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="Human-readable title"
-            className="w-full h-9 px-3 rounded-sm border border-border bg-background text-[13px] text-foreground focus:outline-none focus:border-signal/50"
-          />
-        </Field>
-
-        <Field label="Description">
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            rows={3}
-            className="w-full px-3 py-2 rounded-sm border border-border bg-background text-[13px] text-foreground resize-y focus:outline-none focus:border-signal/50"
-          />
-        </Field>
-
-        <header className="pt-4 border-t border-border">
-          <p className="eyebrow">CONFIG · DEFAULT RUN OPTIONS</p>
-          <h2 className="text-base mt-1">Container defaults</h2>
-        </header>
-
-        <Field label="Image" hint="Full image reference. Set by `crc push` — usually leave blank.">
-          <input
-            value={image}
-            onChange={(e) => setImage(e.target.value)}
-            placeholder="ghcr.io/org/repo/actor-foo:latest"
-            className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
-          />
-        </Field>
-
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Build tag">
-            <input
-              value={build}
-              onChange={(e) => setBuild(e.target.value)}
-              placeholder="latest"
-              className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
-            />
-          </Field>
-          <Field label="Default timeout · seconds">
-            <input
-              type="number"
-              value={timeoutSecs}
-              onChange={(e) => setTimeoutSecs(e.target.value === '' ? '' : Number(e.target.value))}
-              placeholder="3600"
-              className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
-            />
-          </Field>
-          <Field label="Default memory · MB">
-            <input
-              type="number"
-              value={memoryMbytes}
-              onChange={(e) => setMemoryMbytes(e.target.value === '' ? '' : Number(e.target.value))}
-              placeholder="1024"
-              className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
-            />
-          </Field>
-          <Field label="Max retries">
-            <input
-              type="number"
-              value={maxRetries}
-              onChange={(e) => setMaxRetries(e.target.value === '' ? '' : Number(e.target.value))}
-              placeholder="0"
-              className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
-            />
-          </Field>
-          <Field label="Retry delay · seconds">
-            <input
-              type="number"
-              value={retryDelaySecs}
-              onChange={(e) =>
-                setRetryDelaySecs(e.target.value === '' ? '' : Number(e.target.value))
-              }
-              placeholder="60"
-              className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
-            />
-          </Field>
-        </div>
-
-        {/* Env vars editor */}
-        <div className="space-y-2">
-          <Label>Environment variables</Label>
-          <div className="space-y-1.5">
-            {envVars.map((row, idx) => (
-              <div key={idx} className="flex items-center gap-1.5">
+        <div className="p-5 space-y-4">
+          {actor.hasProxyOverride && !overrideReplaceMode ? (
+            <div className="flex items-center justify-between">
+              <div>
+                <Badge variant="success" shape="chip" className="px-2">
+                  <CheckCircle2 className="h-3 w-3 mr-1" />
+                  <span>override active</span>
+                </Badge>
+                <p className="text-[12px] text-muted-foreground mt-2">
+                  This actor uses a dedicated proxy password, ignoring account/platform defaults.
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setOverrideReplaceMode(true)}
+                  className="h-9 px-3 inline-flex items-center text-[12px] font-mono uppercase tracking-wider border border-border rounded-sm text-muted-foreground hover:text-foreground hover:border-signal/40"
+                >
+                  replace
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleClearOverride()}
+                  disabled={overrideBusy}
+                  className="h-9 px-3 inline-flex items-center text-[12px] font-mono uppercase tracking-wider border border-border rounded-sm text-fail hover:bg-fail/10 disabled:opacity-50"
+                >
+                  remove
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div>
+              {!actor.hasProxyOverride && (
+                <p className="text-[12px] text-muted-foreground mb-3">
+                  <span className="font-mono text-[10px] tracking-widest text-muted-foreground uppercase">
+                    [ not set ]
+                  </span>{' '}
+                  This actor will use your account proxy password (or the platform default if none).
+                </p>
+              )}
+              <div className="flex gap-2">
                 <input
-                  value={row.key}
-                  onChange={(e) =>
-                    setEnvVars((prev) =>
-                      prev.map((r, i) => (i === idx ? { ...r, key: e.target.value } : r))
-                    )
-                  }
-                  placeholder="KEY"
-                  className="w-44 h-8 px-2 rounded-sm border border-border bg-background font-mono text-[11px] text-foreground focus:outline-none focus:border-signal/50"
-                />
-                <span className="text-muted-foreground font-mono text-[11px]">=</span>
-                <input
-                  value={row.value}
-                  onChange={(e) =>
-                    setEnvVars((prev) =>
-                      prev.map((r, i) => (i === idx ? { ...r, value: e.target.value } : r))
-                    )
-                  }
-                  placeholder="value"
-                  className="flex-1 h-8 px-2 rounded-sm border border-border bg-background font-mono text-[11px] text-foreground focus:outline-none focus:border-signal/50"
+                  type="password"
+                  value={overrideInput}
+                  onChange={(e) => setOverrideInput(e.target.value)}
+                  placeholder="apify proxy password"
+                  className="flex-1 h-9 px-3 rounded-sm border border-border bg-input text-[13px] text-foreground placeholder:text-muted-foreground font-mono focus:outline-none focus:border-signal/50"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && overrideInput.trim()) {
+                      e.preventDefault();
+                      void handleSaveOverride();
+                    }
+                  }}
                 />
                 <button
                   type="button"
-                  onClick={() => setEnvVars((prev) => prev.filter((_, i) => i !== idx))}
-                  className="h-8 w-8 grid place-items-center text-muted-foreground hover:text-fail border border-border rounded-sm"
+                  onClick={() => void handleSaveOverride()}
+                  disabled={overrideBusy || !overrideInput.trim()}
+                  className="h-9 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm disabled:opacity-50"
                 >
-                  <X className="h-3.5 w-3.5" />
+                  {overrideBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                  save
                 </button>
+                {overrideReplaceMode && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOverrideReplaceMode(false);
+                      setOverrideInput('');
+                    }}
+                    className="h-9 px-3 inline-flex items-center text-[12px] font-mono uppercase tracking-wider border border-border rounded-sm text-muted-foreground hover:text-foreground"
+                  >
+                    cancel
+                  </button>
+                )}
               </div>
-            ))}
-            <button
-              type="button"
-              onClick={() => setEnvVars((prev) => [...prev, { key: '', value: '' }])}
-              className="h-8 px-3 inline-flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider border border-dashed border-border text-muted-foreground hover:border-signal/50 hover:text-signal rounded-sm"
-            >
-              <Plus className="h-3 w-3" /> add var
-            </button>
-          </div>
-        </div>
-
-        {error && (
-          <p className="font-mono text-[11px] text-fail border border-fail/30 bg-fail/5 p-2 rounded-sm">
-            [ERR] {error}
-          </p>
-        )}
-
-        <div className="flex items-center justify-end gap-3 pt-2 border-t border-border">
-          {savedAt && (
-            <span className="font-mono text-[10px] text-signal tracking-widest">
-              [SAVED · {new Date(savedAt).toISOString().split('T')[1].slice(0, 8)}]
-            </span>
+            </div>
           )}
-          <button
-            type="button"
-            onClick={() => void handleSave()}
-            disabled={saving}
-            className="h-9 px-4 inline-flex items-center gap-2 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm disabled:opacity-50"
-          >
-            {saving ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Save className="h-3.5 w-3.5" />
-            )}
-            Save
-          </button>
         </div>
       </section>
-
-      {/* Side panel — operator notes */}
-      <aside className="panel p-6 space-y-4">
-        <p className="eyebrow">NOTES</p>
-        <p className="text-[12px] text-muted-foreground leading-relaxed">
-          Defaults here apply to every run unless overridden at run time (
-          <code className="font-mono text-foreground">crc run -e KEY=val</code>).
-        </p>
-        <p className="text-[12px] text-muted-foreground leading-relaxed">
-          Env precedence:{' '}
-          <span className="font-mono text-foreground">base &lt; actor &lt; runtime</span>.
-        </p>
-        <p className="text-[12px] text-muted-foreground leading-relaxed">
-          Image is set automatically by <code className="font-mono text-foreground">crc push</code>;
-          only override if you&apos;re pulling from an external registry.
-        </p>
-      </aside>
     </div>
   );
 }

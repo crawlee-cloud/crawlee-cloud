@@ -10,21 +10,34 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import type { FastifyInstance } from 'fastify';
 import Fastify from 'fastify';
 
-// Mock authenticate middleware BEFORE importing routes
+// Mock authenticate and optionalAuth middleware BEFORE importing routes
 vi.mock('../src/auth/middleware.js', () => ({
   authenticate: async (request: { user?: { id: string; email: string; role: string } }) => {
     request.user = { id: 'test-user-id', email: 'test@example.com', role: 'user' };
+  },
+  optionalAuth: async (request: {
+    user?: { id: string; email: string; role: string };
+    headers?: Record<string, string>;
+  }) => {
+    if (request.headers?.authorization) {
+      request.user = { id: 'test-user-id', email: 'test@example.com', role: 'user' };
+    }
   },
 }));
 
 import { datasetsRoutes } from '../src/routes/datasets.js';
 import { keyValueStoresRoutes } from '../src/routes/key-value-stores.js';
 import { requestQueuesRoutes } from '../src/routes/request-queues.js';
+import { usersRoutes } from '../src/routes/users.js';
 
 // Mock database and storage
 const mockQuery = vi.fn();
+const mockPoolQuery = vi.fn();
 vi.mock('../src/db/index.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
+  pool: {
+    query: (...args: unknown[]) => mockPoolQuery(...args),
+  },
 }));
 
 vi.mock('../src/storage/s3.js', () => ({
@@ -329,5 +342,56 @@ describe('PUT /v2/request-queues/:queueId/requests/:requestId - clientKey valida
     });
 
     expect(response.statusCode).toBe(200);
+  });
+});
+
+describe('/v2/users/me Apify-compat shape', () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify();
+    app.register(usersRoutes, { prefix: '/v2' });
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    mockPoolQuery.mockReset();
+  });
+
+  it('omits proxy field entirely when no password is set (matches non-nullable SDK type)', async () => {
+    mockPoolQuery.mockResolvedValueOnce({
+      rows: [{ email: 'a@b.com', proxy_password_encrypted: null }],
+    });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v2/users/me',
+      headers: { authorization: 'Bearer valid-token' },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    // The SDK's UserProxy.password is typed `string` (non-nullable),
+    // so absence is the only correct shape when not configured.
+    expect('proxy' in body.data).toBe(false);
+  });
+
+  it('proxy field has shape { password: string, groups: ProxyGroup[] }', async () => {
+    process.env.PROXY_ENCRYPTION_KEY = 'a'.repeat(64);
+    const { encryptProxyPassword } = await import('../src/lib/proxy-crypto.js');
+    const stored = encryptProxyPassword('apify_pw_xyz');
+    mockPoolQuery.mockResolvedValueOnce({
+      rows: [{ email: 'a@b.com', proxy_password_encrypted: stored }],
+    });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v2/users/me',
+      headers: { authorization: 'Bearer valid-token' },
+    });
+    const body = res.json();
+    expect(typeof body.data.proxy.password).toBe('string');
+    expect(Array.isArray(body.data.proxy.groups)).toBe(true);
   });
 });

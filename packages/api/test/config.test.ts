@@ -47,6 +47,63 @@ describe('config — retention defaults', () => {
   });
 });
 
+describe('config-validator — PROXY_ENCRYPTION_KEY', () => {
+  async function runValidator() {
+    const { validateSecurityConfig } = await import('../src/config-validator.js');
+    return validateSecurityConfig();
+  }
+
+  // In production mode, config.ts disables dev defaults — every required env
+  // var must be set or it throws during import. Set the minimum here so the
+  // validator can actually run.
+  function setProductionEnv() {
+    process.env.NODE_ENV = 'production';
+    process.env.DATABASE_URL = 'postgresql://u:p@localhost:5432/test';
+    process.env.REDIS_URL = 'redis://localhost:6379';
+    process.env.S3_ENDPOINT = 'http://localhost:9000';
+    process.env.S3_ACCESS_KEY = 'k';
+    process.env.S3_SECRET_KEY = 's';
+    process.env.S3_BUCKET = 'b';
+    process.env.S3_REGION = 'us-east-1';
+    process.env.API_SECRET = 'x'.repeat(64);
+    process.env.CORS_ORIGINS = 'https://example.com';
+  }
+
+  it('errors in production when PROXY_ENCRYPTION_KEY is absent', async () => {
+    setProductionEnv();
+    delete process.env.PROXY_ENCRYPTION_KEY;
+    const result = await runValidator();
+    expect(result.errors.some((e) => e.includes('PROXY_ENCRYPTION_KEY must be set'))).toBe(true);
+  });
+
+  it('warns in development when PROXY_ENCRYPTION_KEY is absent', async () => {
+    process.env.NODE_ENV = 'development';
+    delete process.env.PROXY_ENCRYPTION_KEY;
+    const result = await runValidator();
+    expect(result.errors.some((e) => e.includes('PROXY_ENCRYPTION_KEY'))).toBe(false);
+  });
+
+  it('errors when PROXY_ENCRYPTION_KEY has wrong length', async () => {
+    process.env.NODE_ENV = 'development';
+    process.env.PROXY_ENCRYPTION_KEY = 'tooshort';
+    const result = await runValidator();
+    const msg = [...result.errors, ...result.warnings].find((m) =>
+      m.includes('PROXY_ENCRYPTION_KEY has invalid length')
+    );
+    expect(msg).toBeDefined();
+  });
+
+  it('passes when PROXY_ENCRYPTION_KEY is 64 hex chars in production', async () => {
+    setProductionEnv();
+    process.env.PROXY_ENCRYPTION_KEY = 'a'.repeat(64);
+    const result = await runValidator();
+    const proxyMsg = [...result.errors, ...result.warnings].find((m) =>
+      m.includes('PROXY_ENCRYPTION_KEY')
+    );
+    expect(proxyMsg).toBeUndefined();
+  });
+});
+
 describe('config — retention validation', () => {
   it('rejects RETENTION_DAYS=0', async () => {
     process.env.RETENTION_DAYS = '0';

@@ -360,6 +360,9 @@ CREATE INDEX IF NOT EXISTS idx_request_queues_unnamed_accessed
   ON request_queues(accessed_at) WHERE name IS NULL;
 CREATE INDEX IF NOT EXISTS idx_runs_finished
   ON runs(finished_at) WHERE finished_at IS NOT NULL;
+
+ALTER TABLE users  ADD COLUMN IF NOT EXISTS proxy_password_encrypted TEXT;
+ALTER TABLE actors ADD COLUMN IF NOT EXISTS proxy_password_encrypted TEXT;
 `;
 
 export async function migrate(): Promise<void> {

@@ -10,6 +10,7 @@ import { nanoid } from 'nanoid';
 import { config } from './config.js';
 import { executeRun, buildActorEnv } from './docker.js';
 import { applyWebhookTemplate } from './webhook-template.js';
+import { resolveProxy } from './proxy-resolver.js';
 
 const { Pool } = pg;
 
@@ -289,6 +290,20 @@ async function processRun(run: RunJob): Promise<void> {
       runnerApiKey = await redis.get(RUNNER_API_KEY_REDIS_KEY);
     }
 
+    // Resolve proxy password (actor → user → platform). Log the source
+    // for triage but never the value. See proxy-resolver.ts and the
+    // design doc at docs/superpowers/specs/2026-06-01-apify-proxy-design.md.
+    const proxy = await resolveProxy(pool, run.actor_id, run.user_id);
+    const proxyLog = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: proxy.source === 'none' ? 'WARN' : 'INFO',
+      message:
+        proxy.source === 'none'
+          ? 'No proxy password configured (actor/user/platform). Actor inputs using useApifyProxy=true will fail at runtime.'
+          : `Proxy credentials: ${proxy.source}`,
+    });
+    await redis.rpush(`logs:${run.id}`, proxyLog);
+
     // Build environment variables
     const baseEnv = buildActorEnv({
       runId: run.id,
@@ -300,6 +315,9 @@ async function processRun(run: RunJob): Promise<void> {
       defaultRequestQueueId: run.default_request_queue_id,
       memoryMbytes: run.memory_mbytes,
       timeoutSecs: run.timeout_secs,
+      proxyPassword: proxy.password,
+      proxyHostname: proxy.hostname,
+      proxyPort: proxy.port,
     });
 
     // Merge: base env < actor env (from actor.json) < runtime env (from -e flag)

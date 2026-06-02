@@ -6,6 +6,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { nanoid } from 'nanoid';
 import { CreateActorSchema, UpdateActorSchema, ActorRunSchema } from '../schemas/actors.js';
 import { query } from '../db/index.js';
+import { encryptProxyPassword } from '../lib/proxy-crypto.js';
 import { appendSearchCondition } from '../db/search.js';
 import { redis } from '../storage/redis.js';
 import { authenticate } from '../auth/middleware.js';
@@ -19,6 +20,7 @@ interface ActorRow {
   default_run_options: Record<string, unknown> | null;
   max_retries: number;
   retry_delay_secs: number;
+  proxy_password_encrypted: string | null;
   created_at: Date;
   modified_at: Date;
 }
@@ -314,6 +316,7 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
       defaultRunOptions?: Record<string, unknown>;
       maxRetries?: number;
       retryDelaySecs?: number;
+      proxyPassword?: string | null;
     };
   }>('/acts/:actorId', async (request, reply) => {
     const { actorId } = request.params;
@@ -346,6 +349,12 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
     if (updates.retryDelaySecs !== undefined) {
       setClauses.push(`retry_delay_secs = $${paramIndex++}`);
       values.push(updates.retryDelaySecs);
+    }
+    if (updates.proxyPassword !== undefined) {
+      setClauses.push(`proxy_password_encrypted = $${paramIndex++}`);
+      values.push(
+        updates.proxyPassword === null ? null : encryptProxyPassword(updates.proxyPassword)
+      );
     }
 
     values.push(actorId);
@@ -592,6 +601,7 @@ function formatActor(row: ActorRow) {
     defaultRunOptions: row.default_run_options,
     maxRetries: row.max_retries,
     retryDelaySecs: row.retry_delay_secs,
+    hasProxyOverride: row.proxy_password_encrypted !== null,
     createdAt: row.created_at,
     modifiedAt: row.modified_at,
   };

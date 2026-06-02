@@ -78,6 +78,7 @@ export interface Actor {
   defaultRunOptions?: ActorDefaultRunOptions;
   maxRetries?: number;
   retryDelaySecs?: number;
+  hasProxyOverride: boolean;
   createdAt: string;
   modifiedAt: string;
 }
@@ -263,6 +264,7 @@ export interface User {
   email: string;
   name?: string;
   role: string;
+  proxy?: { password: string; groups: unknown[] };
   createdAt: string;
 }
 
@@ -484,6 +486,22 @@ async function fetchApi<T>(endpoint: string, options: RequestInit = {}): Promise
 export async function getCurrentUser(): Promise<User> {
   const res = await fetchApi<{ data: User }>('/v2/auth/me');
   return res.data;
+}
+
+// Apify-compatible profile (includes the proxy field when set). Distinct from
+// /v2/auth/me, which is the dashboard's identity probe and doesn't carry proxy
+// state. The settings page reads from here so its "proxy set" badge reflects
+// what /v2/users/me actually serves to the Apify SDK.
+export async function getMyApifyProfile(): Promise<User> {
+  const res = await fetchApi<{ data: User }>('/v2/users/me');
+  return res.data;
+}
+
+export async function setMyProxyPassword(password: string | null): Promise<void> {
+  await fetchApi('/v2/users/me', {
+    method: 'PUT',
+    body: JSON.stringify({ proxyPassword: password }),
+  });
 }
 
 export async function getApiKeys(): Promise<ApiKey[]> {
@@ -849,6 +867,7 @@ export async function updateActor(
     defaultRunOptions: ActorDefaultRunOptions;
     maxRetries: number;
     retryDelaySecs: number;
+    proxyPassword: string | null;
   }>
 ): Promise<Actor> {
   const res = await fetchApi<{ data: Actor }>(`/v2/acts/${id}`, {

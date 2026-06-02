@@ -39,6 +39,7 @@ const createActorRow = (overrides = {}) => ({
   title: 'Test Actor',
   description: 'A test actor',
   default_run_options: null,
+  proxy_password_encrypted: null,
   created_at: new Date(),
   modified_at: new Date(),
   ...overrides,
@@ -294,6 +295,53 @@ describe('Actor Routes', () => {
         (v) => typeof v === 'string' && v.includes('"image"')
       ) as string;
       expect(JSON.parse(storedJson)).toEqual(dro);
+    });
+
+    it('PUT with proxyPassword stores encrypted blob, never plaintext', async () => {
+      process.env.PROXY_ENCRYPTION_KEY = 'a'.repeat(64);
+      mockQuery.mockResolvedValueOnce({
+        rows: [createActorRow({ proxy_password_encrypted: 'v1:x' })],
+      });
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/v2/acts/actor-1',
+        headers: { authorization: 'Bearer valid-token' },
+        payload: { proxyPassword: 'apify_secret_pw' },
+      });
+      expect(res.statusCode).toBe(200);
+      const args = mockQuery.mock.calls[0][1] as unknown[];
+      expect(args).not.toContain('apify_secret_pw');
+      expect(args.some((a) => typeof a === 'string' && /^v1:/.test(a))).toBe(true);
+    });
+
+    it('PUT with proxyPassword: null clears the column', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [createActorRow({ proxy_password_encrypted: null })],
+      });
+      const res = await app.inject({
+        method: 'PUT',
+        url: '/v2/acts/actor-1',
+        headers: { authorization: 'Bearer valid-token' },
+        payload: { proxyPassword: null },
+      });
+      expect(res.statusCode).toBe(200);
+      const args = mockQuery.mock.calls[0][1] as unknown[];
+      expect(args).toContain(null);
+    });
+
+    it('GET response includes hasProxyOverride and never the password value', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [createActorRow({ proxy_password_encrypted: 'v1:secret-blob' })],
+      });
+      const res = await app.inject({
+        method: 'GET',
+        url: '/v2/acts/actor-1',
+        headers: { authorization: 'Bearer valid-token' },
+      });
+      const body = res.json();
+      expect(body.data.hasProxyOverride).toBe(true);
+      expect(JSON.stringify(body)).not.toContain('v1:secret-blob');
+      expect(JSON.stringify(body)).not.toContain('proxy_password_encrypted');
     });
   });
 

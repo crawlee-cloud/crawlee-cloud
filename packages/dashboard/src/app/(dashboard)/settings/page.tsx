@@ -7,6 +7,7 @@ import {
   Copy,
   Eye,
   EyeOff,
+  Globe,
   HardDrive,
   Loader2,
   Plus,
@@ -21,11 +22,14 @@ import { useToast } from '@/components/ui/toast';
 import { Badge } from '@/components/ui/badge';
 import {
   createApiKey,
+  getMyApifyProfile,
   getApiKeys,
   getSystemInfo,
   revokeApiKey,
+  setMyProxyPassword,
   type ApiKey,
   type SystemInfo,
+  type User,
 } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
@@ -43,6 +47,10 @@ export default function SettingsPage() {
   const [showNewKey, setShowNewKey] = useState(false);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [systemError, setSystemError] = useState<string | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [proxyInput, setProxyInput] = useState('');
+  const [proxyBusy, setProxyBusy] = useState(false);
+  const [proxyReplaceMode, setProxyReplaceMode] = useState(false);
 
   const loadKeys = useCallback(async () => {
     try {
@@ -52,6 +60,15 @@ export default function SettingsPage() {
       // Empty list on failure; the API may simply be unreachable.
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const loadUser = useCallback(async () => {
+    try {
+      const u = await getMyApifyProfile();
+      setUser(u);
+    } catch {
+      /* silent — surfaced as no panel data */
     }
   }, []);
 
@@ -71,7 +88,8 @@ export default function SettingsPage() {
   useEffect(() => {
     void loadKeys();
     void loadSystem();
-  }, [loadKeys, loadSystem]);
+    void loadUser();
+  }, [loadKeys, loadSystem, loadUser]);
 
   async function handleCreate() {
     if (!newKeyName.trim()) return;
@@ -103,6 +121,43 @@ export default function SettingsPage() {
       toast.success('Key revoked');
     } catch (err) {
       toast.error('Failed to revoke key', { description: (err as Error).message });
+    }
+  }
+
+  async function handleSaveProxy() {
+    if (!proxyInput.trim()) return;
+    setProxyBusy(true);
+    try {
+      await setMyProxyPassword(proxyInput.trim());
+      setProxyInput('');
+      setProxyReplaceMode(false);
+      await loadUser();
+      toast.success('Proxy password saved');
+    } catch (err) {
+      toast.error('Failed to save', { description: (err as Error).message });
+    } finally {
+      setProxyBusy(false);
+    }
+  }
+
+  async function handleClearProxy() {
+    const ok = await confirm({
+      tone: 'danger',
+      title: 'Revoke proxy password?',
+      description:
+        'Actors using useApifyProxy=true will fall back to actor or platform defaults — or fail if none.',
+      confirmLabel: 'revoke',
+    });
+    if (!ok) return;
+    setProxyBusy(true);
+    try {
+      await setMyProxyPassword(null);
+      await loadUser();
+      toast.success('Proxy password cleared');
+    } catch (err) {
+      toast.error('Failed to clear', { description: (err as Error).message });
+    } finally {
+      setProxyBusy(false);
     }
   }
 
@@ -323,6 +378,105 @@ export default function SettingsPage() {
               </ul>
             )}
           </div>
+        </div>
+      </section>
+
+      {/* APIFY PROXY */}
+      <section className="panel">
+        <header className="px-5 py-4 border-b border-border flex items-center gap-3">
+          <Globe className="h-4 w-4 text-signal" />
+          <div>
+            <p className="eyebrow">AUTH · APIFY PROXY</p>
+            <h2 className="text-[15px] mt-1">Your Apify Proxy password</h2>
+          </div>
+        </header>
+
+        <div className="p-5 space-y-4">
+          {/* SECURITY: never render user.proxy.password. The value is fetched
+             only because /v2/users/me returns it for Apify SDK compat. The
+             component shows only the boolean derived from its presence. */}
+          {user?.proxy?.password && !proxyReplaceMode ? (
+            <div className="flex items-center justify-between">
+              <div>
+                <Badge variant="success" shape="chip" className="px-2">
+                  <CheckCircle2 className="h-3 w-3 mr-1" />
+                  <span>set</span>
+                </Badge>
+                <p className="text-[12px] text-muted-foreground mt-2">
+                  Actors using <code>useApifyProxy=true</code> will use this password unless an
+                  actor-level override is set.
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setProxyReplaceMode(true)}
+                  className="h-9 px-3 inline-flex items-center text-[12px] font-mono uppercase tracking-wider border border-border rounded-sm text-muted-foreground hover:text-foreground hover:border-signal/40"
+                >
+                  replace
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleClearProxy()}
+                  disabled={proxyBusy}
+                  className="h-9 px-3 inline-flex items-center text-[12px] font-mono uppercase tracking-wider border border-border rounded-sm text-fail hover:bg-fail/10 disabled:opacity-50"
+                >
+                  revoke
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div>
+              {!user?.proxy?.password && (
+                <p className="text-[12px] text-muted-foreground mb-3">
+                  <span className="font-mono text-[10px] tracking-widest text-fail uppercase">
+                    [ not configured ]
+                  </span>{' '}
+                  Actors with <code>useApifyProxy=true</code> in their input will fail at runtime
+                  unless a platform default is set.
+                </p>
+              )}
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={proxyInput}
+                  onChange={(e) => setProxyInput(e.target.value)}
+                  placeholder="apify proxy password"
+                  className="flex-1 h-9 px-3 rounded-sm border border-border bg-input text-[13px] text-foreground placeholder:text-muted-foreground font-mono focus:outline-none focus:border-signal/50"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && proxyInput.trim()) {
+                      e.preventDefault();
+                      void handleSaveProxy();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleSaveProxy()}
+                  disabled={proxyBusy || !proxyInput.trim()}
+                  className="h-9 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm disabled:opacity-50"
+                >
+                  {proxyBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                  save
+                </button>
+                {proxyReplaceMode && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProxyReplaceMode(false);
+                      setProxyInput('');
+                    }}
+                    className="h-9 px-3 inline-flex items-center text-[12px] font-mono uppercase tracking-wider border border-border rounded-sm text-muted-foreground hover:text-foreground"
+                  >
+                    cancel
+                  </button>
+                )}
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-2">
+                From Apify Console → Proxy → HTTP settings → password.
+              </p>
+            </div>
+          )}
         </div>
       </section>
 
