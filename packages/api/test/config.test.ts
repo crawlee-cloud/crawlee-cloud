@@ -88,7 +88,19 @@ describe('config-validator — PROXY_ENCRYPTION_KEY', () => {
     process.env.PROXY_ENCRYPTION_KEY = 'tooshort';
     const result = await runValidator();
     const msg = [...result.errors, ...result.warnings].find((m) =>
-      m.includes('PROXY_ENCRYPTION_KEY has invalid length')
+      m.includes('PROXY_ENCRYPTION_KEY must be exactly 64 hex')
+    );
+    expect(msg).toBeDefined();
+  });
+
+  it('errors when PROXY_ENCRYPTION_KEY is 64 chars but not hex', async () => {
+    // 64-char garbage would otherwise pass a naive length check and silently
+    // truncate at Buffer.from(s, 'hex'). The hex regex must reject it.
+    process.env.NODE_ENV = 'development';
+    process.env.PROXY_ENCRYPTION_KEY = 'z'.repeat(64);
+    const result = await runValidator();
+    const msg = [...result.errors, ...result.warnings].find((m) =>
+      m.includes('PROXY_ENCRYPTION_KEY must be exactly 64 hex')
     );
     expect(msg).toBeDefined();
   });

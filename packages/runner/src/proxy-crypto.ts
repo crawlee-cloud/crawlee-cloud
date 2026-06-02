@@ -24,10 +24,15 @@ const VERSION = 'v1';
 function getKey(): Buffer {
   const envKey = process.env.PROXY_ENCRYPTION_KEY;
   if (envKey) {
-    if (envKey.length !== 64) {
-      throw new Error('PROXY_ENCRYPTION_KEY must be 64 hex chars (32 bytes)');
+    // Length-only validation isn't enough: Buffer.from(s, 'hex') truncates
+    // at the first non-hex character. A 64-char string of mixed garbage
+    // would pass .length === 64 and then yield a <32-byte buffer, breaking
+    // the AES key invariant at runtime. Decode + check the resulting buffer.
+    const buf = Buffer.from(envKey, 'hex');
+    if (buf.length !== 32) {
+      throw new Error('PROXY_ENCRYPTION_KEY must be a valid 64-character hex string (32 bytes)');
     }
-    return Buffer.from(envKey, 'hex');
+    return buf;
   }
   const fallback = process.env.API_SECRET;
   if (!fallback) {

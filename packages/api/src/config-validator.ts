@@ -52,10 +52,15 @@ export function validateSecurityConfig(): SecurityValidationResult {
   if (isProduction && !process.env.PROXY_ENCRYPTION_KEY) {
     report('PROXY_ENCRYPTION_KEY must be set in production (64 hex chars = 32 bytes)');
   }
-  if (process.env.PROXY_ENCRYPTION_KEY && process.env.PROXY_ENCRYPTION_KEY.length !== 64) {
-    report(
-      `PROXY_ENCRYPTION_KEY has invalid length (${process.env.PROXY_ENCRYPTION_KEY.length} chars, need 64 hex chars)`
-    );
+  if (
+    process.env.PROXY_ENCRYPTION_KEY &&
+    !/^[0-9a-fA-F]{64}$/.test(process.env.PROXY_ENCRYPTION_KEY)
+  ) {
+    // Hex regex catches both wrong length AND non-hex chars in one check.
+    // Buffer.from(s, 'hex') silently truncates at the first non-hex char,
+    // so a 64-char garbage string would otherwise pass a naive .length === 64
+    // check and break at runtime when the AES key buffer comes back < 32 bytes.
+    report('PROXY_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes)');
   }
 
   // Check database credentials

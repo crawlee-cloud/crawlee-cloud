@@ -229,6 +229,46 @@ describe('Actor Routes', () => {
       expect(parsed.envVars).toEqual(defaultRunOptions.envVars);
       expect(parsed.timeoutSecs).toBe(600);
     });
+
+    it('persists proxyPassword (encrypted) on create — regression for Codex P2', async () => {
+      // The earlier version of this code accepted proxyPassword in
+      // CreateActorSchema but the INSERT silently dropped the field.
+      // Verify the encrypted blob lands in the INSERT call args, and
+      // the plaintext does not.
+      process.env.PROXY_ENCRYPTION_KEY = 'a'.repeat(64);
+      mockQuery
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [createActorRow()] });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/acts',
+        payload: { name: 'foo', proxyPassword: 'apify_secret_pw_create' },
+      });
+
+      expect(response.statusCode).toBe(201);
+      const insertArgs = (mockQuery.mock.calls[1] as [string, unknown[]])[1];
+      expect(insertArgs).not.toContain('apify_secret_pw_create');
+      expect(insertArgs.some((a) => typeof a === 'string' && /^v1:/.test(a))).toBe(true);
+    });
+
+    it('persists proxyPassword (encrypted) on upsert into an existing actor', async () => {
+      process.env.PROXY_ENCRYPTION_KEY = 'a'.repeat(64);
+      mockQuery
+        .mockResolvedValueOnce({ rows: [createActorRow()] }) // existing
+        .mockResolvedValueOnce({ rows: [createActorRow({ proxy_password_encrypted: 'v1:x' })] });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/acts',
+        payload: { name: 'test-actor', proxyPassword: 'apify_secret_pw_upsert' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const updateArgs = (mockQuery.mock.calls[1] as [string, unknown[]])[1];
+      expect(updateArgs).not.toContain('apify_secret_pw_upsert');
+      expect(updateArgs.some((a) => typeof a === 'string' && /^v1:/.test(a))).toBe(true);
+    });
   });
 
   describe('GET /v2/acts/:actorId', () => {

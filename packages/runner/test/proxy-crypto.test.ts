@@ -67,4 +67,13 @@ describe('proxy-crypto', () => {
     const stored = encryptProxyPassword(plain);
     expect(decryptProxyPassword(stored)).toBe(plain);
   });
+
+  it('rejects a 64-char non-hex key (would silently truncate via Buffer.from hex)', async () => {
+    // 64-char string but contains non-hex characters; Buffer.from(_, 'hex')
+    // stops at the first non-hex char and yields < 32 bytes. The getKey()
+    // decode-and-check guard must catch this.
+    process.env.PROXY_ENCRYPTION_KEY = 'z'.repeat(64);
+    const { encryptProxyPassword } = await import('../src/proxy-crypto.js');
+    expect(() => encryptProxyPassword('x')).toThrow(/valid 64-character hex string/);
+  });
 });

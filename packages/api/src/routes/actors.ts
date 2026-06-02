@@ -215,10 +215,26 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
       defaultRunOptions?: Record<string, unknown>;
       maxRetries?: number;
       retryDelaySecs?: number;
+      proxyPassword?: string | null;
     };
   }>('/acts', async (request, reply) => {
-    const { name, title, description, defaultRunOptions, maxRetries, retryDelaySecs, version } =
-      CreateActorSchema.parse(request.body);
+    const {
+      name,
+      title,
+      description,
+      defaultRunOptions,
+      maxRetries,
+      retryDelaySecs,
+      version,
+      proxyPassword,
+    } = CreateActorSchema.parse(request.body);
+
+    // Three-state proxyPassword semantics matching PUT /v2/acts/:id:
+    //   undefined → preserve existing (update) / null on insert
+    //   null      → explicit clear
+    //   string    → encrypt + store
+    const encryptIfSet = (v: string | null | undefined): string | null | undefined =>
+      v === undefined ? undefined : v === null ? null : encryptProxyPassword(v);
 
     // Check if actor with this name already exists for this user
     const existing = await query<ActorRow>(
@@ -228,12 +244,14 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (existing.rows[0]) {
       // Update existing actor (user_id already verified in SELECT)
+      const proxyParam = encryptIfSet(proxyPassword);
       const result = await query<ActorRow>(
         `
         UPDATE actors
         SET title = $1, description = $2, default_run_options = $3,
-            max_retries = $4, retry_delay_secs = $5, modified_at = NOW()
-        WHERE name = $6 AND user_id = $7
+            max_retries = $4, retry_delay_secs = $5,
+            proxy_password_encrypted = $6, modified_at = NOW()
+        WHERE name = $7 AND user_id = $8
         RETURNING *
       `,
         [
@@ -244,6 +262,7 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
             : existing.rows[0].default_run_options,
           maxRetries ?? existing.rows[0].max_retries,
           retryDelaySecs ?? existing.rows[0].retry_delay_secs,
+          proxyParam === undefined ? existing.rows[0].proxy_password_encrypted : proxyParam,
           name,
           request.user!.id,
         ]
@@ -263,8 +282,8 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
     const id = nanoid();
     const result = await query<ActorRow>(
       `
-      INSERT INTO actors (id, name, user_id, title, description, default_run_options, max_retries, retry_delay_secs)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      INSERT INTO actors (id, name, user_id, title, description, default_run_options, max_retries, retry_delay_secs, proxy_password_encrypted)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING *
     `,
       [
@@ -276,6 +295,7 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
         defaultRunOptions ? JSON.stringify(defaultRunOptions) : null,
         maxRetries ?? 0,
         retryDelaySecs ?? 60,
+        encryptIfSet(proxyPassword) ?? null,
       ]
     );
 

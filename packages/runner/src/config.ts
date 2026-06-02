@@ -100,9 +100,13 @@ export const config: Config = {
     );
     process.exit(1);
   }
-  if (key && key.length !== 64) {
+  // Hex regex catches both wrong length AND non-hex chars in one check.
+  // Buffer.from(s, 'hex') silently truncates at the first non-hex character,
+  // so a 64-char garbage string would otherwise pass a naive .length === 64
+  // check and break at runtime when the AES key buffer comes back < 32 bytes.
+  if (key && !/^[0-9a-fA-F]{64}$/.test(key)) {
     process.stderr.write(
-      `[Runner] FATAL: PROXY_ENCRYPTION_KEY has invalid length (${String(key.length)} chars, need 64 hex chars = 32 bytes).\n`
+      '[Runner] FATAL: PROXY_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes).\n'
     );
     process.exit(1);
   }
