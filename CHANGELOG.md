@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.4] - 2026-06-02
+
+### Added
+
+- **Apify Proxy integration (`useApifyProxy=true` now works end-to-end).** Three-tier resolution at run start: per-actor override → per-user setting → platform default env. Actors written against Apify cloud with `proxyConfiguration.useApifyProxy: true` in their input now run unchanged — the SDK's standard env-injection path is preserved (`APIFY_PROXY_PASSWORD/HOSTNAME/PORT` injected only when a password resolves; absent vars activate the SDK's well-tested API fallback to `/v2/users/me`).
+- **`GET /v2/users/me` Apify-compat extension.** Switched from no-auth-always-anonymous to `optionalAuth` so the SDK fallback path resolves to the authed user's real proxy. Response embeds `{ proxy: { password, groups: [] } }` only when a password is configured — when unset, the `proxy` field is **omitted entirely** (matches the SDK's non-nullable `UserProxy.password` type, which a literal `null` would type-violate).
+- **`PUT /v2/users/me`** (new) and `proxyPassword` field on `PUT /v2/acts/:id` (existing route, extended) — three-state semantics: `undefined` no-op / `null` clears / string encrypts and stores. Asymmetric read/write surface: writes accept the plaintext, reads (`hasProxyPassword` on `/v2/users/me`'s caller-facing dashboard surface, `hasProxyOverride` on the actor row) return only a boolean.
+- **`POST /v2/acts`** now persists `proxyPassword` on both create and upsert (the field passed Zod validation but was silently dropped on insert/update in the initial implementation — caught by review).
+- **Dashboard panels.** `AUTH · APIFY PROXY` on settings page and `CONFIG · PROXY OVERRIDE` on actor detail. State machine: `[ not configured ] / [ set ]` with replace + revoke (account-level) or remove (per-actor). Write-only credential UI — the plaintext is never rendered, even though `/v2/users/me` returns it for SDK compat.
+- **Resilient decrypt.** A corrupted ciphertext or rotated key no longer 500s the SDK fallback or permanently FAILs every run for the affected actor/user. `GET /v2/users/me` server-logs and omits the proxy field; the runner's resolver `safeDecrypt()` skips the affected tier and falls through to the next one so runs proceed (typically without proxy, but at least they run).
+
+### Security
+
+- **AES-256-GCM encryption at rest** for `users.proxy_password_encrypted` and `actors.proxy_password_encrypted` columns. Storage format `v1:<base64-iv>:<base64-ciphertext>:<base64-authtag>` — the `v1:` prefix is the forward-compatibility hook so future key rotations or algorithm changes coexist with stored records without a migration. Per-record random IV (12 bytes, GCM standard), `setAuthTag` before `decipher.final()`, key length enforced.
+- **Key source.** `PROXY_ENCRYPTION_KEY` (64 hex chars / 32 bytes) preferred. Dev fallback to `sha256(API_SECRET)` so single-secret deployments work. **Production hard-fails** at API startup (`config-validator.ts`) and at runner startup (`config.ts` guard) if the explicit key is missing — silent fallback in production would cause API/runner key mismatches with broken-but-look-fine behavior. Both processes must use the same value.
+- **Robust key validation.** A 64-char non-hex string used to pass the length check, then `Buffer.from(s, 'hex')` would silently truncate at the first non-hex char and yield a < 32-byte AES key — runtime crypto failures despite "successful" startup. Validators now use `/^[0-9a-fA-F]{64}$/`; the crypto helper itself also decode-and-checks `buf.length === 32` for defense in depth.
+- **Plaintext containment.** Tests assert encrypted blobs (`/^v1:/` prefix) land in DB call args and the plaintext does not — for `/v2/users/me`, `PUT /v2/acts/:id`, **and** `POST /v2/acts` create + upsert paths. `formatActor()` returns only the boolean projection; the encrypted column never appears in any GET response.
+
+### Migration
+
+- New columns added idempotently: `users.proxy_password_encrypted TEXT NULL` and `actors.proxy_password_encrypted TEXT NULL`. No down-migration needed.
+
+### Deployment notes
+
+- Set `PROXY_ENCRYPTION_KEY` (64 hex chars / 32 bytes) **identically on both the API and runner processes** in production. Both hard-fail at startup without it. Generate with:
+
+  ```bash
+  node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+  ```
+
+### Known limitations / future work
+
+- `/v2/users/me` returns the proxy password of the user the _authenticating token_ is bound to. With the current runner-API-key model (single key, bound to the admin user), the SDK fallback path resolves to the admin's proxy in multi-tenant deployments. The env-injection path — the primary resolution channel — is unaffected. Per-actor-run user binding is a separate effort.
+- Custom (non-Apify) `proxyUrls`, per-run override, CLI `crc proxy` subcommand, key rotation tooling, and a pre-flight check that fails fast when `useApifyProxy=true` resolves to no password configured anywhere are all out of scope and tracked as follow-ups.
+
 ## [0.9.3] - 2026-06-01
 
 ### Added
