@@ -35,9 +35,6 @@ export interface Config {
   apifyProxyHostname: string; // '' → SDK default (proxy.apify.com)
   apifyProxyPort: number; // 0  → SDK default (8000)
 
-  // Encryption key for proxy_password_encrypted columns.
-  proxyEncryptionKey: string;
-
   // Logging
   logLevel: string;
 }
@@ -76,7 +73,37 @@ export const config: Config = {
   apifyProxyHostname: env('APIFY_PROXY_HOSTNAME', ''),
   apifyProxyPort: envInt('APIFY_PROXY_PORT', 0),
 
-  proxyEncryptionKey: env('PROXY_ENCRYPTION_KEY', ''),
-
   logLevel: env('LOG_LEVEL', 'info'),
 };
+
+// Proxy encryption key validation. PROXY_ENCRYPTION_KEY must match the value
+// used by the API process — both encrypt/decrypt the same DB columns. If the
+// API encrypts under K1 and the runner decrypts under K2, every decrypt fails,
+// safeDecrypt() swallows it silently, and every actor run launches without
+// the resolved proxy. Fail loud in production; warn in dev.
+//
+// Note: proxy-crypto.ts reads process.env.PROXY_ENCRYPTION_KEY directly, so
+// this is a startup validation — not a config field threaded through callers.
+{
+  const key = process.env.PROXY_ENCRYPTION_KEY;
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  if (isProduction && !key) {
+    process.stderr.write(
+      '[Runner] FATAL: PROXY_ENCRYPTION_KEY is not set in production.\n' +
+        '  Without it, proxy-crypto falls back to sha256(API_SECRET) — which\n' +
+        '  must then be identical on the API and runner. If it is not, every\n' +
+        '  decrypt fails silently and runs proceed without their resolved\n' +
+        '  proxy credentials. Set PROXY_ENCRYPTION_KEY (64 hex chars) on both\n' +
+        '  processes. Generate one with:\n' +
+        "    node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"\n"
+    );
+    process.exit(1);
+  }
+  if (key && key.length !== 64) {
+    process.stderr.write(
+      `[Runner] FATAL: PROXY_ENCRYPTION_KEY has invalid length (${String(key.length)} chars, need 64 hex chars = 32 bytes).\n`
+    );
+    process.exit(1);
+  }
+}
