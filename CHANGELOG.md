@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.6] - 2026-06-03
+
+### Added
+
+- **`RUNNER_CLONE_REF` env var on the scaler.** When set, the cloud-init template clones the specified git ref (tag or branch) instead of the default branch. Decouples runner version from upstream `main` merges, so a runner-runtime breaking change on `main` doesn't auto-detonate the next scaler-provisioned droplet. Example: setting `RUNNER_CLONE_REF=v0.9.5` pins all newly-spawned runners to that tag. Unset = unchanged historical behavior (clones default branch). `git clone --branch` refuses bare SHAs by design, so the operator picks tags or branches — not arbitrary commits — which keeps rollback unambiguous.
+
+### Note
+
+- Value is interpolated into the cloud-init bash heredoc unchanged. Same threat model as every other env var the scaler reads — operator-supplied, not user-supplied. A future hardening PR could add a regex guard (`/^[A-Za-z0-9._/-]+$/`) without breaking compat.
+
 ## [0.9.5] - 2026-06-03
 
 ### Fixed
