@@ -112,13 +112,23 @@ export function getCloudInitScript(runsPerRunner: number): string {
   const tlsEnvFileLine = insecureTls ? 'NODE_TLS_REJECT_UNAUTHORIZED=0' : '';
   const tlsSystemdLine = insecureTls ? 'Environment=NODE_TLS_REJECT_UNAUTHORIZED=0' : '';
 
+  // Optional pin for the runner clone. When unset, falls back to default
+  // branch (main) — historical behavior. Setting it to a tag (e.g.
+  // 'v0.9.5') decouples runner upgrades from upstream main merges, so a
+  // breaking change to runner-side runtime requirements (like the
+  // v0.9.4 PROXY_ENCRYPTION_KEY requirement) doesn't auto-detonate the
+  // cluster the next time the scaler spawns a droplet. Accepts any ref
+  // git accepts as --branch: tags, branches, but not arbitrary SHAs.
+  const cloneRef = (process.env.RUNNER_CLONE_REF || '').trim();
+  const cloneRefFlag = cloneRef ? `--branch ${cloneRef} ` : '';
+
   return `#!/bin/bash
 set -e
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt-get install -y nodejs
 
 # Clone and build runner
-git clone https://github.com/crawlee-cloud/crawlee-cloud.git /opt/crawlee-cloud
+git clone ${cloneRefFlag}https://github.com/crawlee-cloud/crawlee-cloud.git /opt/crawlee-cloud
 cd /opt/crawlee-cloud
 npm install
 npm run build --workspace=@crawlee-cloud/runner
