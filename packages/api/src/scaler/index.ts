@@ -117,10 +117,24 @@ export function getCloudInitScript(runsPerRunner: number): string {
   // 'v0.9.5') decouples runner upgrades from upstream main merges, so a
   // breaking change to runner-side runtime requirements (like the
   // v0.9.4 PROXY_ENCRYPTION_KEY requirement) doesn't auto-detonate the
-  // cluster the next time the scaler spawns a droplet. Accepts any ref
-  // git accepts as --branch: tags, branches, but not arbitrary SHAs.
+  // cluster the next time the scaler spawns a droplet.
+  //
+  // Shell-safety: git considers shell metacharacters (`;`, `&`, backticks,
+  // `$(...)`, `|`, newlines) valid in ref names — `git check-ref-format
+  // --branch 'foo;bar'` exits 0. Embedding such a value into a bash heredoc
+  // unquoted would run two commands on the droplet. Two layers of defense:
+  //   1. Reject anything outside the safe charset before render time. The
+  //      regex covers every real-world tag/branch we ship (alphanumeric,
+  //      dot, underscore, slash, hyphen, plus).
+  //   2. Single-quote the value in the rendered bash so any future regex
+  //      loosening still can't escape its argument context.
   const cloneRef = (process.env.RUNNER_CLONE_REF || '').trim();
-  const cloneRefFlag = cloneRef ? `--branch ${cloneRef} ` : '';
+  if (cloneRef && !/^[A-Za-z0-9._/+-]+$/.test(cloneRef)) {
+    throw new Error(
+      `RUNNER_CLONE_REF contains characters outside the safe set [A-Za-z0-9._/+-]: ${JSON.stringify(cloneRef)}`
+    );
+  }
+  const cloneRefFlag = cloneRef ? `--branch '${cloneRef}' ` : '';
 
   return `#!/bin/bash
 set -e
