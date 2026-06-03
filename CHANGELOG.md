@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.5] - 2026-06-03
+
+### Fixed
+
+- **Scaler cloud-init now propagates `PROXY_ENCRYPTION_KEY` to scaled-up runners.** The cloud-init template that bootstraps a freshly-provisioned runner VM (`packages/api/src/scaler/index.ts`) only piped `IMAGE_REGISTRY*` env vars through. In v0.9.4, the runner gained a startup guard that hard-fails in production when `PROXY_ENCRYPTION_KEY` is unset (or, outside production, silently falls back to `sha256(API_SECRET)` — which would not match the API's encrypted records). Either way, scaled-up runners couldn't decrypt actor/user proxy columns. Now passed through alongside the existing registry vars. Single-host deployments are unaffected (operators set the env var directly on the runner process).
+
+### Known gap (not fixed in this patch)
+
+- `APIFY_PROXY_PASSWORD` / `APIFY_PROXY_HOSTNAME` / `APIFY_PROXY_PORT` are NOT yet propagated by the scaler cloud-init. Operators relying on the platform-default proxy tier in scaled deployments will need to extend the passthrough or use per-user / per-actor overrides (which DO work end-to-end on scaled runners after this fix, since they only require the encryption key).
+
 ## [0.9.4] - 2026-06-02
 
 ### Added
