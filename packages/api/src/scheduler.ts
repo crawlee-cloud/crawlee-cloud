@@ -109,6 +109,29 @@ async function triggerScheduledRun(schedule: ScheduleRow): Promise<void> {
     const kvStoreId = nanoid();
     const requestQueueId = nanoid();
 
+    // Look up the actor's default_run_options so scheduled runs honor the
+    // operator-configured timeout/memory instead of falling back to the
+    // DB's column defaults (3600 / 1024). Previously the INSERT omitted
+    // these columns entirely, so scheduled runs were always killed at
+    // 3600s regardless of the actor's configured timeoutSecs.
+    //
+    // If the actor was deleted between the schedule firing and this read,
+    // bail before creating storage rows + an S3 write that would orphan
+    // when the downstream `runs` INSERT fails its actor_id FK check.
+    const actorRow = await query<{
+      default_run_options: { timeoutSecs?: number; memoryMbytes?: number } | null;
+    }>('SELECT default_run_options FROM actors WHERE id = $1', [schedule.actor_id]);
+    if (!actorRow.rows[0]) {
+      console.error(
+        `Schedule ${schedule.id} references missing actor ${schedule.actor_id}; skipping (consider deleting the schedule)`
+      );
+      return;
+    }
+    const actorDefaults = actorRow.rows[0].default_run_options ?? null;
+    const timeoutSecs = actorDefaults?.timeoutSecs ?? 3600;
+    const memoryMbytes = actorDefaults?.memoryMbytes ?? 1024;
+
+    // Create default storages
     await query('INSERT INTO datasets (id, user_id) VALUES ($1, $2)', [
       datasetId,
       schedule.user_id,
@@ -126,9 +149,18 @@ async function triggerScheduledRun(schedule: ScheduleRow): Promise<void> {
     await putKVRecord(kvStoreId, 'INPUT', JSON.stringify(schedule.input ?? {}), 'application/json');
 
     await query(
-      `INSERT INTO runs (id, actor_id, user_id, status, default_dataset_id, default_key_value_store_id, default_request_queue_id)
-       VALUES ($1, $2, $3, 'READY', $4, $5, $6)`,
-      [runId, schedule.actor_id, schedule.user_id, datasetId, kvStoreId, requestQueueId]
+      `INSERT INTO runs (id, actor_id, user_id, status, default_dataset_id, default_key_value_store_id, default_request_queue_id, timeout_secs, memory_mbytes)
+       VALUES ($1, $2, $3, 'READY', $4, $5, $6, $7, $8)`,
+      [
+        runId,
+        schedule.actor_id,
+        schedule.user_id,
+        datasetId,
+        kvStoreId,
+        requestQueueId,
+        timeoutSecs,
+        memoryMbytes,
+      ]
     );
 
     await redis.publish('run:new', runId);

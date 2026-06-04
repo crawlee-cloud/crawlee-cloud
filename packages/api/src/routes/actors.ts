@@ -443,15 +443,11 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
     };
   }>('/acts/:actorId/runs', async (request, reply) => {
     const { actorId } = request.params;
-    const {
-      input,
-      timeout = 3600,
-      memory = 1024,
-      envVars,
-      webhooks,
-    } = ActorRunSchema.parse(request.body || {});
+    const parsed = ActorRunSchema.parse(request.body || {});
+    const { input, envVars, webhooks } = parsed;
 
-    // Get actor by ID or name, scoped to user
+    // Get actor by ID or name, scoped to user. We need the actor's
+    // default_run_options before we can resolve the run's timeout/memory.
     const actor = await query<ActorRow>(
       `SELECT * FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2`,
       [actorId, request.user!.id]
@@ -461,6 +457,19 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
       reply.status(404);
       return { error: { type: 'record-not-found', message: 'Actor not found' } };
     }
+
+    // Resolution order for timeout/memory: request body override → actor's
+    // default_run_options (set via `crc push` or PUT /v2/acts/:id) → the
+    // platform fallback (3600s / 1024 MB). Previously the handler ignored
+    // the actor's defaults and always fell back to 3600/1024 when the
+    // request body omitted them, so actors configured with e.g.
+    // timeoutSecs=7200 were silently killed at 3600s.
+    const actorDefaults = (actor.rows[0].default_run_options ?? null) as {
+      timeoutSecs?: number;
+      memoryMbytes?: number;
+    } | null;
+    const timeout = parsed.timeout ?? actorDefaults?.timeoutSecs ?? 3600;
+    const memory = parsed.memory ?? actorDefaults?.memoryMbytes ?? 1024;
 
     // Create default storages for this run
     const datasetId = nanoid();
