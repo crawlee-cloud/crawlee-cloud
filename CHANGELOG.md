@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.7] - 2026-06-04
+
+### Added
+
+- **API multi-replica safety via Postgres advisory locks (#47).** Adds `withAdvisoryLock(lockId, work)` primitive in `db/index.ts` with a discriminated union `{ acquired: true, result } | { acquired: false }` return shape and a `LOCK_IDS` registry under the `0xC0DE____` namespace. Applies leader election to four background subsystems so they each execute at most once per tick across N replicas:
+  - **Retention reaper** — refactored to use the helper (behavior-preserving, ~30 lines of inline lock plumbing removed).
+  - **Setup bootstrap** — `setupAdminUser` wrapped in `setupAdminUserGated`. The pre-existing N-replica race that silently accumulated orphan rows in `api_keys` on every deploy (no `UNIQUE(name)` constraint) now goes away.
+  - **Scaler** — `scalingLoop` body wrapped; `isScaling` intra-replica fast-path retained; 3-state `wasLeader` edge logging silent at steady state, loud on transitions, and force-clears to `undefined` on errors so the next successful tick re-establishes the edge.
+  - **Scheduler** — full rewrite: drops per-schedule `cron.schedule()` registrations and the `activeJobs` map / `register|reload|unregister|unregisterAllSchedules` / `getActiveScheduleCount` exports. Adds `runSchedulerTick` that polls the `schedules` table each `SCHEDULER_TICK_SECS` (default 30s) under `LOCK_IDS.scheduler`, fires due schedules and advances `next_run_at` via `cron-parser` (new dep). Routes pre-compute `next_run_at` at POST time so new schedules are fire-eligible from the next tick.
+- **`POST /v2/schedules` cron validation up-front** (#47 follow-up to bot review). PATCH route validates the cron expression _before_ the UPDATE, not after. Previously an invalid cron would persist to the DB and break every subsequent scheduler tick.
+- **Re-enable triggers `next_run_at` recompute** (#47 follow-up). Toggling a schedule from `is_enabled=false` → `true` recomputes `next_run_at` so the schedule doesn't fire immediately on a stale past timestamp.
+
+### Fixed
+
+- **Actor `default_run_options.timeoutSecs` / `memoryMbytes` now propagated to runs (#48).** Reported by a user whose scrapers timed out at exactly 3600s despite the actor being configured with `timeoutSecs: 7200`. Two surfaces:
+  - `POST /v2/acts/:id/runs` defaulted `timeout = 3600, memory = 1024` at destructure time, never consulting `actor.default_run_options`. Now resolves with fall-through: **request body override → actor config → 3600 / 1024 fallback**.
+  - Scheduler's `triggerScheduledRun` omitted `timeout_secs` / `memory_mbytes` from the run INSERT entirely, so scheduled runs always got the DB column defaults regardless of actor config. Now loads `actor.default_run_options` at fire time and binds both columns explicitly. Bails early if the actor was deleted between the schedule firing and the lookup (prevents orphan datasets/KV/queue rows + wasted S3 write).
+- **`CreateActorSchema.defaultRunOptions` now caps `timeoutSecs` (≤ 86400s) and `memoryMbytes` (≤ 16384 MB)** to match `ActorRunSchema`'s per-run caps. Previously uncapped — once #48's run propagation landed, an operator could bypass the run-time guardrail by saving `timeoutSecs: 200000` on the actor. Both schemas now enforce the same limits.
+- **Advisory-lock SQL parameters explicitly cast to `::bigint`** (#47 follow-up). Lock IDs in the `0xC0DE____` namespace exceed `INT4_MAX`; the explicit cast removes any risk of Postgres picking the `int4` overload and throwing "integer out of range" at runtime.
+
+### Security
+
+- **Plaintext containment on bootstrap race.** Closing the multi-replica setup race also closes a related observability footgun: previously N concurrent replicas each tried to create the admin row and runner-api-key row, with all-but-one failing on the unique-violation. The errors were caught and logged at `setup.ts:115` with the bare error object — depending on the pg driver version, that could include the offending SQL in the error message. The lock removes the race entirely; only one replica ever attempts the insert.
+
+### Migration
+
+- **No schema changes.** Existing `schedules` rows with `NULL next_run_at` get a warm-up backfill on first tick (next_run_at is populated, no firing). Maximum ≤ `SCHEDULER_TICK_SECS` delay before normal firing resumes for pre-upgrade rows only.
+
+### Breaking changes (operational)
+
+- **`GET /health/ready` no longer reports `schedulerJobs`.** The field counted in-process per-schedule cron registrations — a concept that doesn't exist in the new poll-based model. Operators wanting enabled-schedule counts should query the DB directly: `SELECT count(*) FROM schedules WHERE is_enabled = true`.
+
+### Deployment notes
+
+- **`PROXY_ENCRYPTION_KEY` and `SCHEDULER_TICK_SECS` must be set identically on every API replica.** Both processes hard-fail in production without `PROXY_ENCRYPTION_KEY`. `SCHEDULER_TICK_SECS` is optional (default 30); inconsistent values across replicas mean leader-election still works but observed tick cadence varies.
+- New deps: `cron-parser@^5` (one transitive-free dep, ~50 kB).
+- Documented in `.env.example` and `.env.secure.example`.
+
+PRs in this release: #47 (multi-replica), #48 (actor default timeout).
+
 ## [0.9.6] - 2026-06-03
 
 ### Added
