@@ -16,8 +16,13 @@ export const CreateActorSchema = z.object({
   defaultRunOptions: z
     .object({
       build: z.string().optional(),
-      timeoutSecs: z.number().int().positive().optional(),
-      memoryMbytes: z.number().int().positive().optional(),
+      // Match the per-run caps in ActorRunSchema (timeout.max(86_400),
+      // memory.max(16_384)). Previously these were uncapped on actor
+      // create, and the fix that now propagates default_run_options to
+      // runs would otherwise let an operator save an actor with e.g.
+      // timeoutSecs: 200000 and bypass the run-time guardrail.
+      timeoutSecs: z.number().int().positive().max(86_400).optional(),
+      memoryMbytes: z.number().int().positive().max(16_384).optional(),
       // Full image reference written by `crc push` (e.g.
       // `ghcr.io/org/repo/actor-foo:latest`). When set, the runner uses
       // this exact value and skips registry-based path construction.

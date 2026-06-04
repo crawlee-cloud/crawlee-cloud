@@ -95,16 +95,30 @@ describe('runSchedulerTick', () => {
         rows: [{ ...baseSchedule, next_run_at: new Date(Date.now() - 1000) }],
       }) // SELECT due
       .mockResolvedValueOnce({ rows: [] }); // UPDATE schedules SET last_run_at, next_run_at
-    mockQuery.mockResolvedValue({ rows: [] });
+    // triggerScheduledRun looks up the actor's default_run_options first;
+    // return a row so the function doesn't bail on the missing-actor path.
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ default_run_options: null }] }) // SELECT actor defaults
+      .mockResolvedValue({ rows: [] }); // datasets / kv / queues / runs INSERTs
 
     await runSchedulerTick();
 
-    expect(mockQuery).toHaveBeenCalledTimes(4);
+    // 1 actor lookup + 4 storage/run INSERTs
+    expect(mockQuery).toHaveBeenCalledTimes(5);
     const insertSqls = mockQuery.mock.calls.map((c) => c[0] as string);
     expect(insertSqls.some((s) => /INSERT INTO datasets/.test(s))).toBe(true);
     expect(insertSqls.some((s) => /INSERT INTO key_value_stores/.test(s))).toBe(true);
     expect(insertSqls.some((s) => /INSERT INTO request_queues/.test(s))).toBe(true);
     expect(insertSqls.some((s) => /INSERT INTO runs/.test(s))).toBe(true);
+
+    // The run INSERT carries timeout_secs and memory_mbytes (3600 / 1024
+    // defaults when the actor has no default_run_options set).
+    const runInsertCall = mockQuery.mock.calls.find((c) =>
+      /INSERT INTO runs/.test(c[0] as string)
+    ) as [string, unknown[]];
+    expect(runInsertCall[0]).toContain('timeout_secs');
+    expect(runInsertCall[1]).toContain(3600);
+    expect(runInsertCall[1]).toContain(1024);
 
     const updateCall = mockClientQuery.mock.calls[1];
     expect(updateCall[0]).toMatch(/UPDATE schedules\s+SET last_run_at = NOW\(\),\s+next_run_at/);

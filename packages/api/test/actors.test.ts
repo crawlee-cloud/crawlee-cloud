@@ -230,6 +230,35 @@ describe('Actor Routes', () => {
       expect(parsed.timeoutSecs).toBe(600);
     });
 
+    it('rejects defaultRunOptions.timeoutSecs above the per-run cap (86400)', async () => {
+      // Cap mismatch fix: CreateActorSchema previously allowed any
+      // positive timeoutSecs, while ActorRunSchema caps explicit run
+      // timeouts at 86400s. Since the same-PR fix now propagates actor
+      // defaults to runs, the uncapped path would let operators bypass
+      // the run-time guardrail. The schema now applies the same cap.
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/acts',
+        payload: {
+          name: 'long-running',
+          defaultRunOptions: { timeoutSecs: 200_000 },
+        },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('rejects defaultRunOptions.memoryMbytes above the per-run cap (16384)', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/acts',
+        payload: {
+          name: 'fat-actor',
+          defaultRunOptions: { memoryMbytes: 100_000 },
+        },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+
     it('persists proxyPassword (encrypted) on create — regression for Codex P2', async () => {
       // The earlier version of this code accepted proxyPassword in
       // CreateActorSchema but the INSERT silently dropped the field.
