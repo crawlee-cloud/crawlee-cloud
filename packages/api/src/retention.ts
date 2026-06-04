@@ -18,19 +18,10 @@
 
 import cron from 'node-cron';
 import type pg from 'pg';
-import { pool } from './db/index.js';
+import { withAdvisoryLock, LOCK_IDS } from './db/index.js';
 import { config } from './config.js';
 import { deleteDatasetS3Prefix, deleteKVStoreS3Prefix } from './storage/s3.js';
 import { redis } from './storage/redis.js';
-
-/**
- * Fixed 32-bit unsigned hex constant identifying the retention reaper's
- * advisory lock. Sent to PG as bigint via pg_try_advisory_lock's bigint
- * overload, since 0xC0DEBEEF exceeds INT4_MAX.
- * MUST NOT collide with any other advisory lock in this codebase. See the
- * registry comment in db/index.ts.
- */
-export const RETENTION_LOCK_ID = 0xc0debeef;
 
 /** Concurrency cap for S3 prefix deletions. */
 const S3_CLEANUP_CONCURRENCY = 10;
@@ -266,74 +257,41 @@ async function runDbPhases(client: pg.PoolClient): Promise<{
 }
 
 /**
- * Run a single reaper tick. Connects, acquires pg_try_advisory_lock,
- * runs the 5 DB phases, releases the lock and connection, then performs
- * S3 cleanup. On unlock failure, destroys the connection so the lock
- * can't leak back into the pool.
+ * Run a single reaper tick. Acquires pg_try_advisory_lock via the shared
+ * helper, runs the 5 DB phases under the lock, then performs S3 cleanup
+ * after the lock and connection are released.
  */
 export async function runReaperTick(): Promise<void> {
   const tickStart = Date.now();
-  const client = await pool.connect();
-  let mustDestroy = false;
-  let phaseResult: Awaited<ReturnType<typeof runDbPhases>> | null = null;
 
-  try {
-    const lock = await client.query<{ pg_try_advisory_lock: boolean }>(
-      'SELECT pg_try_advisory_lock($1)',
-      [RETENTION_LOCK_ID]
-    );
-    if (!lock.rows[0]?.pg_try_advisory_lock) {
-      console.log('[retention] another instance is reaping; skip');
-      return;
-    }
-    try {
-      phaseResult = await runDbPhases(client);
-    } finally {
-      try {
-        const unlockResult = await client.query<{ pg_advisory_unlock: boolean }>(
-          'SELECT pg_advisory_unlock($1)',
-          [RETENTION_LOCK_ID]
-        );
-        if (!unlockResult.rows[0]?.pg_advisory_unlock) {
-          console.error(
-            '[retention] pg_advisory_unlock returned false — lock was not held by this session'
-          );
-        }
-      } catch (err) {
-        mustDestroy = true;
-        console.error(
-          `[retention] pg_advisory_unlock failed; destroying connection: ${(err as Error).message}`
-        );
-      }
-    }
-  } finally {
-    if (mustDestroy) {
-      client.release(new Error('advisory unlock failed; connection destroyed'));
-    } else {
-      client.release();
-    }
+  const r = await withAdvisoryLock(LOCK_IDS.retention, async (client) => {
+    return runDbPhases(client);
+  });
+
+  if (!r.acquired) {
+    console.log('[retention] another instance is reaping; skip');
+    return;
   }
 
   // The connection is back in the pool — S3 cleanup no longer blocks DB work.
-  if (phaseResult) {
-    await cleanupDatasetS3Prefixes(phaseResult.datasets);
-    await cleanupKVStoreS3Prefixes(phaseResult.kvStores);
+  const phaseResult = r.result;
+  await cleanupDatasetS3Prefixes(phaseResult.datasets);
+  await cleanupKVStoreS3Prefixes(phaseResult.kvStores);
 
-    const elapsed = Date.now() - tickStart;
-    console.log(
-      `[retention] tick complete elapsed=${elapsed}ms ` +
-        `runs=${phaseResult.runs.length} datasets=${phaseResult.datasets.length} ` +
-        `kv=${phaseResult.kvStores.length} queues=${phaseResult.requestQueues.length} ` +
-        `tombstones-pruned=${phaseResult.tombstones.length}`
-    );
-    try {
-      await redis.hset('retention:last-tick', {
-        at: new Date().toISOString(),
-        elapsed_ms: String(elapsed),
-      });
-    } catch (err) {
-      console.error(`[retention] failed to write last-tick to Redis: ${(err as Error).message}`);
-    }
+  const elapsed = Date.now() - tickStart;
+  console.log(
+    `[retention] tick complete elapsed=${elapsed}ms ` +
+      `runs=${phaseResult.runs.length} datasets=${phaseResult.datasets.length} ` +
+      `kv=${phaseResult.kvStores.length} queues=${phaseResult.requestQueues.length} ` +
+      `tombstones-pruned=${phaseResult.tombstones.length}`
+  );
+  try {
+    await redis.hset('retention:last-tick', {
+      at: new Date().toISOString(),
+      elapsed_ms: String(elapsed),
+    });
+  } catch (err) {
+    console.error(`[retention] failed to write last-tick to Redis: ${(err as Error).message}`);
   }
 }
 

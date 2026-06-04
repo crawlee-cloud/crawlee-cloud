@@ -7,7 +7,6 @@ import { pool } from './db/index.js';
 import { redis } from './storage/redis.js';
 import { s3 } from './storage/s3.js';
 import { config } from './config.js';
-import { getActiveScheduleCount } from './scheduler.js';
 import { HeadBucketCommand } from '@aws-sdk/client-s3';
 
 export interface CheckResult {
@@ -74,7 +73,6 @@ export function registerHealthRoutes(app: FastifyInstance): void {
     const body = {
       status: allOk ? 'ok' : 'degraded',
       checks,
-      schedulerJobs: getActiveScheduleCount(),
     };
 
     return reply.status(allOk ? 200 : 503).send(body);

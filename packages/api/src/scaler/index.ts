@@ -7,7 +7,7 @@
  * single-Droplet or docker-compose deployments.
  */
 
-import { query } from '../db/index.js';
+import { query, withAdvisoryLock, LOCK_IDS } from '../db/index.js';
 import { redis } from '../storage/redis.js';
 import type { RunnerProvider, RunnerInfo, ScalerConfig } from './types.js';
 import { NoopProvider } from './providers/noop.js';
@@ -18,6 +18,7 @@ let provider: RunnerProvider;
 let config: ScalerConfig;
 let intervalHandle: ReturnType<typeof setInterval> | null = null;
 let isScaling = false;
+let wasLeader: boolean | undefined = undefined;
 
 /** Runner state tracked in Redis (fast reads) and synced from provider */
 const RUNNERS_KEY = 'scaler:runners';
@@ -407,58 +408,66 @@ async function reapDeadRunners(runners: RunnerInfo[]): Promise<RunnerInfo[]> {
 }
 
 async function scalingLoop(): Promise<void> {
-  if (isScaling) return; // prevent overlapping checks
+  if (isScaling) return; // intra-replica re-entrancy fast-path
   isScaling = true;
-
   try {
-    const stats = await getQueueStats();
-    let runners = await getActiveRunners();
-    runners = await reapDeadRunners(runners); // remove zombies before counting capacity
-    const currentCount = runners.length;
-    const desired = calculateDesiredRunners(stats, currentCount, config);
+    const r = await withAdvisoryLock(LOCK_IDS.scaler, async () => {
+      const stats = await getQueueStats();
+      let runners = await getActiveRunners();
+      runners = await reapDeadRunners(runners);
+      const currentCount = runners.length;
+      const desired = calculateDesiredRunners(stats, currentCount, config);
 
-    // Track activity for idle timeout. TTL is 4x idleTimeoutSecs so the key
-    // outlives a normal idle window but doesn't accumulate forever in Redis
-    // if the scaler is later disabled.
-    if (stats.total > 0) {
-      await redis.set(
-        LAST_ACTIVITY_KEY,
-        Date.now().toString(),
-        'EX',
-        Math.max(60, config.idleTimeoutSecs * 4)
-      );
-    }
-
-    if (desired > currentCount) {
-      await scaleUp(desired - currentCount);
-    } else if (desired < currentCount) {
-      // Check idle timeout before scaling down
-      const lastActivity = await redis.get(LAST_ACTIVITY_KEY);
-      const idleMs = lastActivity ? Date.now() - parseInt(lastActivity, 10) : Infinity;
-
-      if (idleMs > config.idleTimeoutSecs * 1000) {
-        await scaleDown(runners, currentCount - desired);
-      } else {
-        console.log(
-          `[Scaler] Queue empty but idle timeout not reached (${Math.round(idleMs / 1000)}s / ${config.idleTimeoutSecs}s)`
+      if (stats.total > 0) {
+        await redis.set(
+          LAST_ACTIVITY_KEY,
+          Date.now().toString(),
+          'EX',
+          Math.max(60, config.idleTimeoutSecs * 4)
         );
       }
-    }
 
-    // Log state periodically
-    if (stats.total > 0 || currentCount > config.minRunners) {
-      console.log(
-        `[Scaler] Queue: ${stats.ready} ready, ${stats.running} running | Runners: ${currentCount}/${config.maxRunners} (desired: ${desired})`
-      );
-    }
+      if (desired > currentCount) {
+        await scaleUp(desired - currentCount);
+      } else if (desired < currentCount) {
+        const lastActivity = await redis.get(LAST_ACTIVITY_KEY);
+        const idleMs = lastActivity ? Date.now() - parseInt(lastActivity, 10) : Infinity;
+        if (idleMs > config.idleTimeoutSecs * 1000) {
+          await scaleDown(runners, currentCount - desired);
+        } else {
+          console.log(
+            `[Scaler] Queue empty but idle timeout not reached (${Math.round(idleMs / 1000)}s / ${config.idleTimeoutSecs}s)`
+          );
+        }
+      }
 
-    // Store runner state in Redis for API visibility. TTL must outlive the
-    // poll interval — otherwise getScalerStatus reports an empty list during
-    // the gap between expiry and the next tick.
-    const runnersTtl = Math.max(120, config.pollIntervalSecs * 4);
-    await redis.set(RUNNERS_KEY, JSON.stringify(runners), 'EX', runnersTtl);
+      if (stats.total > 0 || currentCount > config.minRunners) {
+        console.log(
+          `[Scaler] Queue: ${stats.ready} ready, ${stats.running} running | Runners: ${currentCount}/${config.maxRunners} (desired: ${desired})`
+        );
+      }
+
+      const runnersTtl = Math.max(120, config.pollIntervalSecs * 4);
+      await redis.set(RUNNERS_KEY, JSON.stringify(runners), 'EX', runnersTtl);
+      return true;
+    });
+
+    const isNowLeader = r.acquired;
+    if (wasLeader === undefined) {
+      console.log(`[Scaler] ${isNowLeader ? 'became leader' : 'joining as follower'}`);
+    } else if (isNowLeader && !wasLeader) {
+      console.log('[Scaler] became leader');
+    } else if (!isNowLeader && wasLeader) {
+      console.log('[Scaler] lost leadership');
+    }
+    wasLeader = isNowLeader;
   } catch (err) {
     console.error('[Scaler] Error in scaling loop:', (err as Error).message);
+    // On error, force a re-edge by clearing wasLeader. Without this, an
+    // error during the lock attempt or work() leaves wasLeader stale, and
+    // the next successful tick could miss a became-leader / lost-leadership
+    // log line.
+    wasLeader = undefined;
   } finally {
     isScaling = false;
   }

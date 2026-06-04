@@ -45,6 +45,11 @@ export interface Config {
   retentionTombstoneDays: number;
   retentionBatchSize: number;
   retentionCron: string;
+
+  // Scheduler tick interval. Drives the poll-based scheduler that
+  // replaces the per-schedule cron.schedule() registrations. See
+  // docs/superpowers/specs/2026-06-03-api-multi-replica-design.md §2.
+  schedulerTickSecs: number;
 }
 
 const isDevelopment = process.env.NODE_ENV !== 'production';
@@ -146,4 +151,6 @@ export const config: Config = {
   retentionTombstoneDays: envIntPositive('RETENTION_TOMBSTONE_DAYS', 365),
   retentionBatchSize: envIntPositive('RETENTION_BATCH_SIZE', 500),
   retentionCron: envCron('RETENTION_CRON', '0 3 * * *'),
+
+  schedulerTickSecs: envIntPositive('SCHEDULER_TICK_SECS', 30),
 };

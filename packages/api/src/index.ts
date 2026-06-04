@@ -21,7 +21,7 @@ import { schedulesRoutes } from './routes/schedules.js';
 import { scalerRoutes } from './routes/scaler.js';
 import { systemRoutes } from './routes/system.js';
 import { requireAdmin } from './auth/middleware.js';
-import { setupAdminUser } from './setup.js';
+import { setupAdminUserGated } from './setup-gated.js';
 import { initScheduler } from './scheduler.js';
 import { initRetention, unregisterRetention } from './retention.js';
 import { initScaler } from './scaler/index.js';
@@ -191,8 +191,8 @@ async function start() {
   // Initialize Redis
   await initRedis();
 
-  // Setup admin user from env vars
-  await setupAdminUser();
+  // Setup admin user from env vars (leader-elected for multi-replica safety)
+  await setupAdminUserGated();
 
   // Start cron scheduler
   await initScheduler();
@@ -225,8 +225,8 @@ function setupGracefulShutdown(): void {
 
     try {
       // 1. Stop scheduler, retention reaper, and scaler
-      const { unregisterAllSchedules } = await import('./scheduler.js');
-      unregisterAllSchedules();
+      const { stopScheduler } = await import('./scheduler.js');
+      stopScheduler();
       unregisterRetention();
       const { stopScaler } = await import('./scaler/index.js');
       stopScaler();

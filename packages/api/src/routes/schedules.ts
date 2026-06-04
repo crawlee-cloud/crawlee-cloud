@@ -8,7 +8,7 @@ import { CreateScheduleSchema, UpdateScheduleSchema } from '../schemas/schedules
 import { query } from '../db/index.js';
 import { appendSearchCondition } from '../db/search.js';
 import { authenticate } from '../auth/middleware.js';
-import { reloadSchedule, unregisterSchedule } from '../scheduler.js';
+import { computeNextRun } from '../scheduler.js';
 
 interface ScheduleRow {
   id: string;
@@ -56,10 +56,21 @@ export const schedulesRoutes: FastifyPluginAsync = async (fastify) => {
 
     const actorId = (actor.rows[0] as { id: string }).id;
 
+    // Compute next_run_at so the next scheduler tick can pick it up without
+    // a warm-up cycle. Invalid cron expressions are rejected at the route
+    // boundary rather than silently delaying the first fire.
+    let nextRunAt: Date;
+    try {
+      nextRunAt = computeNextRun(data.cronExpression, data.timezone ?? 'UTC');
+    } catch (err) {
+      reply.status(400);
+      return { error: { message: `Invalid cron expression: ${(err as Error).message}` } };
+    }
+
     const id = nanoid();
     const result = await query<ScheduleRow>(
-      `INSERT INTO schedules (id, user_id, actor_id, name, cron_expression, timezone, is_enabled, input)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO schedules (id, user_id, actor_id, name, cron_expression, timezone, is_enabled, input, next_run_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
       [
         id,
@@ -70,10 +81,9 @@ export const schedulesRoutes: FastifyPluginAsync = async (fastify) => {
         data.timezone ?? 'UTC',
         data.isEnabled ?? true,
         data.input ? JSON.stringify(data.input) : null,
+        nextRunAt,
       ]
     );
-
-    await reloadSchedule(id);
 
     reply.status(201);
     return { data: formatSchedule(result.rows[0]!) };
@@ -219,7 +229,23 @@ export const schedulesRoutes: FastifyPluginAsync = async (fastify) => {
       return { error: { type: 'record-not-found', message: 'Schedule not found' } };
     }
 
-    await reloadSchedule(request.params.scheduleId);
+    // If the cron expression or timezone changed, recompute next_run_at so
+    // the next scheduler tick picks the new cadence up. Other fields
+    // (name, input, actorId, isEnabled toggling) don't affect when it fires.
+    if (updates.cronExpression !== undefined || updates.timezone !== undefined) {
+      const fresh = result.rows[0];
+      let nextRunAt: Date;
+      try {
+        nextRunAt = computeNextRun(fresh.cron_expression, fresh.timezone);
+      } catch (err) {
+        reply.status(400);
+        return { error: { message: `Invalid cron expression: ${(err as Error).message}` } };
+      }
+      await query('UPDATE schedules SET next_run_at = $1, modified_at = NOW() WHERE id = $2', [
+        nextRunAt,
+        request.params.scheduleId,
+      ]);
+    }
 
     return { data: formatSchedule(result.rows[0]) };
   });
@@ -241,7 +267,9 @@ export const schedulesRoutes: FastifyPluginAsync = async (fastify) => {
         return { error: { type: 'record-not-found', message: 'Schedule not found' } };
       }
 
-      unregisterSchedule(request.params.scheduleId);
+      // No need to unregister an in-process cron job — the next scheduler
+      // tick reads `is_enabled = true` from the DB and naturally ignores
+      // deleted rows.
 
       reply.status(204);
     }

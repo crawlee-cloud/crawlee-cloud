@@ -21,20 +21,36 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-const { queryMock, redisGet, redisSet, redisScan, redisMget, noopCreate, noopDestroy, noopList } =
-  vi.hoisted(() => ({
-    queryMock: vi.fn(),
-    redisGet: vi.fn(),
-    redisSet: vi.fn(),
-    redisScan: vi.fn(),
-    redisMget: vi.fn(),
-    noopCreate: vi.fn(),
-    noopDestroy: vi.fn(),
-    noopList: vi.fn(),
-  }));
+const {
+  queryMock,
+  redisGet,
+  redisSet,
+  redisScan,
+  redisMget,
+  noopCreate,
+  noopDestroy,
+  noopList,
+  withAdvisoryLockMock,
+} = vi.hoisted(() => ({
+  queryMock: vi.fn(),
+  redisGet: vi.fn(),
+  redisSet: vi.fn(),
+  redisScan: vi.fn(),
+  redisMget: vi.fn(),
+  noopCreate: vi.fn(),
+  noopDestroy: vi.fn(),
+  noopList: vi.fn(),
+  // Default: leader path — runs the work and returns its result.
+  withAdvisoryLockMock: vi.fn(async (_id: number, work: (c: never) => Promise<unknown>) => ({
+    acquired: true,
+    result: await work({} as never),
+  })),
+}));
 
 vi.mock('../src/db/index.js', () => ({
   query: queryMock,
+  withAdvisoryLock: withAdvisoryLockMock,
+  LOCK_IDS: { scaler: 0xc0de0002, retention: 0xc0debeef, setup: 0xc0de0001, scheduler: 0xc0de0003 },
 }));
 
 vi.mock('../src/storage/redis.js', () => ({
@@ -425,5 +441,92 @@ describe('scaler loop', () => {
       const activityCall = redisSet.mock.calls.find((c) => c[0] === 'scaler:last-activity');
       expect(activityCall).toBeUndefined();
     });
+  });
+});
+
+describe('scalingLoop — leader election', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    withAdvisoryLockMock.mockReset();
+    // Restore the leader-path default for tests that don't override
+    withAdvisoryLockMock.mockImplementation(
+      async (_id: number, work: (c: never) => Promise<unknown>) => ({
+        acquired: true,
+        result: await work({} as never),
+      })
+    );
+
+    queryMock.mockResolvedValue({ rows: [] });
+    redisScan.mockResolvedValue(scanResult([]));
+    redisMget.mockResolvedValue([]);
+    redisGet.mockResolvedValue(null);
+    redisSet.mockResolvedValue('OK');
+    noopList.mockResolvedValue([]);
+    noopCreate.mockImplementation(async () => ({
+      id: `noop-${Math.random().toString(36).slice(2, 8)}`,
+      ip: '',
+      status: 'ready',
+      createdAt: new Date(),
+      activeRuns: 0,
+    }));
+    noopDestroy.mockResolvedValue(undefined);
+
+    process.env.SCALER_PROVIDER = 'noop';
+    process.env.SCALER_MIN_RUNNERS = '0';
+    process.env.SCALER_MAX_RUNNERS = '5';
+    process.env.SCALER_RUNS_PER_RUNNER = '2';
+    process.env.SCALER_SCALE_UP_THRESHOLD = '0';
+    process.env.SCALER_POLL_INTERVAL_SECS = '9999';
+    process.env.SCALER_IDLE_TIMEOUT_SECS = '300';
+  });
+
+  it('follower path: no provider calls, no redis writes', async () => {
+    withAdvisoryLockMock.mockResolvedValue({ acquired: false });
+    // Re-import so wasLeader resets to undefined for this test
+    vi.resetModules();
+    const { initScaler: initFresh, stopScaler: stopFresh } = await import('../src/scaler/index.js');
+
+    process.env.SCALER_ENABLED = 'true';
+    await initFresh();
+
+    expect(noopCreate).not.toHaveBeenCalled();
+    expect(noopDestroy).not.toHaveBeenCalled();
+    expect(redisSet).not.toHaveBeenCalled();
+    stopFresh();
+  });
+
+  it('first observation logs "became leader" when acquired', async () => {
+    vi.resetModules();
+    const logs: string[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((m) => {
+      logs.push(typeof m === 'string' ? m : String(m));
+    });
+    queryMock.mockResolvedValue({ rows: [{ ready: 0, running: 0, total: 0 }] });
+    redisScan.mockResolvedValue(scanResult([]));
+    const { initScaler: initFresh, stopScaler: stopFresh } = await import('../src/scaler/index.js');
+
+    process.env.SCALER_ENABLED = 'true';
+    await initFresh();
+
+    expect(logs.some((l) => l.includes('[Scaler] became leader'))).toBe(true);
+    logSpy.mockRestore();
+    stopFresh();
+  });
+
+  it('first observation logs "joining as follower" when not acquired', async () => {
+    vi.resetModules();
+    withAdvisoryLockMock.mockResolvedValue({ acquired: false });
+    const logs: string[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((m) => {
+      logs.push(typeof m === 'string' ? m : String(m));
+    });
+    const { initScaler: initFresh, stopScaler: stopFresh } = await import('../src/scaler/index.js');
+
+    process.env.SCALER_ENABLED = 'true';
+    await initFresh();
+
+    expect(logs.some((l) => l.includes('[Scaler] joining as follower'))).toBe(true);
+    logSpy.mockRestore();
+    stopFresh();
   });
 });

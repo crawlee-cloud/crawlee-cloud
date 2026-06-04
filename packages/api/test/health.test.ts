@@ -30,10 +30,8 @@ vi.mock('../src/config.js', () => ({
   config: { s3Bucket: 'test-bucket' },
 }));
 
-// Mock scheduler
-vi.mock('../src/scheduler.js', () => ({
-  getActiveScheduleCount: () => 3,
-}));
+// (No scheduler mock needed — health.ts no longer imports from scheduler.js
+// after the poll-based rewrite removed schedulerJobs from /health/ready.)
 
 import { registerHealthRoutes } from '../src/health.js';
 
@@ -71,7 +69,10 @@ describe('Health Check Routes', () => {
       expect(body.checks.db.status).toBe('ok');
       expect(body.checks.redis.status).toBe('ok');
       expect(body.checks.s3.status).toBe('ok');
-      expect(body.schedulerJobs).toBe(3);
+      // body.schedulerJobs no longer exists — the field reported the count
+      // of in-process per-schedule cron registrations, which the poll-based
+      // scheduler doesn't have.
+      expect(body).not.toHaveProperty('schedulerJobs');
     });
 
     it('should return 503 when database is down', async () => {

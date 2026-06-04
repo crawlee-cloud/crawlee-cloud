@@ -1,12 +1,20 @@
 /**
- * Cron scheduler — loads enabled schedules from DB,
- * registers node-cron jobs, and creates runs on tick.
+ * Poll-based scheduler — replaces per-schedule cron.schedule()
+ * registrations with one global tick loop that polls the schedules
+ * table every SCHEDULER_TICK_SECS. The leader (winner of the
+ * scheduler advisory lock) fires due schedules and advances
+ * next_run_at via cron-parser. Followers no-op.
+ *
+ * See docs/superpowers/specs/2026-06-03-api-multi-replica-design.md §2
+ * for the rationale (multi-replica safety + propagation of schedule
+ * mutations without per-replica state).
  */
 
-import cron from 'node-cron';
+import { CronExpressionParser } from 'cron-parser';
 import { nanoid } from 'nanoid';
-import { query } from './db/index.js';
+import { query, withAdvisoryLock, LOCK_IDS } from './db/index.js';
 import { redis } from './storage/redis.js';
+import { config } from './config.js';
 
 interface ScheduleRow {
   id: string;
@@ -15,63 +23,85 @@ interface ScheduleRow {
   cron_expression: string;
   timezone: string;
   input: unknown;
+  last_run_at: Date | null;
+  next_run_at: Date | null;
 }
 
-const activeJobs = new Map<string, cron.ScheduledTask>();
+let tickHandle: ReturnType<typeof setInterval> | null = null;
 
-/**
- * Initialize scheduler: load all enabled schedules and register cron jobs.
- */
+export function computeNextRun(expr: string, tz: string | null | undefined): Date {
+  return CronExpressionParser.parse(expr, { tz: tz || 'UTC' })
+    .next()
+    .toDate();
+}
+
 export async function initScheduler(): Promise<void> {
-  const result = await query<ScheduleRow>('SELECT * FROM schedules WHERE is_enabled = true');
-
-  for (const schedule of result.rows) {
-    registerSchedule(schedule);
-  }
-
-  console.log(`Scheduler initialized with ${result.rows.length} active schedules`);
+  const intervalSecs = config.schedulerTickSecs;
+  console.log(`[Scheduler] Starting tick every ${String(intervalSecs)}s`);
+  // Initial tick so a fresh deploy doesn't wait the full interval. Tick
+  // errors must be surfaced — otherwise a transient pool exhaustion or
+  // PG flap would silently freeze all schedule firing.
+  runSchedulerTick().catch((err: unknown) => {
+    console.error('[Scheduler] tick failed:', err);
+  });
+  tickHandle = setInterval(() => {
+    runSchedulerTick().catch((err: unknown) => {
+      console.error('[Scheduler] tick failed:', err);
+    });
+  }, intervalSecs * 1000);
 }
 
-/**
- * Register a single schedule as a cron job.
- */
-export function registerSchedule(schedule: ScheduleRow): void {
-  unregisterSchedule(schedule.id);
+export function stopScheduler(): void {
+  if (tickHandle) {
+    clearInterval(tickHandle);
+    tickHandle = null;
+  }
+}
 
-  if (!cron.validate(schedule.cron_expression)) {
-    console.error(
-      `Invalid cron expression for schedule ${schedule.id}: ${schedule.cron_expression}`
+export async function runSchedulerTick(): Promise<void> {
+  const r = await withAdvisoryLock(LOCK_IDS.scheduler, async (client) => {
+    const due = await client.query<ScheduleRow>(
+      `SELECT id, user_id, actor_id, cron_expression, timezone, input,
+              last_run_at, next_run_at
+         FROM schedules
+        WHERE is_enabled = true
+          AND (next_run_at IS NULL OR next_run_at <= NOW())`
     );
-    return;
-  }
 
-  const task = cron.schedule(
-    schedule.cron_expression,
-    () => {
-      void triggerScheduledRun(schedule);
-    },
-    {
-      timezone: schedule.timezone || 'UTC',
+    for (const s of due.rows) {
+      let nextRun: Date;
+      try {
+        nextRun = computeNextRun(s.cron_expression, s.timezone);
+      } catch (err) {
+        console.error(
+          `[Scheduler] Invalid cron expression for schedule ${s.id}: ${s.cron_expression} (${(err as Error).message})`
+        );
+        continue;
+      }
+
+      if (s.next_run_at === null) {
+        // Warm-up: backfill next_run_at without firing. Legacy rows from
+        // pre-multi-replica deploys land here on first contact.
+        await client.query(
+          'UPDATE schedules SET next_run_at = $1, modified_at = NOW() WHERE id = $2',
+          [nextRun, s.id]
+        );
+        continue;
+      }
+
+      await triggerScheduledRun(s);
+      await client.query(
+        `UPDATE schedules
+           SET last_run_at = NOW(), next_run_at = $1, modified_at = NOW()
+         WHERE id = $2`,
+        [nextRun, s.id]
+      );
     }
-  );
-
-  activeJobs.set(schedule.id, task);
+    return due.rows.length;
+  });
+  if (!r.acquired) return;
 }
 
-/**
- * Unregister (stop) a schedule's cron job.
- */
-export function unregisterSchedule(scheduleId: string): void {
-  const existing = activeJobs.get(scheduleId);
-  if (existing) {
-    void existing.stop();
-    activeJobs.delete(scheduleId);
-  }
-}
-
-/**
- * Create a new run when a schedule fires.
- */
 async function triggerScheduledRun(schedule: ScheduleRow): Promise<void> {
   try {
     const runId = nanoid();
@@ -79,7 +109,6 @@ async function triggerScheduledRun(schedule: ScheduleRow): Promise<void> {
     const kvStoreId = nanoid();
     const requestQueueId = nanoid();
 
-    // Create default storages
     await query('INSERT INTO datasets (id, user_id) VALUES ($1, $2)', [
       datasetId,
       schedule.user_id,
@@ -93,61 +122,19 @@ async function triggerScheduledRun(schedule: ScheduleRow): Promise<void> {
       schedule.user_id,
     ]);
 
-    // Store input in KV store
     const { putKVRecord } = await import('./storage/s3.js');
     await putKVRecord(kvStoreId, 'INPUT', JSON.stringify(schedule.input ?? {}), 'application/json');
 
-    // Create run
     await query(
       `INSERT INTO runs (id, actor_id, user_id, status, default_dataset_id, default_key_value_store_id, default_request_queue_id)
        VALUES ($1, $2, $3, 'READY', $4, $5, $6)`,
       [runId, schedule.actor_id, schedule.user_id, datasetId, kvStoreId, requestQueueId]
     );
 
-    // Update schedule timestamps
-    await query('UPDATE schedules SET last_run_at = NOW(), modified_at = NOW() WHERE id = $1', [
-      schedule.id,
-    ]);
-
-    // Notify runner
     await redis.publish('run:new', runId);
 
     console.log(`Schedule ${schedule.id} triggered run ${runId} for actor ${schedule.actor_id}`);
   } catch (err) {
     console.error(`Schedule ${schedule.id} failed to trigger run:`, err);
   }
-}
-
-/**
- * Reload a single schedule (called after CRUD operations).
- */
-export async function reloadSchedule(scheduleId: string): Promise<void> {
-  const result = await query<ScheduleRow>(
-    'SELECT * FROM schedules WHERE id = $1 AND is_enabled = true',
-    [scheduleId]
-  );
-
-  if (result.rows[0]) {
-    registerSchedule(result.rows[0]);
-  } else {
-    unregisterSchedule(scheduleId);
-  }
-}
-
-/**
- * Unregister (stop) all scheduled cron jobs.
- * Used during graceful shutdown.
- */
-export function unregisterAllSchedules(): void {
-  for (const [id, task] of activeJobs) {
-    void task.stop();
-    activeJobs.delete(id);
-  }
-}
-
-/**
- * Get count of active cron jobs (for health checks).
- */
-export function getActiveScheduleCount(): number {
-  return activeJobs.size;
 }

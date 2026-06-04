@@ -30,8 +30,10 @@ vi.mock('../src/storage/redis.js', () => ({
 }));
 
 vi.mock('../src/scheduler.js', () => ({
-  reloadSchedule: vi.fn(),
-  unregisterSchedule: vi.fn(),
+  // computeNextRun is the only scheduler.js function the routes call now.
+  // Return a fixed future Date so the POST/PATCH handlers can include it
+  // in the INSERT/UPDATE without computing real cron semantics in tests.
+  computeNextRun: vi.fn(() => new Date(Date.now() + 60_000)),
 }));
 
 const createScheduleRow = (overrides = {}) => ({
@@ -104,6 +106,17 @@ describe('Schedule Routes', () => {
       expect(body.data.name).toBe('My Schedule');
       expect(body.data.cronExpression).toBe('0 * * * *');
       expect(body.data.isEnabled).toBe(true);
+
+      // POST must include a future Date in next_run_at so the next
+      // scheduler tick fires without a warm-up cycle.
+      const insertCall = mockQuery.mock.calls[1] as [string, unknown[]];
+      const insertSql = insertCall[0];
+      expect(insertSql).toContain('next_run_at');
+      // Last bind param is next_run_at (per INSERT column order in route)
+      const insertArgs = insertCall[1];
+      const nextRunAtArg = insertArgs[insertArgs.length - 1];
+      expect(nextRunAtArg).toBeInstanceOf(Date);
+      expect((nextRunAtArg as Date).getTime()).toBeGreaterThan(Date.now());
     });
 
     it('should return 404 when actor not found', async () => {
