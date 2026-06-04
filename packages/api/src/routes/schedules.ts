@@ -184,6 +184,40 @@ export const schedulesRoutes: FastifyPluginAsync = async (fastify) => {
       updates.actorId = (actor.rows[0] as { id: string }).id;
     }
 
+    // Pre-validation: when cron_expression or timezone is changing, OR
+    // when isEnabled is being flipped to true, we need a freshly-computed
+    // next_run_at folded into the SAME UPDATE — so a bad cron value never
+    // persists to the DB, and a re-enabled schedule doesn't inherit a
+    // stale (past) next_run_at that would cause it to fire immediately.
+    //
+    // Gemini bot review on PR #47:
+    //   - Critical: validate cron BEFORE the UPDATE, not after.
+    //   - High: recompute next_run_at when isEnabled flips false → true.
+    const needsRecompute =
+      updates.cronExpression !== undefined ||
+      updates.timezone !== undefined ||
+      updates.isEnabled === true;
+
+    let recomputedNextRunAt: Date | null = null;
+    if (needsRecompute) {
+      const existing = await query<{ cron_expression: string; timezone: string }>(
+        'SELECT cron_expression, timezone FROM schedules WHERE id = $1 AND user_id = $2',
+        [scheduleId, request.user!.id]
+      );
+      if (!existing.rows[0]) {
+        reply.status(404);
+        return { error: { type: 'record-not-found', message: 'Schedule not found' } };
+      }
+      const effectiveCron = updates.cronExpression ?? existing.rows[0].cron_expression;
+      const effectiveTz = updates.timezone ?? existing.rows[0].timezone;
+      try {
+        recomputedNextRunAt = computeNextRun(effectiveCron, effectiveTz);
+      } catch (err) {
+        reply.status(400);
+        return { error: { message: `Invalid cron expression: ${(err as Error).message}` } };
+      }
+    }
+
     const setClauses: string[] = ['modified_at = NOW()'];
     const values: unknown[] = [];
     let paramIndex = 1;
@@ -212,6 +246,10 @@ export const schedulesRoutes: FastifyPluginAsync = async (fastify) => {
       setClauses.push(`input = $${paramIndex++}`);
       values.push(JSON.stringify(updates.input));
     }
+    if (recomputedNextRunAt !== null) {
+      setClauses.push(`next_run_at = $${paramIndex++}`);
+      values.push(recomputedNextRunAt);
+    }
 
     values.push(scheduleId);
 
@@ -227,24 +265,6 @@ export const schedulesRoutes: FastifyPluginAsync = async (fastify) => {
     if (!result.rows[0]) {
       reply.status(404);
       return { error: { type: 'record-not-found', message: 'Schedule not found' } };
-    }
-
-    // If the cron expression or timezone changed, recompute next_run_at so
-    // the next scheduler tick picks the new cadence up. Other fields
-    // (name, input, actorId, isEnabled toggling) don't affect when it fires.
-    if (updates.cronExpression !== undefined || updates.timezone !== undefined) {
-      const fresh = result.rows[0];
-      let nextRunAt: Date;
-      try {
-        nextRunAt = computeNextRun(fresh.cron_expression, fresh.timezone);
-      } catch (err) {
-        reply.status(400);
-        return { error: { message: `Invalid cron expression: ${(err as Error).message}` } };
-      }
-      await query('UPDATE schedules SET next_run_at = $1, modified_at = NOW() WHERE id = $2', [
-        nextRunAt,
-        request.params.scheduleId,
-      ]);
     }
 
     return { data: formatSchedule(result.rows[0]) };

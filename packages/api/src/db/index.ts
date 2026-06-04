@@ -127,8 +127,13 @@ export async function withAdvisoryLock<T>(
   let acquired = false;
   let unlockError: Error | null = null;
   try {
+    // Explicit ::bigint cast: lock IDs in our 0xC0DE____ namespace exceed
+    // INT4_MAX (e.g. 0xC0DEBEEF = 3,235,823,343). Without the cast,
+    // Postgres can pick the int4 overload of pg_try_advisory_lock and
+    // throw "integer out of range" at runtime. Defensive — flagged by
+    // bot review on PR #47.
     const r = await client.query<{ pg_try_advisory_lock: boolean }>(
-      'SELECT pg_try_advisory_lock($1)',
+      'SELECT pg_try_advisory_lock($1::bigint)',
       [lockId]
     );
     acquired = r.rows[0]?.pg_try_advisory_lock === true;
@@ -141,7 +146,7 @@ export async function withAdvisoryLock<T>(
     } finally {
       try {
         const u = await client.query<{ pg_advisory_unlock: boolean }>(
-          'SELECT pg_advisory_unlock($1)',
+          'SELECT pg_advisory_unlock($1::bigint)',
           [lockId]
         );
         if (u.rows[0]?.pg_advisory_unlock !== true) {

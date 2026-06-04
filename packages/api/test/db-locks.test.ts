@@ -43,10 +43,10 @@ describe('withAdvisoryLock', () => {
 
     expect(r).toEqual({ acquired: true, result: 'payload' });
     expect(work).toHaveBeenCalledOnce();
-    expect(mockQuery).toHaveBeenNthCalledWith(1, 'SELECT pg_try_advisory_lock($1)', [
+    expect(mockQuery).toHaveBeenNthCalledWith(1, 'SELECT pg_try_advisory_lock($1::bigint)', [
       LOCK_IDS.retention,
     ]);
-    expect(mockQuery).toHaveBeenNthCalledWith(2, 'SELECT pg_advisory_unlock($1)', [
+    expect(mockQuery).toHaveBeenNthCalledWith(2, 'SELECT pg_advisory_unlock($1::bigint)', [
       LOCK_IDS.retention,
     ]);
     expect(mockRelease).toHaveBeenCalledWith(); // released cleanly, no error arg
@@ -70,7 +70,9 @@ describe('withAdvisoryLock', () => {
     const work = vi.fn().mockRejectedValue(new Error('work blew up'));
 
     await expect(withAdvisoryLock(LOCK_IDS.setup, work)).rejects.toThrow('work blew up');
-    expect(mockQuery).toHaveBeenNthCalledWith(2, 'SELECT pg_advisory_unlock($1)', [LOCK_IDS.setup]);
+    expect(mockQuery).toHaveBeenNthCalledWith(2, 'SELECT pg_advisory_unlock($1::bigint)', [
+      LOCK_IDS.setup,
+    ]);
     expect(mockRelease).toHaveBeenCalledWith();
   });
 
