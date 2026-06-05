@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.8] - 2026-06-05
+
+### Fixed
+
+- **`crc push` now forwards `actor.json` `defaultRunOptions` to the API (#50).** This was the real root cause behind reports that v0.9.7's "actor default_run_options propagation" fix didn't resolve 3600s scraper timeouts. End-to-end trace found the API fix at run-create was correct, but the CLI had two compounding bugs:
+  - `ActorJson` interface didn't model `defaultRunOptions` at all (TS stripped the field).
+  - Push payload hard-coded `defaultRunOptions: { image, envVars }` and never forwarded `timeoutSecs` / `memoryMbytes` / `build` from `actor.json`.
+    So `actor.default_run_options` in the DB stored only `{image, envVars}` and the API correctly fell through to the 3600 fallback. After this release, declaring `"defaultRunOptions": { "timeoutSecs": 7200, "memoryMbytes": 2048 }` in `actor.json` flows through `crc push` → DB → run creation → runner.
+
+### Added
+
+- **Existing-actor `default_run_options` used as baseline by `crc push`.** The API's `PUT /v2/acts/:id` handler replaces `default_run_options` JSON wholesale (not a deep merge), so without a baseline a push would silently revert dashboard-only edits to fields not declared in `actor.json`. The CLI now fetches the existing actor by name first and uses its `default_run_options` as the baseline. Precedence on the merged payload (later wins):
+
+  ```
+  existing dashboard state
+    < actor.json defaultRunOptions (deploy-time author intent)
+      < CLI-managed image / envVars (always asserted by push)
+  ```
+
+  Dashboard edits to fields `actor.json` doesn't declare survive `crc push`.
+
+### Hardening (bot-review fixes pre-merge)
+
+- **Name-based existence lookup replaces the 200-actor list scan** (Codex P2 on #50). Previously the CLI used `GET /v2/acts?limit=200` + `.find(...)` to determine if the actor existed. For accounts with more than 200 actors, an older actor being re-pushed would not appear in the first page → CLI took the "new actor" branch on its side → baseline fetch was skipped → POST upserted the actor by name and silently clobbered dashboard-only fields. Now uses `GET /v2/acts/${encodeURIComponent(actorName)}` (the route accepts id-or-name), eliminating the bug class entirely. Single API call serves both existence-check and baseline-fetch.
+- **Defensive optional chaining on API response parse** (Gemini medium on #50). `lookupData.data?.id`, `lookupData.data?.defaultRunOptions ?? {}` so a 200 with empty body doesn't crash the CLI.
+
+### Tests
+
+- 2 new integration tests in `packages/cli/test/integration/push-and-run.int.test.ts`, exercised against a real local stack (postgres + redis + minio + API on `localhost:3000`):
+  - `push forwards actor.json defaultRunOptions.timeoutSecs and memoryMbytes to the actor row` — seeds actor.json with `timeoutSecs=7200, memoryMbytes=2048, build=beta`; pushes; asserts GET reflects all three.
+  - `push without timeoutSecs in actor.json preserves a dashboard-set value` — pushes without `timeoutSecs`; simulates a dashboard PUT to `timeoutSecs=5400`; pushes again; asserts the dashboard value survives.
+
+### Migration
+
+- No schema changes. Operators with existing actors who want the new behavior must either:
+  - re-push after upgrading the CLI (so `actor.json`'s `defaultRunOptions.timeoutSecs` lands on the actor row), or
+  - edit timeout in the dashboard (saves to `default_run_options.timeoutSecs` directly via the existing PUT path).
+
+PRs in this release: #50.
+
 ## [0.9.7] - 2026-06-04
 
 ### Added
