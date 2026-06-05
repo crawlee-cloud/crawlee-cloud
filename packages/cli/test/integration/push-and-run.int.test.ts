@@ -126,6 +126,101 @@ describe.skipIf(!API_REACHABLE)('crc push / list / call (e2e)', () => {
     expect(actors.some((a) => a.name === actorName)).toBe(true);
   });
 
+  it('push forwards actor.json defaultRunOptions.timeoutSecs and memoryMbytes to the actor row', async () => {
+    // Regression for the v0.9.7 → v0.9.8 story: the API fix that propagated
+    // actor.default_run_options to runs was ineffective for CLI-pushed
+    // actors because the CLI never sent timeoutSecs/memoryMbytes from
+    // actor.json. After this fix, both fields land on the actor row and
+    // the GET /v2/acts/:name response reflects them.
+    const { home, dispose: d } = await makeIsolatedHome();
+    dispose = d;
+
+    await runCli(['login', '--token', token, '--url', TEST_API_URL], { home });
+
+    const projectDir = path.join(home, 'defaults-test');
+    const actorName = `cli-e2e-defaults-${Date.now()}`;
+    createdActorName = actorName;
+    await seedActorProject(projectDir, actorName, {
+      defaultRunOptions: {
+        timeoutSecs: 7200,
+        memoryMbytes: 2048,
+        build: 'beta',
+      },
+    });
+    const pushRes = await runCli(['push', '--no-build'], { home, cwd: projectDir });
+    expect(pushRes.code).toBe(0);
+
+    const me = await fetch(`${TEST_API_URL}/v2/acts/${actorName}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(me.ok).toBe(true);
+    const body = (await me.json()) as {
+      data: {
+        defaultRunOptions: {
+          image?: string;
+          timeoutSecs?: number;
+          memoryMbytes?: number;
+          build?: string;
+        };
+      };
+    };
+    expect(body.data.defaultRunOptions.timeoutSecs).toBe(7200);
+    expect(body.data.defaultRunOptions.memoryMbytes).toBe(2048);
+    expect(body.data.defaultRunOptions.build).toBe('beta');
+    // image is still always asserted by push regardless of actor.json
+    expect(typeof body.data.defaultRunOptions.image).toBe('string');
+  });
+
+  it('push without timeoutSecs in actor.json preserves a dashboard-set value', async () => {
+    // The fix uses the existing actor's default_run_options as a baseline
+    // so dashboard-only edits survive a push that doesn't declare them.
+    const { home, dispose: d } = await makeIsolatedHome();
+    dispose = d;
+
+    await runCli(['login', '--token', token, '--url', TEST_API_URL], { home });
+
+    const projectDir = path.join(home, 'baseline-test');
+    const actorName = `cli-e2e-baseline-${Date.now()}`;
+    createdActorName = actorName;
+
+    // First push: actor.json has NO timeoutSecs.
+    await seedActorProject(projectDir, actorName);
+    let pushRes = await runCli(['push', '--no-build'], { home, cwd: projectDir });
+    expect(pushRes.code).toBe(0);
+
+    // Simulate a dashboard edit: PUT timeoutSecs onto the actor row.
+    const actorRes = await fetch(`${TEST_API_URL}/v2/acts/${actorName}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const actorBody = (await actorRes.json()) as {
+      data: { id: string; defaultRunOptions: Record<string, unknown> | null };
+    };
+    const dashboardEdit = await fetch(`${TEST_API_URL}/v2/acts/${actorBody.data.id}`, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        defaultRunOptions: { ...(actorBody.data.defaultRunOptions ?? {}), timeoutSecs: 5400 },
+      }),
+    });
+    expect(dashboardEdit.ok).toBe(true);
+
+    // Second push: actor.json STILL doesn't have timeoutSecs.
+    pushRes = await runCli(['push', '--no-build'], { home, cwd: projectDir });
+    expect(pushRes.code).toBe(0);
+
+    // The dashboard-set 5400 must survive the second push.
+    const meAfter = await fetch(`${TEST_API_URL}/v2/acts/${actorName}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const after = (await meAfter.json()) as {
+      data: { defaultRunOptions: { timeoutSecs?: number } };
+    };
+    expect(after.data.defaultRunOptions.timeoutSecs).toBe(5400);
+  });
+
   it('push without login fails cleanly with a helpful message', async () => {
     const { home, dispose: d } = await makeIsolatedHome();
     dispose = d;
