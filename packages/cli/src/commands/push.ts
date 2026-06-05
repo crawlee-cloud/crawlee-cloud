@@ -33,6 +33,14 @@ interface ActorJson {
     dataset?: string;
   };
   environmentVariables?: Record<string, string>;
+  // Apify-compatible execution defaults. Carried forward to the actor row
+  // and used by API run-creation / scheduler to populate runs.timeout_secs
+  // and runs.memory_mbytes when the request body omits them.
+  defaultRunOptions?: {
+    build?: string;
+    timeoutSecs?: number;
+    memoryMbytes?: number;
+  };
 }
 
 function validateActorJson(actorJson: ActorJson): string[] {
@@ -194,6 +202,35 @@ export const pushCommand = new Command('push')
         if (existing) existingId = existing.id;
       }
 
+      // If the actor exists, fetch its current default_run_options so we
+      // can use it as the baseline for the push payload. The API's PUT
+      // handler replaces default_run_options wholesale (not a deep merge),
+      // so without this baseline, fields edited via the dashboard but not
+      // declared in actor.json (e.g. timeoutSecs) would silently revert.
+      //
+      // Precedence on the merged payload (later wins):
+      //   existing default_run_options (dashboard state)
+      //     < actor.json defaultRunOptions (deploy-time author intent)
+      //     < CLI-managed fields (image, envVars — always asserted by push)
+      let existingDefaultRunOptions: {
+        build?: string;
+        timeoutSecs?: number;
+        memoryMbytes?: number;
+        image?: string;
+        envVars?: Record<string, string>;
+      } = {};
+      if (existingId) {
+        const detailRes = await fetch(`${config.apiBaseUrl}/v2/acts/${existingId}`, {
+          headers: { Authorization: `Bearer ${config.token}` },
+        });
+        if (detailRes.ok) {
+          const detailData = (await detailRes.json()) as {
+            data: { defaultRunOptions?: typeof existingDefaultRunOptions };
+          };
+          existingDefaultRunOptions = detailData.data.defaultRunOptions ?? {};
+        }
+      }
+
       // Resolve actor default env vars. Precedence (later wins):
       //   actor.json `environmentVariables`
       //     < --env-file (CI-friendly: gitignored .env-style file)
@@ -211,6 +248,21 @@ export const pushCommand = new Command('push')
         ...dropEmpty(fromFlag),
       };
 
+      // Forward Apify-compatible defaultRunOptions from actor.json, with
+      // existing actor state as the baseline so dashboard-only edits
+      // survive a push.
+      //
+      // Without this:
+      //   - Pre-v0.9.7: actor.json's timeoutSecs/memoryMbytes were silently
+      //     dropped by the CLI and runs always timed out at 3600s.
+      //   - v0.9.7 fixed the API read but the CLI still didn't forward the
+      //     values — the bug appeared "still broken" for CLI-pushed actors.
+      //
+      // The conditional spreads ensure actor.json values are asserted (top
+      // of precedence after CLI-managed image/envVars), while
+      // dashboard-set fields not declared in actor.json fall back to the
+      // existing baseline.
+      const actorJsonDefaults = actorJson.defaultRunOptions ?? {};
       const actorPayload = {
         name: actorName,
         title: actorJson.title,
@@ -220,8 +272,18 @@ export const pushCommand = new Command('push')
         // for the version selector on the dashboard's build history.
         version: actorJson.version,
         defaultRunOptions: {
-          image: runtimeImage,
+          ...existingDefaultRunOptions, // dashboard state baseline
+          image: runtimeImage, // always asserted (this push's build)
           envVars: Object.keys(mergedEnvVars).length > 0 ? mergedEnvVars : undefined,
+          // Optional Apify-spec fields — only override when actor.json
+          // explicitly declares them.
+          ...(actorJsonDefaults.build !== undefined && { build: actorJsonDefaults.build }),
+          ...(actorJsonDefaults.timeoutSecs !== undefined && {
+            timeoutSecs: actorJsonDefaults.timeoutSecs,
+          }),
+          ...(actorJsonDefaults.memoryMbytes !== undefined && {
+            memoryMbytes: actorJsonDefaults.memoryMbytes,
+          }),
         },
       };
 
