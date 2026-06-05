@@ -188,25 +188,24 @@ export const pushCommand = new Command('push')
     const registerSpinner = ora('Registering with platform...').start();
 
     try {
-      // Check if actor exists
-      const listRes = await fetch(`${config.apiBaseUrl}/v2/acts?limit=200`, {
-        headers: { Authorization: `Bearer ${config.token}` },
-      });
-
+      // Look up by name directly. The /v2/acts/:actorId route accepts
+      // either id or name (`WHERE (id = $1 OR name = $1)`), so one call
+      // serves both existence-check AND baseline-fetch:
+      //   - 200 → actor exists; response carries the full row including
+      //     `defaultRunOptions` used as the baseline below
+      //   - 404 → new actor; no baseline
+      //
+      // Previously we used `/v2/acts?limit=200` and `.find(...)`, which
+      // false-negatived for accounts with more than 200 actors when
+      // re-pushing an older one. That made the API's name-based upsert
+      // take the "new actor" branch on the CLI side, skipping the
+      // baseline fetch and silently clobbering dashboard-only fields
+      // (memoryMbytes / timeoutSecs / etc.). Caught by automated review.
       let existingId: string | null = null;
-      if (listRes.ok) {
-        const listData = (await listRes.json()) as {
-          data: { items: { id: string; name: string }[] };
-        };
-        const existing = listData.data.items.find((a) => a.name === actorName);
-        if (existing) existingId = existing.id;
-      }
-
-      // If the actor exists, fetch its current default_run_options so we
-      // can use it as the baseline for the push payload. The API's PUT
-      // handler replaces default_run_options wholesale (not a deep merge),
-      // so without this baseline, fields edited via the dashboard but not
-      // declared in actor.json (e.g. timeoutSecs) would silently revert.
+      // Baseline for the push payload's defaultRunOptions. The API's
+      // upsert replaces default_run_options wholesale (not a deep merge),
+      // so without this, fields edited via the dashboard but not declared
+      // in actor.json would silently revert on every push.
       //
       // Precedence on the merged payload (later wins):
       //   existing default_run_options (dashboard state)
@@ -219,16 +218,16 @@ export const pushCommand = new Command('push')
         image?: string;
         envVars?: Record<string, string>;
       } = {};
-      if (existingId) {
-        const detailRes = await fetch(`${config.apiBaseUrl}/v2/acts/${existingId}`, {
-          headers: { Authorization: `Bearer ${config.token}` },
-        });
-        if (detailRes.ok) {
-          const detailData = (await detailRes.json()) as {
-            data: { defaultRunOptions?: typeof existingDefaultRunOptions };
-          };
-          existingDefaultRunOptions = detailData.data.defaultRunOptions ?? {};
-        }
+      const lookupRes = await fetch(
+        `${config.apiBaseUrl}/v2/acts/${encodeURIComponent(actorName)}`,
+        { headers: { Authorization: `Bearer ${config.token}` } }
+      );
+      if (lookupRes.ok) {
+        const lookupData = (await lookupRes.json()) as {
+          data?: { id?: string; defaultRunOptions?: typeof existingDefaultRunOptions };
+        };
+        existingId = lookupData.data?.id ?? null;
+        existingDefaultRunOptions = lookupData.data?.defaultRunOptions ?? {};
       }
 
       // Resolve actor default env vars. Precedence (later wins):
