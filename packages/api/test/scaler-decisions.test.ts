@@ -13,7 +13,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { calculateDesiredRunners, type QueueStats } from '../src/scaler/index.js';
+import {
+  calculateDesiredRunners,
+  countLiveRunning,
+  PICKUP_GRACE_MS,
+  type QueueStats,
+} from '../src/scaler/index.js';
 import type { ScalerConfig } from '../src/scaler/types.js';
 
 function makeConfig(overrides: Partial<ScalerConfig> = {}): ScalerConfig {
@@ -227,5 +232,81 @@ describe('calculateDesiredRunners', () => {
       expect(desired).toBe(1); // totalDemand coerces to 0 → returns minRunners
       expect(Number.isFinite(desired)).toBe(true);
     });
+  });
+});
+
+describe('countLiveRunning (runId+started_at correlation)', () => {
+  // The pure function behind the activity gate. Distinguishes real
+  // work (RUNNING row claimed by a live heartbeat, or freshly picked
+  // up and still inside the heartbeat-lag grace window) from zombies
+  // (RUNNING rows old enough that the next heartbeat should already
+  // have claimed them, but didn't).
+  //
+  // Without this correlation, v0.9.9's first fix attempt regressed a
+  // race window during pickup-vs-heartbeat (Codex #52 P1): a runner
+  // picks up a READY row via pub/sub in < 1s, the DB shows RUNNING
+  // immediately, but the most-recent heartbeat (up to 30s old) still
+  // reports activeRuns=0 / runIds=[]. The activity gate would then
+  // false-idle and destroy the just-busy runner.
+  const now = Date.now();
+
+  it('counts a RUNNING row claimed by a heartbeat as live work', () => {
+    expect(
+      countLiveRunning(
+        [{ id: 'r1', started_at: new Date(now - 60_000) }],
+        new Set(['r1']),
+        now
+      )
+    ).toBe(1);
+  });
+
+  it('counts a fresh pickup (no claim yet, started_at within PICKUP_GRACE_MS) as live work', () => {
+    // The Codex P1 scenario — pickup happened seconds ago, heartbeat
+    // simply hasn't landed yet. Give one tick of grace.
+    expect(
+      countLiveRunning(
+        [{ id: 'fresh', started_at: new Date(now - 5_000) }],
+        new Set(), // no heartbeat claims it
+        now
+      )
+    ).toBe(1);
+  });
+
+  it('does NOT count a stale RUNNING row (started_at older than grace, no claim) — zombie', () => {
+    // The freeze case. After PICKUP_GRACE_MS the runner should have
+    // heartbeated at least once with the runId; if it hasn't, the
+    // owning runner is gone.
+    expect(
+      countLiveRunning(
+        [{ id: 'zombie', started_at: new Date(now - PICKUP_GRACE_MS - 1) }],
+        new Set(),
+        now
+      )
+    ).toBe(0);
+  });
+
+  it('does NOT count a RUNNING row with null started_at and no claim', () => {
+    // Defensive: started_at should always be set when status='RUNNING'
+    // (runner sets both atomically — packages/runner/src/queue.ts:226).
+    // But if it isn't, refusing to count is the conservative choice.
+    expect(countLiveRunning([{ id: 'r', started_at: null }], new Set(), now)).toBe(0);
+  });
+
+  it('mixed: some claimed, some fresh, some zombie', () => {
+    expect(
+      countLiveRunning(
+        [
+          { id: 'claimed', started_at: new Date(now - 30 * 60_000) }, // 30min old but claimed → live
+          { id: 'fresh', started_at: new Date(now - 1_000) }, // 1s old → grace
+          { id: 'zombie', started_at: new Date(now - 5 * 60 * 60_000) }, // 5h old, no claim → zombie
+        ],
+        new Set(['claimed']),
+        now
+      )
+    ).toBe(2);
+  });
+
+  it('returns 0 for an empty input', () => {
+    expect(countLiveRunning([], new Set(), now)).toBe(0);
   });
 });

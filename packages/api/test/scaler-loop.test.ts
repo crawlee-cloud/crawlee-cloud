@@ -103,6 +103,29 @@ function dbRows(stats: { ready?: number; running?: number }) {
   return { rows };
 }
 
+/**
+ * Route queryMock based on SQL pattern. The scaler issues two distinct
+ * queries per tick when there are RUNNING rows:
+ *   1. `SELECT status, COUNT(*) ... GROUP BY status`  (queue depth)
+ *   2. `SELECT id, started_at FROM runs WHERE status = 'RUNNING'`
+ *      (heartbeat-claim correlation for the realActivity gate)
+ *
+ * Tests that exercise the correlation path use this helper to give each
+ * query its own response shape; tests that only need the GROUP BY can
+ * keep using `queryMock.mockResolvedValue(dbRows(...))`.
+ */
+function setupQueryMock(opts: {
+  stats: { ready?: number; running?: number };
+  runningRows?: { id: string; started_at: Date | null }[];
+}) {
+  queryMock.mockImplementation((sql: string) => {
+    if (typeof sql === 'string' && sql.includes("FROM runs WHERE status = 'RUNNING'")) {
+      return Promise.resolve({ rows: opts.runningRows ?? [] });
+    }
+    return Promise.resolve(dbRows(opts.stats));
+  });
+}
+
 describe('scaler loop', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -185,13 +208,22 @@ describe('scaler loop', () => {
       // This is the "run takes a while but is still healthy" path.
       // The scaler must NOT scale down just because the queue has zero READY —
       // the RUNNING count still represents real work.
-      queryMock.mockResolvedValue(dbRows({ ready: 0, running: 1 }));
+      //
+      // Post-v0.9.9 the activity gate uses runId correlation: the heartbeat
+      // must claim the RUNNING row's id, or the row must be young enough
+      // to be a fresh pickup. Both held simultaneously here is realistic —
+      // heartbeats.runIds is what real runners publish (heartbeat.ts:119).
+      setupQueryMock({
+        stats: { ready: 0, running: 1 },
+        runningRows: [{ id: 'rX', started_at: new Date(Date.now() - 10_000) }],
+      });
       noopList.mockResolvedValue([makeRunner('r1')]);
       redisScan.mockResolvedValue(scanResult(['runner:heartbeat:r1']));
       redisMget.mockResolvedValue([
         JSON.stringify({
           runnerId: 'r1',
           activeRuns: 1,
+          runIds: ['rX'],
           healthy: true,
           cpuUsage: 0.3,
           memoryUsageRatio: 0.5,
@@ -465,18 +497,22 @@ describe('scaler loop', () => {
       expect(activityCall).toBeUndefined();
     });
 
-    it('refreshes LAST_ACTIVITY when a live runner reports activeRuns > 0 (no false-idle)', async () => {
-      // Counterpoint: a live runner with real work in progress must
-      // refresh activity even if `ready` is zero, otherwise long-running
-      // jobs would be falsely flagged idle and capacity yanked from
-      // under them.
-      queryMock.mockResolvedValue(dbRows({ ready: 0, running: 1 }));
+    it('refreshes LAST_ACTIVITY when a live runner claims the RUNNING row via heartbeat (no false-idle)', async () => {
+      // Counterpoint to the zombie case: a live runner with real work in
+      // progress must refresh activity even if `ready` is zero, otherwise
+      // long-running jobs would be falsely flagged idle and capacity
+      // yanked from under them. Validated via the runId-claim path.
+      setupQueryMock({
+        stats: { ready: 0, running: 1 },
+        runningRows: [{ id: 'rX', started_at: new Date(Date.now() - 60_000) }],
+      });
       noopList.mockResolvedValue([makeRunner('r1')]);
       redisScan.mockResolvedValue(scanResult(['runner:heartbeat:r1']));
       redisMget.mockResolvedValue([
         JSON.stringify({
           runnerId: 'r1',
           activeRuns: 1,
+          runIds: ['rX'],
           healthy: true,
           cpuUsage: 0.3,
           memoryUsageRatio: 0.5,
@@ -487,6 +523,75 @@ describe('scaler loop', () => {
 
       const activityCall = redisSet.mock.calls.find((c) => c[0] === 'scaler:last-activity');
       expect(activityCall).toBeDefined();
+    });
+
+    it('refreshes LAST_ACTIVITY during pickup race (RUNNING row fresh, heartbeat lag has not landed yet) — Codex #52 P1 regression', async () => {
+      // The race window: a runner picks up a READY row via Redis pub/sub
+      // (sub-second), the DB flips to RUNNING immediately, but the
+      // runner's most recent heartbeat (up to ~30s stale) still reports
+      // `activeRuns: 0` and an empty `runIds`. In that window the
+      // heartbeat-claim path is empty.
+      //
+      // Without the started_at fallback the scaler would treat the just-
+      // busy runner as idle, and if `idleMs > idleTimeoutSecs` would
+      // destroy it mid-pickup. The PICKUP_GRACE_MS window (3× heartbeat
+      // interval = 90s) keeps activity refreshed until the next heartbeat
+      // resolves the race.
+      setupQueryMock({
+        stats: { ready: 0, running: 1 },
+        runningRows: [{ id: 'rRace', started_at: new Date(Date.now() - 5_000) }],
+      });
+      noopList.mockResolvedValue([makeRunner('r1')]);
+      redisScan.mockResolvedValue(scanResult(['runner:heartbeat:r1']));
+      // Heartbeat is stale relative to the pickup — empty runIds, activeRuns=0
+      redisMget.mockResolvedValue([
+        JSON.stringify({
+          runnerId: 'r1',
+          activeRuns: 0,
+          runIds: [],
+          healthy: true,
+          cpuUsage: 0.1,
+          memoryUsageRatio: 0.3,
+        }),
+      ]);
+      redisGet.mockResolvedValue(String(Date.now() - 3_600_000)); // idle timer would otherwise allow destroy
+
+      await initScaler();
+
+      const activityCall = redisSet.mock.calls.find((c) => c[0] === 'scaler:last-activity');
+      expect(activityCall).toBeDefined();
+      // And critically: the just-busy runner must NOT have been destroyed
+      // by the idle gate while the race was still in the grace window.
+      expect(noopDestroy).not.toHaveBeenCalled();
+    });
+
+    it('does NOT refresh LAST_ACTIVITY for a RUNNING row older than PICKUP_GRACE_MS with no live claim (zombie)', async () => {
+      // Closes the loop on Codex P1: the grace window must NOT extend
+      // protection indefinitely. A row that started long ago AND no live
+      // runner claims it is a zombie — drain.
+      setupQueryMock({
+        stats: { ready: 0, running: 1 },
+        runningRows: [
+          { id: 'zombie', started_at: new Date(Date.now() - 10 * 60_000) }, // 10min old
+        ],
+      });
+      noopList.mockResolvedValue([makeRunner('idleR')]);
+      redisScan.mockResolvedValue(scanResult(['runner:heartbeat:idleR']));
+      redisMget.mockResolvedValue([
+        JSON.stringify({
+          runnerId: 'idleR',
+          activeRuns: 0,
+          runIds: [], // does NOT claim the zombie row
+          healthy: true,
+          cpuUsage: 0.1,
+          memoryUsageRatio: 0.3,
+        }),
+      ]);
+
+      await initScaler();
+
+      const activityCall = redisSet.mock.calls.find((c) => c[0] === 'scaler:last-activity');
+      expect(activityCall).toBeUndefined();
     });
   });
 });

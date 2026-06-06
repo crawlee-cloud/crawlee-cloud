@@ -277,19 +277,39 @@ export function calculateDesiredRunners(
   return clamped;
 }
 
-async function getActiveRunners(): Promise<RunnerInfo[]> {
+async function getActiveRunners(): Promise<{
+  runners: RunnerInfo[];
+  /**
+   * Union of run IDs claimed by ANY live heartbeat — the canonical
+   * "this work has a live owner" signal. Used by scalingLoop to
+   * distinguish a fresh-pickup race from a zombie RUNNING row.
+   */
+  claimedRunIds: Set<string>;
+}> {
   // Don't swallow listRunners errors here — a transient API failure that
   // returns [] would let calculateDesiredRunners think we have zero capacity
   // and over-provision on the next tick. Let the caller (scalingLoop) abort
   // the tick instead so we act on real data only.
   const runners = await provider.listRunners();
 
-  // Enrich runners with real metrics from heartbeats
+  // Enrich runners with real metrics from heartbeats. We also capture
+  // `runIds` per heartbeat — used by scalingLoop's activity gate to tell
+  // a real RUNNING row apart from a zombie. Older runner builds that
+  // pre-date the runIds field still publish all the other metrics; their
+  // `runIds` is treated as `[]` and falls back to the `started_at` grace
+  // window in scalingLoop.
   const heartbeatKeys = await scanKeys('runner:heartbeat:*');
   const heartbeats = new Map<
     string,
-    { activeRuns: number; healthy: boolean; cpuUsage: number; memoryUsageRatio: number }
+    {
+      activeRuns: number;
+      healthy: boolean;
+      cpuUsage: number;
+      memoryUsageRatio: number;
+      runIds: string[];
+    }
   >();
+  const claimedRunIds = new Set<string>();
 
   if (heartbeatKeys.length > 0) {
     const values = await redis.mget(...heartbeatKeys);
@@ -302,8 +322,11 @@ async function getActiveRunners(): Promise<RunnerInfo[]> {
           healthy: boolean;
           cpuUsage: number;
           memoryUsageRatio: number;
+          runIds?: string[];
         };
-        heartbeats.set(hb.runnerId, hb);
+        const runIds = Array.isArray(hb.runIds) ? hb.runIds : [];
+        heartbeats.set(hb.runnerId, { ...hb, runIds });
+        for (const id of runIds) claimedRunIds.add(id);
       } catch {
         // skip malformed
       }
@@ -346,7 +369,64 @@ async function getActiveRunners(): Promise<RunnerInfo[]> {
     }
   }
 
-  return runners;
+  return { runners, claimedRunIds };
+}
+
+/**
+ * Grace window for RUNNING rows whose runner hasn't heartbeated since
+ * pickup. The runner heartbeats every 30s; we allow 3 intervals before
+ * declaring a RUNNING row a zombie, which tolerates one missed beat
+ * without false-idling fresh pickups. See the comment block in
+ * `scalingLoop` for the full race-vs-zombie reasoning.
+ */
+export const PICKUP_GRACE_MS = 90_000;
+
+/**
+ * Count of RUNNING rows that represent real work (not zombies), given
+ * heartbeat claims and a fresh-pickup grace window. Pure function over
+ * input rows; queries the DB at most once per tick from the caller.
+ *
+ * Exported for unit testing in isolation from the DB.
+ */
+export function countLiveRunning(
+  runningRows: { id: string; started_at: Date | null }[],
+  claimedRunIds: Set<string>,
+  now: number = Date.now()
+): number {
+  let count = 0;
+  for (const row of runningRows) {
+    if (claimedRunIds.has(row.id)) {
+      // A live runner explicitly reports this run in its heartbeat.
+      count++;
+      continue;
+    }
+    if (row.started_at && now - new Date(row.started_at).getTime() < PICKUP_GRACE_MS) {
+      // Fresh pickup — the runner could plausibly have claimed this
+      // between heartbeats. Give one more tick before declaring zombie.
+      count++;
+    }
+  }
+  return count;
+}
+
+/**
+ * Thin DB wrapper around `countLiveRunning`. Skips the query entirely
+ * when there are no RUNNING rows to evaluate — saves a round-trip on
+ * the common quiet-cluster tick.
+ *
+ * The SELECT is bounded: there can be at most `maxRunners * runsPerRunner`
+ * RUNNING rows at any time, so this stays well under a dozen rows for
+ * default configs. The single index on `runs.status` keeps it cheap.
+ */
+async function countLiveRunningFromDb(
+  reportedRunning: number,
+  claimedRunIds: Set<string>
+): Promise<number> {
+  if (reportedRunning <= 0) return 0;
+  const result = await query<{ id: string; started_at: Date | null }>(
+    `SELECT id, started_at FROM runs WHERE status = 'RUNNING'`
+  );
+  return countLiveRunning(result.rows, claimedRunIds);
 }
 
 async function scaleUp(count: number): Promise<void> {
@@ -428,24 +508,38 @@ async function scalingLoop(): Promise<void> {
   try {
     const r = await withAdvisoryLock(LOCK_IDS.scaler, async () => {
       const stats = await getQueueStats();
-      let runners = await getActiveRunners();
+      let { runners, claimedRunIds } = await getActiveRunners();
       runners = await reapDeadRunners(runners);
       const currentCount = runners.length;
       const desired = calculateDesiredRunners(stats, currentCount, config);
 
-      // "Activity" must reflect physical reality, not DB-status alone.
-      // Pre-fix: gating on `stats.total > 0` meant zombie RUNNING rows
-      // (rows whose owning runner died before issuing a terminal UPDATE —
-      // see packages/runner/src/queue.ts:361 lifecycle invariant)
-      // refreshed this key every tick, keeping `idleMs` near zero forever
-      // and blocking scale-down even after the math correctly said
-      // `desired < current`. Source of truth is now the heartbeats:
-      // a runner that actually has work in progress reports `activeRuns
-      // > 0` via its heartbeat (provider initializes 0, heartbeat is the
-      // only writer — verified across noop/local-docker/digitalocean
-      // providers). A `ready > 0` queue is also genuine activity even
-      // before a runner picks it up.
-      const realActivity = stats.ready > 0 || runners.some((r) => r.activeRuns > 0);
+      // "Activity" must reflect physical reality, not DB-status alone, and
+      // must NOT false-idle during a legitimate pickup-vs-heartbeat race.
+      //
+      // The naive gate `stats.total > 0` (pre-v0.9.9) refreshed activity
+      // whenever the DB had any non-terminal row — including zombies whose
+      // owning runner had died before issuing the terminal UPDATE (see
+      // packages/runner/src/queue.ts:361 lifecycle invariant). That kept
+      // `idleMs` near zero forever and pinned the cluster.
+      //
+      // The first v0.9.9 attempt — `stats.ready > 0 || runners.some(r =>
+      // r.activeRuns > 0)` — fixed zombies but reopened a race window:
+      // when an idle cluster picks up a fresh run via Redis pub-sub
+      // (sub-second), the DB flips to RUNNING immediately, but the
+      // runner's most recent heartbeat (up to ~30s old) still reports
+      // `activeRuns: 0`. In that window the gate would evaluate false
+      // and, if `idleMs > idleTimeoutSecs`, scaleDown could destroy the
+      // just-busy runner mid-pickup.
+      //
+      // The correct gate cross-references the two sources of truth:
+      //   - DB: which run IDs are RUNNING right now? When did they start?
+      //   - Heartbeats: which run IDs do live runners claim?
+      // A RUNNING row counts as real work if either (a) a live heartbeat
+      // claims it, or (b) it started within `PICKUP_GRACE_MS` and the
+      // claim simply hasn't landed yet. Older runs with no live claim are
+      // zombies and don't count.
+      const realRunningCount = await countLiveRunningFromDb(stats.running, claimedRunIds);
+      const realActivity = stats.ready > 0 || realRunningCount > 0;
       if (realActivity) {
         await redis.set(
           LAST_ACTIVITY_KEY,
