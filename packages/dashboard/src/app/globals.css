@@ -50,6 +50,7 @@
   --color-ring: var(--ring);
 
   --color-signal: var(--signal);
+  --color-ok: var(--ok);
   --color-warn: var(--warn);
   --color-fail: var(--fail);
   --color-info: var(--info);
@@ -104,6 +105,11 @@
   --ring: #F98618;
 
   --signal: #F98618;
+  /* `signal` is the brand accent (orange). `ok` is the semantic success
+     color — kept separate so SUCCEEDED chips, "OK" markers, etc. read
+     as green and don't collide with WARN (amber) or FAIL (vermilion)
+     when scanned at a glance. */
+  --ok: #1a7f37;
   --warn: #9a6700;
   --fail: #cf222e;
   --info: #1f6feb;
@@ -155,6 +161,9 @@
   /* Brand signal stays warm-orange across themes — same accent in both
      light and dark for a consistent "this is the action" recognition. */
   --signal: #F98618;
+  /* Semantic success — see note in :root. Brighter in dark mode for
+     legibility against the warm-noise canvas. */
+  --ok: #3fb950;
   --warn: #ffb840;
   --fail: #ff5f48;
   --info: #7ec5ff;

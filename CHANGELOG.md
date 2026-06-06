@@ -26,6 +26,10 @@ All notable changes to this project will be documented in this file.
 - **`scaler-loop.test.ts`**: 4 new tests — zombie-RUNNING-no-live-runner must NOT refresh `LAST_ACTIVITY`; live-runner-claims-runId must refresh; pickup-race-with-stale-heartbeat must refresh AND must not destroy the just-busy runner (Codex #52 P1 regression); RUNNING row older than grace with no claim must NOT refresh.
 - **Heartbeat plumbing**: `getActiveRunners()` now also returns `claimedRunIds: Set<string>`. The heartbeat parser preserves `runIds` (was previously dropped — older runner builds publish all the other fields but no `runIds`; the scaler tolerates this and falls back to the `started_at` grace window).
 
+### Dashboard
+
+- **SUCCEEDED status chips are now green, not brand-orange.** A new semantic `--ok` token (`#1a7f37` light / `#3fb950` dark) decouples success state from the brand `--signal` (orange). Prior to this, SUCCEEDED, ABORTED (amber), and FAILED (vermilion in dark mode) all sat in nearby warm hues and were hard to distinguish at a scan. The brand `--signal` itself is unchanged — buttons, links, focus rings, CRC logo, and the throughput chart's "volume" bars stay orange. The change is scoped to the `success` Badge variant in `components/ui/badge.tsx`, so every consumer of `StatusChip` (runs list, run detail, builds, webhooks, actor detail) picks it up without further edits.
+
 ### Notes for operators
 
 - **Behavioral change is minimal for healthy workloads.** The `idleTimeoutSecs` gate is unchanged — under steady load, `realActivity` evaluates true (via ready or active heartbeats), `LAST_ACTIVITY` refreshes, and scale-down stays blocked just like before. The only behavioral delta is in the zombie-tail case (the bug being fixed). No env vars added, no schema changes, no provider changes.

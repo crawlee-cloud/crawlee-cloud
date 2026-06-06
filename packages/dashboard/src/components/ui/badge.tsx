@@ -18,7 +18,11 @@ const badgeVariants = cva(
         outline: 'border-border bg-transparent text-muted-foreground',
         secondary: 'border-border bg-secondary text-foreground',
 
-        success: 'border-signal/40 bg-signal/10 text-signal',
+        // `success` deliberately uses `ok` (semantic green), NOT `signal`
+        // (brand orange). They USED to collide and made SUCCEEDED chips
+        // visually indistinguishable from ABORTED (warn) and FAILED at
+        // a glance — see globals.css comment on --ok.
+        success: 'border-ok/40 bg-ok/10 text-ok',
         warning: 'border-warn/40 bg-warn/10 text-warn',
         error: 'border-fail/40 bg-fail/10 text-fail',
         destructive: 'border-fail/40 bg-fail/10 text-fail',
