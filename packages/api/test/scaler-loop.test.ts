@@ -441,6 +441,53 @@ describe('scaler loop', () => {
       const activityCall = redisSet.mock.calls.find((c) => c[0] === 'scaler:last-activity');
       expect(activityCall).toBeUndefined();
     });
+
+    it('does NOT refresh LAST_ACTIVITY for zombie RUNNING rows with no live runner (regression: scale-down freeze)', async () => {
+      // Pre-v0.9.9 the gate was `stats.total > 0`, which let RUNNING
+      // rows whose owning runner had died — and therefore could never
+      // issue the terminal UPDATE — keep refreshing LAST_ACTIVITY every
+      // tick. That kept idleMs near zero forever and blocked scale-down
+      // in scalingLoop, pinning the cluster at high-water for 5+ hours
+      // in the live production repro.
+      //
+      // The fix gates on heartbeats: a RUNNING row "counts" only if a
+      // live runner reports activeRuns > 0. Zombie rows whose runners
+      // are gone (no matching heartbeat) do not refresh activity, so
+      // idleMs builds and the existing idle-timeout gate eventually
+      // releases the scale-down.
+      queryMock.mockResolvedValue(dbRows({ ready: 0, running: 2 })); // 2 zombies
+      noopList.mockResolvedValue([]); // no live runners at all
+      redisScan.mockResolvedValue(scanResult([])); // no heartbeats
+
+      await initScaler();
+
+      const activityCall = redisSet.mock.calls.find((c) => c[0] === 'scaler:last-activity');
+      expect(activityCall).toBeUndefined();
+    });
+
+    it('refreshes LAST_ACTIVITY when a live runner reports activeRuns > 0 (no false-idle)', async () => {
+      // Counterpoint: a live runner with real work in progress must
+      // refresh activity even if `ready` is zero, otherwise long-running
+      // jobs would be falsely flagged idle and capacity yanked from
+      // under them.
+      queryMock.mockResolvedValue(dbRows({ ready: 0, running: 1 }));
+      noopList.mockResolvedValue([makeRunner('r1')]);
+      redisScan.mockResolvedValue(scanResult(['runner:heartbeat:r1']));
+      redisMget.mockResolvedValue([
+        JSON.stringify({
+          runnerId: 'r1',
+          activeRuns: 1,
+          healthy: true,
+          cpuUsage: 0.3,
+          memoryUsageRatio: 0.5,
+        }),
+      ]);
+
+      await initScaler();
+
+      const activityCall = redisSet.mock.calls.find((c) => c[0] === 'scaler:last-activity');
+      expect(activityCall).toBeDefined();
+    });
   });
 });
 

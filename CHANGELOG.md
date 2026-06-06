@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.9] - 2026-06-06
+
+### Fixed
+
+- **Autoscaler scale-down freeze when a zombie RUNNING row exists.** Live production state observed at v0.9.8: `desired=10` held for 5+ hours with `ready=0, running=2`. Two interacting bugs in the scaler:
+
+  1. **`calculateDesiredRunners`** returned `currentRunners` whenever `ready <= scaleUpThreshold`, regardless of direction. The intent was hysteresis (don't scale UP on a trickle), but the unconditional return also suppressed scale-DOWN — so once a burst lifted the count, a long-running tail (`running > 0, ready == 0`) kept `totalDemand > 0` and pinned the cluster at high-water. The TODO block at the original site documented this and offered two fix shapes; the corrected Shape A is applied: `if (ready <= threshold && clamped > current && current >= minRunners) return current`. The `current >= minRunners` clause is load-bearing — it preserves the cold-start floor (otherwise a system below `min` with low demand could not bring its first runner up).
+
+  2. **`scalingLoop`** refreshed `scaler:last-activity` whenever `stats.total > 0`, where `stats.total` is a DB count that **includes zombie RUNNING rows**. Even after fix #1, the existing `idleTimeoutSecs` gate in `scalingLoop` kept blocking scale-down because `idleMs` stayed near zero forever — the math correctly said `desired < current`, but `scaleDown` was never called. Source of truth for "is real work happening" is now the heartbeats: `realActivity = stats.ready > 0 || runners.some(r => r.activeRuns > 0)`. A RUNNING row whose owning runner has no heartbeat (dead droplet, crashed runner process, network partition) does not count.
+
+  Both fixes are required to clear the freeze. Verified by direct reproduction against the compiled artifact (`packages/api/dist/scaler/index.js`) prior to the patch and by 38 unit tests after.
+
+- **Defensive coercion in `calculateDesiredRunners`** for `NaN` / negative / non-finite inputs. The function decides how many droplets to spawn; a malformed `COUNT(*)` parse should not be able to feed unbounded numbers into the math. `Math.max(0, Number.isFinite(x) ? x : 0)` applied to `ready`, `running`, and `currentRunners`.
+
+### Added
+
+- **`scaler-decisions.test.ts`**: 5 new tests covering the freeze repro, scale-down through threshold, hysteresis-up at threshold-equal demand, cold-start floor rule (regression guard against the naive Shape A that drops the `>= minRunners` clause), and NaN/negative input coercion.
+- **`scaler-loop.test.ts`**: 2 new tests covering zombie-RUNNING-no-live-runner (must NOT refresh `LAST_ACTIVITY`) and live runner with `activeRuns > 0` (must refresh).
+
+### Notes for operators
+
+- **Behavioral change is minimal for healthy workloads.** The `idleTimeoutSecs` gate is unchanged — under steady load, `realActivity` evaluates true (via ready or active heartbeats), `LAST_ACTIVITY` refreshes, and scale-down stays blocked just like before. The only behavioral delta is in the zombie-tail case (the bug being fixed). No env vars added, no schema changes, no provider changes.
+- **Known follow-up for v0.9.10 / 1.0** (not blocking the freeze fix): a dedicated reaper that times out stale RUNNING rows whose effective `timeoutSecs + grace` has elapsed. The scaler is now resilient to such rows; the data-integrity cleanup is a separate hardening pass. Also worth fixing: `DigitalOceanProvider.listRunners()` pages at `per_page=100` with no pagination — a deployment with more than 100 tagged droplets silently underreports capacity.
+
 ## [0.9.8] - 2026-06-05
 
 ### Fixed

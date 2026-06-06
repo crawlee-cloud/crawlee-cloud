@@ -150,4 +150,82 @@ describe('calculateDesiredRunners', () => {
       expect(calculateDesiredRunners(stats(0, 0), 10, cfg)).toBe(3);
     });
   });
+
+  describe('scale-down through the threshold (regression: zombie-tail freeze)', () => {
+    // The pre-v0.9.9 code returned `currentRunners` whenever
+    // `ready <= scaleUpThreshold`, regardless of direction. The intent
+    // was hysteresis (don't scale UP on a trickle), but the unconditional
+    // return also suppressed scale-DOWN — so once a burst lifted the
+    // count, a long-running tail (running > 0, ready == 0) kept
+    // totalDemand > 0 and pinned the cluster at high-water.
+    //
+    // Live production repro 2026-06-05: desired=10 for 5+ hours with
+    // ready=0, running=2 (two zombie RUNNING rows whose owning droplet
+    // had been reaped without their lifecycle being closed out).
+    //
+    // The fix preserves the freeze-UP semantics but releases the
+    // freeze-DOWN. These tests lock in both halves of that asymmetry.
+
+    it('drains the zombie tail: ready=0 + RUNNING>0 below threshold scales DOWN', () => {
+      // The exact production repro state. ceil(2/5)=1, clamped to min=1.
+      const cfg = makeConfig({
+        runsPerRunner: 5,
+        scaleUpThreshold: 5,
+        minRunners: 1,
+        maxRunners: 10,
+      });
+      expect(calculateDesiredRunners(stats(0, 2), 10, cfg)).toBe(1);
+    });
+
+    it('scales DOWN through the threshold when current exceeds need', () => {
+      // ready=3 ≤ threshold=5, but current=10 is way above needed=2.
+      // Pre-fix: returned 10 (frozen). Post-fix: returns 2 (scale down).
+      const cfg = makeConfig({
+        runsPerRunner: 2,
+        scaleUpThreshold: 5,
+        minRunners: 1,
+        maxRunners: 20,
+      });
+      expect(calculateDesiredRunners(stats(3, 0), 10, cfg)).toBe(2);
+    });
+
+    it('freezes UP at threshold-equal demand (hysteresis on the up direction only)', () => {
+      // ready=5 exactly equals threshold=5; current is already enough.
+      // Math says ceil(5/2)=3 > current=2, so we WOULD scale up — but
+      // hysteresis suppresses it until ready *exceeds* threshold.
+      const cfg = makeConfig({
+        runsPerRunner: 2,
+        scaleUpThreshold: 5,
+        minRunners: 1,
+      });
+      expect(calculateDesiredRunners(stats(5, 0), 2, cfg)).toBe(2);
+    });
+
+    it('still scales up to the floor even when ready ≤ threshold (cold start)', () => {
+      // This is the L73 case re-asserted post-fix. A naive Shape A that
+      // drops the `current >= minRunners` clause would regress this —
+      // see the floor-rule clause in calculateDesiredRunners.
+      const cfg = makeConfig({
+        runsPerRunner: 2,
+        scaleUpThreshold: 5,
+        minRunners: 2,
+      });
+      expect(calculateDesiredRunners(stats(1, 0), 0, cfg)).toBe(2);
+    });
+
+    it('coerces NaN/negative inputs to 0 rather than NaN-propagating', () => {
+      // Defensive: parseInt of a malformed COUNT(*) row could yield NaN,
+      // and a future query refactor could pass negatives. The function
+      // must never return NaN or a negative — both would corrupt the
+      // scaleUp/scaleDown arithmetic in scalingLoop.
+      const cfg = makeConfig({ minRunners: 1 });
+      const desired = calculateDesiredRunners(
+        { ready: NaN, running: -3, total: NaN },
+        5,
+        cfg
+      );
+      expect(desired).toBe(1); // totalDemand coerces to 0 → returns minRunners
+      expect(Number.isFinite(desired)).toBe(true);
+    });
+  });
 });

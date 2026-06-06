@@ -243,23 +243,38 @@ export function calculateDesiredRunners(
   currentRunners: number,
   cfg: ScalerConfig
 ): number {
-  const { ready, running } = stats;
+  // Defensive coercion. `stats.ready` / `stats.running` come from parseInt
+  // of a PG COUNT(*) result; under normal operation they're finite
+  // non-negative integers, but a malformed row or future query change
+  // shouldn't be able to feed NaN/negative numbers into a function that
+  // decides how many droplets to spawn. Same for `currentRunners`, which
+  // is `runners.length` after reaping — finite by construction, but the
+  // guard costs nothing.
+  const ready = Math.max(0, Number.isFinite(stats.ready) ? stats.ready : 0);
+  const running = Math.max(0, Number.isFinite(stats.running) ? stats.running : 0);
+  const current = Math.max(0, Number.isFinite(currentRunners) ? currentRunners : 0);
   const totalDemand = ready + running;
 
   if (totalDemand === 0) {
     return cfg.minRunners;
   }
 
-  // Don't scale up until queue pressure exceeds threshold
-  if (ready <= cfg.scaleUpThreshold && currentRunners >= cfg.minRunners) {
-    return currentRunners;
+  const needed = Math.ceil(totalDemand / cfg.runsPerRunner);
+  const clamped = Math.max(cfg.minRunners, Math.min(needed, cfg.maxRunners));
+
+  // Hysteresis: when queue pressure is below the scale-up threshold, freeze
+  // the count — but ONLY in the upward direction. A draining long-tail
+  // (running > 0, ready == 0) MUST be able to release capacity once fewer
+  // runners are needed; otherwise a zombie RUNNING row or a slow finish
+  // pins the cluster at high-water indefinitely (live-repro v0.9.8: 5+
+  // hours at desired=10 with ready=0, running=2). The `current >= min`
+  // clause preserves the cold-start floor: when we're below min, the
+  // floor wins even if ready ≤ threshold.
+  if (ready <= cfg.scaleUpThreshold && clamped > current && current >= cfg.minRunners) {
+    return current;
   }
 
-  // Each runner handles N concurrent runs
-  const needed = Math.ceil(totalDemand / cfg.runsPerRunner);
-
-  // Clamp to min/max
-  return Math.max(cfg.minRunners, Math.min(needed, cfg.maxRunners));
+  return clamped;
 }
 
 async function getActiveRunners(): Promise<RunnerInfo[]> {
@@ -418,7 +433,20 @@ async function scalingLoop(): Promise<void> {
       const currentCount = runners.length;
       const desired = calculateDesiredRunners(stats, currentCount, config);
 
-      if (stats.total > 0) {
+      // "Activity" must reflect physical reality, not DB-status alone.
+      // Pre-fix: gating on `stats.total > 0` meant zombie RUNNING rows
+      // (rows whose owning runner died before issuing a terminal UPDATE —
+      // see packages/runner/src/queue.ts:361 lifecycle invariant)
+      // refreshed this key every tick, keeping `idleMs` near zero forever
+      // and blocking scale-down even after the math correctly said
+      // `desired < current`. Source of truth is now the heartbeats:
+      // a runner that actually has work in progress reports `activeRuns
+      // > 0` via its heartbeat (provider initializes 0, heartbeat is the
+      // only writer — verified across noop/local-docker/digitalocean
+      // providers). A `ready > 0` queue is also genuine activity even
+      // before a runner picks it up.
+      const realActivity = stats.ready > 0 || runners.some((r) => r.activeRuns > 0);
+      if (realActivity) {
         await redis.set(
           LAST_ACTIVITY_KEY,
           Date.now().toString(),

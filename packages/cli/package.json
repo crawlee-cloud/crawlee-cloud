@@ -1,6 +1,6 @@
 {
   "name": "@crawlee-cloud/cli",
-  "version": "0.9.8",
+  "version": "0.9.9",
   "description": "CLI for Crawlee Cloud - run and deploy Actors",
   "type": "module",
   "bin": {
