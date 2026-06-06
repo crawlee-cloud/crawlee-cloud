@@ -30,7 +30,31 @@ interface RunRow {
   run_after: Date | null;
   created_at: Date;
   modified_at: Date;
+  /**
+   * Joined from `datasets.item_count` via LEFT JOIN on `default_dataset_id`.
+   * Null when the run has no default dataset; otherwise the live count
+   * maintained atomically by the dataset push endpoint (see
+   * routes/datasets.ts, the CTE that does `UPDATE datasets SET item_count
+   * = item_count + N ... RETURNING item_count`).
+   *
+   * Lives on every endpoint that returns a formatRun so the dashboard
+   * can render an Items column without an N+1 round-trip per row.
+   */
+  default_dataset_item_count: number | null;
 }
+
+/**
+ * Shared SELECT for any query feeding `formatRun`. The LEFT JOIN is on
+ * the datasets PK (cheap, no row multiplication — datasets are 1:1 with
+ * `runs.default_dataset_id`). Centralized so all call sites stay in
+ * lockstep: a divergence here would have some endpoints emit live
+ * `defaultDatasetItemCount` and others emit `null` for the same run.
+ */
+const RUN_SELECT_WITH_DATASET_COUNT = `
+  SELECT r.*, d.item_count AS default_dataset_item_count
+  FROM runs r
+  LEFT JOIN datasets d ON d.id = r.default_dataset_id
+`;
 
 export const runsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.addHook('preHandler', authenticate);
@@ -57,23 +81,29 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     const desc = q.desc;
 
     // Build WHERE clause dynamically while keeping queries parameterised.
-    const where: string[] = ['user_id = $1'];
+    // Columns are qualified with `r.` because the SELECT below LEFT JOINs
+    // datasets, and `user_id` / `created_at` exist on BOTH tables —
+    // unqualified references would error with "column reference is
+    // ambiguous". The COUNT query doesn't join, but using `r.` there
+    // too keeps the where-builder uniform (and harmless: bare-`runs`
+    // can be aliased to `r` via the table-alias form below).
+    const where: string[] = ['r.user_id = $1'];
     const params: unknown[] = [request.user!.id];
     let p = 2;
     if (q.status !== undefined) {
-      where.push(`status = $${p++}`);
+      where.push(`r.status = $${p++}`);
       params.push(q.status);
     }
     if (q.actorId !== undefined) {
-      where.push(`actor_id = $${p++}`);
+      where.push(`r.actor_id = $${p++}`);
       params.push(q.actorId);
     }
     if (q.since !== undefined) {
-      where.push(`created_at >= $${p++}`);
+      where.push(`r.created_at >= $${p++}`);
       params.push(q.since);
     }
     if (q.until !== undefined) {
-      where.push(`created_at < $${p++}`);
+      where.push(`r.created_at < $${p++}`);
       params.push(q.until);
     }
     const whereSql = where.join(' AND ');
@@ -82,7 +112,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     // so the count query is cheap up to ~hundreds of thousands of rows.
     const [countResult, pageResult] = await Promise.all([
       query<{ total: string }>(
-        `SELECT COUNT(*)::text AS total FROM runs WHERE ${whereSql}`,
+        `SELECT COUNT(*)::text AS total FROM runs r WHERE ${whereSql}`,
         params
       ),
       query<RunRow>(
@@ -90,8 +120,18 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
         // can drop or duplicate rows when two runs share the exact same
         // created_at (ms-precision ties are realistic at 140 scrapers ×
         // burst writes — Postgres doesn't guarantee row order on ties).
-        `SELECT * FROM runs WHERE ${whereSql}
-         ORDER BY created_at ${desc ? 'DESC' : 'ASC'}, id ${desc ? 'DESC' : 'ASC'}
+        //
+        // WHERE-clause columns are `r.`-qualified above because the
+        // LEFT JOIN below brings in `datasets`, which shares the
+        // `user_id` and `created_at` column names with `runs` —
+        // unqualified references would error with "column reference
+        // is ambiguous". `status` and `actor_id` are not ambiguous
+        // today, but qualifying them keeps the where-builder uniform
+        // and protects against future columns being added on either
+        // side of the join.
+        `${RUN_SELECT_WITH_DATASET_COUNT}
+         WHERE ${whereSql}
+         ORDER BY r.created_at ${desc ? 'DESC' : 'ASC'}, r.id ${desc ? 'DESC' : 'ASC'}
          LIMIT $${p++} OFFSET $${p++}`,
         [...params, limit, offset]
       ),
@@ -233,7 +273,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get<{ Params: { runId: string } }>('/actor-runs/:runId', async (request, reply) => {
     const { runId } = request.params;
 
-    const result = await query<RunRow>('SELECT * FROM runs WHERE id = $1 AND user_id = $2', [
+    const result = await query<RunRow>(`${RUN_SELECT_WITH_DATASET_COUNT} WHERE r.id = $1 AND r.user_id = $2`, [
       runId,
       request.user!.id,
     ]);
@@ -281,11 +321,22 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
 
     // Add user_id filter for authorization
     values.push(request.user!.id);
+    // CTE pattern: UPDATE returns the touched row, then we LEFT JOIN it
+    // against datasets to populate default_dataset_item_count for the
+    // formatRun output. Without this, the mutating endpoints would return
+    // a payload that lacks `defaultDatasetItemCount` while LIST and GET
+    // include it — the divergence the centralized `formatRun` contract
+    // is meant to prevent.
     const result = await query<RunRow>(
       `
-      UPDATE runs SET ${setClauses.join(', ')}
-      WHERE id = $${paramIndex} AND user_id = $${paramIndex + 1}
-      RETURNING *
+      WITH updated AS (
+        UPDATE runs SET ${setClauses.join(', ')}
+        WHERE id = $${paramIndex} AND user_id = $${paramIndex + 1}
+        RETURNING *
+      )
+      SELECT r.*, d.item_count AS default_dataset_item_count
+      FROM updated r
+      LEFT JOIN datasets d ON d.id = r.default_dataset_id
     `,
       values
     );
@@ -306,12 +357,19 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const { runId } = request.params;
 
+      // CTE pattern (see PUT handler above for rationale) — keeps the
+      // formatRun output shape consistent across endpoints.
       const result = await query<RunRow>(
         `
-      UPDATE runs
-      SET status = 'ABORTED', finished_at = NOW(), modified_at = NOW()
-      WHERE id = $1 AND status = 'RUNNING' AND user_id = $2
-      RETURNING *
+      WITH updated AS (
+        UPDATE runs
+        SET status = 'ABORTED', finished_at = NOW(), modified_at = NOW()
+        WHERE id = $1 AND status = 'RUNNING' AND user_id = $2
+        RETURNING *
+      )
+      SELECT r.*, d.item_count AS default_dataset_item_count
+      FROM updated r
+      LEFT JOIN datasets d ON d.id = r.default_dataset_id
     `,
         [runId, request.user!.id]
       );
@@ -335,12 +393,19 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const { runId } = request.params;
 
+      // CTE pattern (see PUT handler above for rationale) — keeps the
+      // formatRun output shape consistent across endpoints.
       const result = await query<RunRow>(
         `
-      UPDATE runs
-      SET status = 'RUNNING', finished_at = NULL, modified_at = NOW()
-      WHERE id = $1 AND status IN ('FAILED', 'ABORTED', 'TIMED-OUT') AND user_id = $2
-      RETURNING *
+      WITH updated AS (
+        UPDATE runs
+        SET status = 'RUNNING', finished_at = NULL, modified_at = NOW()
+        WHERE id = $1 AND status IN ('FAILED', 'ABORTED', 'TIMED-OUT') AND user_id = $2
+        RETURNING *
+      )
+      SELECT r.*, d.item_count AS default_dataset_item_count
+      FROM updated r
+      LEFT JOIN datasets d ON d.id = r.default_dataset_id
     `,
         [runId, request.user!.id]
       );
@@ -458,7 +523,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
     const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
 
-    const run = await query<RunRow>('SELECT * FROM runs WHERE id = $1 AND user_id = $2', [
+    const run = await query<RunRow>(`${RUN_SELECT_WITH_DATASET_COUNT} WHERE r.id = $1 AND r.user_id = $2`, [
       runId,
       request.user!.id,
     ]);
@@ -491,7 +556,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const { runId, key } = request.params;
 
-      const run = await query<RunRow>('SELECT * FROM runs WHERE id = $1 AND user_id = $2', [
+      const run = await query<RunRow>(`${RUN_SELECT_WITH_DATASET_COUNT} WHERE r.id = $1 AND r.user_id = $2`, [
         runId,
         request.user!.id,
       ]);
@@ -525,6 +590,22 @@ function formatRun(row: RunRow) {
     startedAt: row.started_at,
     finishedAt: row.finished_at,
     defaultDatasetId: row.default_dataset_id,
+    /**
+     * Live item count from the joined `datasets` row. Two normal cases:
+     *   - `default_dataset_id` is NULL (no dataset, e.g. run failed
+     *     before SDK init) → this field is also null, dashboard renders "—".
+     *   - dataset exists → this field is the live count (0 for empty,
+     *     positive for populated). Apify clients should read
+     *     `stats.datasetItemCount` below for compat with their schema.
+     *
+     * A third, defensive case exists: `defaultDatasetId` is set but
+     * `defaultDatasetItemCount` is null. The schema has
+     * `ON DELETE SET NULL` on the FK (see migrate.ts), so a deleted
+     * dataset nulls out the FK column too — this case shouldn't be
+     * reachable in practice. The dashboard renders "?" if it ever does,
+     * which is a defensive sentinel rather than a routine state.
+     */
+    defaultDatasetItemCount: row.default_dataset_item_count,
     defaultKeyValueStoreId: row.default_key_value_store_id,
     defaultRequestQueueId: row.default_request_queue_id,
     options: {
@@ -535,18 +616,27 @@ function formatRun(row: RunRow) {
     buildId: row.build_id,
     buildNumber: row.build_number,
     exitCode: row.exit_code,
-    stats: row.stats_json ?? {
-      // Default stats structure
-      inputBodyLen: 0,
-      restartCount: 0,
-      resurrectCount: 0,
-      runTimeSecs:
-        row.finished_at && row.started_at
-          ? Math.round(
-              (new Date(row.finished_at).getTime() - new Date(row.started_at).getTime()) / 1000
-            )
-          : 0,
-      computeUnits: 0,
+    // Apify v2 compat: `stats` carries `datasetItemCount` as a nested
+    // field; the top-level `defaultDatasetItemCount` above is convenient
+    // for our dashboard but not what apify-client reads. We spread the
+    // ingested Crawlee stats first, then overlay the live joined count
+    // so the value is always the authoritative `datasets.item_count` —
+    // never the potentially-stale `SDK_CRAWLER_STATISTICS_0.requestsFinished`
+    // count from the runner-ingested blob.
+    stats: {
+      ...(row.stats_json ?? {
+        inputBodyLen: 0,
+        restartCount: 0,
+        resurrectCount: 0,
+        runTimeSecs:
+          row.finished_at && row.started_at
+            ? Math.round(
+                (new Date(row.finished_at).getTime() - new Date(row.started_at).getTime()) / 1000
+              )
+            : 0,
+        computeUnits: 0,
+      }),
+      datasetItemCount: row.default_dataset_item_count ?? 0,
     },
     retryCount: row.retry_count,
     originRunId: row.origin_run_id,

@@ -136,7 +136,7 @@ export default function ConsolePage() {
             stats.totalRuns === 0
               ? undefined
               : stats.successRate >= 90
-                ? 'signal'
+                ? 'ok'
                 : stats.successRate >= 70
                   ? 'warn'
                   : 'fail'
@@ -161,7 +161,12 @@ export default function ConsolePage() {
             </div>
             <div className="flex items-center gap-3 font-mono text-[10px] tracking-widest text-muted-foreground">
               <span className="flex items-center gap-1.5">
-                <span className="inline-block w-2 h-2 rounded-sm bg-signal" /> OK
+                {/* Legend matches the bars below — bg-ok for the
+                    non-failed portion, bg-fail for the overlaid
+                    failed portion. Using --ok (green) instead of
+                    --signal (brand orange) so the chart reads as
+                    "good vs bad", not "brand-accent vs warning". */}
+                <span className="inline-block w-2 h-2 rounded-sm bg-ok" /> OK
               </span>
               <span className="flex items-center gap-1.5">
                 <span className="inline-block w-2 h-2 rounded-sm bg-fail" /> FAIL
@@ -182,7 +187,7 @@ export default function ConsolePage() {
                 >
                   <div
                     style={{ height: `${h}%` }}
-                    className="bg-signal/30 group-hover:bg-signal/60 transition-colors relative"
+                    className="bg-ok/30 group-hover:bg-ok/60 transition-colors relative"
                   >
                     {failedH > 0 && (
                       <div
@@ -318,17 +323,24 @@ function Stat({
   label: string;
   value: number | string;
   loading: boolean;
-  tone?: 'signal' | 'warn' | 'fail';
+  // `ok` (semantic green) for healthy success-state values; `signal`
+  // (brand orange) for "this is happening right now" indicators.
+  // See globals.css: --ok is a separate token from --signal so success
+  // colour doesn't collide with the brand accent on tiles like
+  // SUCCESS · ALL-TIME at >=90%.
+  tone?: 'ok' | 'signal' | 'warn' | 'fail';
   live?: boolean;
 }) {
   const toneClass =
-    tone === 'signal'
-      ? 'text-signal'
-      : tone === 'warn'
-        ? 'text-warn'
-        : tone === 'fail'
-          ? 'text-fail'
-          : 'text-foreground';
+    tone === 'ok'
+      ? 'text-ok'
+      : tone === 'signal'
+        ? 'text-signal'
+        : tone === 'warn'
+          ? 'text-warn'
+          : tone === 'fail'
+            ? 'text-fail'
+            : 'text-foreground';
   return (
     <div className="bg-card px-5 py-4 relative">
       <div className="flex items-center justify-between mb-2">

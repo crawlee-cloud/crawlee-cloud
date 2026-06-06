@@ -48,6 +48,16 @@ export interface Run {
   startedAt?: string;
   finishedAt?: string;
   defaultDatasetId?: string;
+  /**
+   * Live item count for the default dataset (null if no default dataset).
+   * Non-optional from v1.0 onward — every endpoint that emits a run
+   * payload populates this field via the centralized LEFT JOIN in
+   * `routes/runs.ts` (`RUN_SELECT_WITH_DATASET_COUNT`). If a future
+   * refactor drops the join from any endpoint, the typed wrapper will
+   * surface the regression at compile time on the dashboard side
+   * before it ships.
+   */
+  defaultDatasetItemCount: number | null;
   defaultKeyValueStoreId?: string;
   defaultRequestQueueId?: string;
   // Server returns these nested under `options` (Apify-compatible shape).

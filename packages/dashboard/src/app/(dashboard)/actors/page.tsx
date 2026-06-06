@@ -1,12 +1,14 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Plus, Search, Drama } from 'lucide-react';
+import { Plus, Search, Drama, Trash2 } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
 import { CopyButton } from '@/components/ui/copy-button';
 import { Pagination } from '@/components/pagination';
+import { useConfirm } from '@/components/ui/confirm';
+import { useToast } from '@/components/ui/toast';
 import type { Actor } from '@/lib/api';
-import { getActors } from '@/lib/api';
+import { getActors, deleteActor } from '@/lib/api';
 import { PAGE_SIZE } from '@/lib/constants';
 import { useDebouncedSearch } from '@/lib/use-debounced-search';
 import { usePageParam } from '@/lib/use-page-param';
@@ -17,6 +19,38 @@ export default function ActorsPage() {
   const [actors, setActors] = useState<Actor[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  const confirm = useConfirm();
+  const toast = useToast();
+
+  /**
+   * Per-card delete affordance. Symmetric with the dataset / KV-store /
+   * webhook / schedule list pages — every other resource has a list-page
+   * delete; actors had only the detail-page button until v1.0.
+   *
+   * Click event must stop propagation because the surrounding card is
+   * itself an AppLink to `/actors/:name` — without this, clicking the
+   * trash button would navigate first and the confirm dialog would
+   * appear on the wrong page (or never, if the navigation tears down
+   * the component).
+   */
+  async function handleDelete(actor: Actor) {
+    const ok = await confirm({
+      tone: 'danger',
+      title: `Delete actor "${actor.title || actor.name}"?`,
+      description:
+        'Actor definition, builds, schedules, webhooks, and runs are removed permanently. Datasets and key-value stores produced by past runs stay. Cannot be undone.',
+      confirmLabel: 'delete actor',
+    });
+    if (!ok) return;
+    try {
+      await deleteActor(actor.id);
+      setActors((prev) => prev.filter((a) => a.id !== actor.id));
+      setTotal((t) => Math.max(0, t - 1));
+      toast.success('Actor deleted');
+    } catch (err) {
+      toast.error('Failed to delete actor', { description: (err as Error).message });
+    }
+  }
 
   useEffect(() => {
     let alive = true;
@@ -102,12 +136,27 @@ export default function ActorsPage() {
                   <div className="h-9 w-9 rounded-sm border border-border bg-secondary/60 grid place-items-center text-muted-foreground group-hover:text-signal group-hover:border-signal/40 transition-colors">
                     <Drama className="h-4 w-4" />
                   </div>
-                  {/* ID chip + copy. Copy button is nested inside the
-                      parent Link card; CopyButton stops propagation so the
-                      click doesn't also navigate to the actor detail. */}
+                  {/* ID chip + copy + delete. All nested controls inside
+                      the parent Link card must stopPropagation so the
+                      click doesn't also navigate to the actor detail.
+                      CopyButton handles its own; the trash <button> below
+                      does it inline. */}
                   <span className="inline-flex items-center gap-1 font-mono text-[10px] tracking-widest text-muted-foreground border border-border px-1.5 py-0.5 rounded-sm">
                     {a.id.slice(0, 8)}
                     <CopyButton value={a.id} label="Actor ID" />
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void handleDelete(a);
+                      }}
+                      aria-label="Delete actor"
+                      title="Delete actor"
+                      className="ml-0.5 -mr-0.5 p-0.5 rounded-sm text-muted-foreground/70 hover:text-fail transition-colors"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
                   </span>
                 </div>
                 <h3 className="text-[15px] leading-tight text-foreground group-hover:text-signal transition-colors">

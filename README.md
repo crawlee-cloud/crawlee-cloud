@@ -222,9 +222,11 @@ See [deploy/](deploy/) for detailed instructions.
 
 ## What's New
 
-**v0.8.0** — auto-scaling with image registry support, build versioning, scale-aware run pagination, CLI profiles + `crc info`, dashboard rewrite (Builds, Schedules, Webhooks, Request Queues, Runners, KV browser). See the [full changelog](CHANGELOG.md).
+**v1.0.0** — semver stability commitment. The Apify v2 compatibility surface (run / dataset / KV / queue / build / webhook endpoints and response shapes), `crc` CLI commands, and documented operator env vars are now stable; breaking changes require a MAJOR bump from here on. This release also adds live dataset item counts on the runs grid, 5-second auto-refresh, and a semantic-green success colour separated from the brand orange. See the [full changelog](CHANGELOG.md#100---2026-06-06).
 
-> ⚠️ **Upgrading from v0.7?** `GET /metrics` and `GET /v2/scaler/status` are now admin-only. If you scrape `/metrics` with Prometheus, send an admin token in the `Authorization` header, or set `METRICS_PUBLIC=true`. See [CHANGELOG → 0.8.0 Breaking](CHANGELOG.md#080---2026-05-01).
+The 0.9.x line that led into 1.0 covered: multi-replica API safety with Postgres advisory-lock leader election (v0.9.7), poll-based scheduler (v0.9.7), CLI forwarding of `actor.json` `defaultRunOptions` (v0.9.8), and the autoscaler scale-down freeze fix with heartbeat / `started_at` correlation against zombie RUNNING rows (v0.9.9).
+
+> **Upgrading from v0.9.9 to v1.0.0** is a drop-in: no schema migration, no env-var changes, no provider changes. If you're coming from v0.8.x or earlier, walk the CHANGELOG forward — the breaking notes are flagged inline at each release.
 
 ---
 

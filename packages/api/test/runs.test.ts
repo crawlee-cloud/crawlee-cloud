@@ -41,6 +41,10 @@ const createRunRow = (overrides = {}) => ({
   container_url: null,
   created_at: new Date(),
   modified_at: new Date(),
+  // Joined column from the LEFT JOIN datasets — every formatRun-feeding
+  // query in routes/runs.ts returns this; tests must mirror that shape
+  // or they're testing a fictional contract.
+  default_dataset_item_count: 0,
   ...overrides,
 });
 
@@ -79,6 +83,41 @@ describe('Actor Runs Routes', () => {
       expect(body.data.total).toBe(2);
       expect(body.data.limit).toBe(50);
       expect(body.data.offset).toBe(0);
+    });
+
+    it('exposes defaultDatasetItemCount + stats.datasetItemCount on every formatRun output (v1.0 shape contract)', async () => {
+      // This locks the 1.0 semver-committed run-response shape against
+      // the divergence Codex flagged on PR #53: PUT/abort/resurrect used
+      // RETURNING * without the LEFT JOIN and silently produced payloads
+      // missing the field. The CTE rewrite fixes the regression class;
+      // this assertion makes "every endpoint returns the same shape"
+      // an enforced contract instead of a JSDoc claim.
+      mockQuery.mockResolvedValueOnce({ rows: [{ total: '1' }] }).mockResolvedValueOnce({
+        rows: [createRunRow({ default_dataset_item_count: 1247 })],
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/v2/actor-runs' });
+      expect(response.statusCode).toBe(200);
+      const run = JSON.parse(response.body).data.items[0];
+
+      // Top-level field (dashboard wrapper reads this directly).
+      expect(run).toHaveProperty('defaultDatasetItemCount', 1247);
+      // Apify-compat nested field (apify-client reads `run.stats.datasetItemCount`).
+      expect(run.stats).toHaveProperty('datasetItemCount', 1247);
+    });
+
+    it('exposes both fields as null/0 when the run has no default dataset', async () => {
+      // The "run failed before SDK init" case: no dataset, count is null.
+      // Top-level field is null (semantically "no dataset, no count");
+      // stats.datasetItemCount is 0 (Apify clients expect a number, not null).
+      mockQuery.mockResolvedValueOnce({ rows: [{ total: '1' }] }).mockResolvedValueOnce({
+        rows: [createRunRow({ default_dataset_id: null, default_dataset_item_count: null })],
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/v2/actor-runs' });
+      const run = JSON.parse(response.body).data.items[0];
+      expect(run.defaultDatasetItemCount).toBeNull();
+      expect(run.stats.datasetItemCount).toBe(0);
     });
   });
 
@@ -253,6 +292,27 @@ describe('Actor Runs Routes', () => {
 
       expect(response.statusCode).toBe(200);
     });
+
+    it('returns defaultDatasetItemCount on the updated run (C1 regression — CTE preserves the LEFT JOIN)', async () => {
+      // Symmetric with the abort + resurrect regression tests below.
+      // Non-zero distinct value (1247) — using the factory default of
+      // 0 would let "JOIN dropped, field is undefined → ?? 0 → 0"
+      // silently pass. 1247 forces the assertion to actually exercise
+      // the joined column.
+      mockQuery.mockResolvedValueOnce({
+        rows: [createRunRow({ status: 'SUCCEEDED', default_dataset_item_count: 1247 })],
+      });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/v2/actor-runs/run-1',
+        payload: { status: 'SUCCEEDED' },
+      });
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.data.defaultDatasetItemCount).toBe(1247);
+      expect(body.data.stats.datasetItemCount).toBe(1247);
+    });
   });
 
   describe('POST /v2/actor-runs/:runId/abort', () => {
@@ -281,6 +341,23 @@ describe('Actor Runs Routes', () => {
 
       expect(response.statusCode).toBe(404);
     });
+
+    it('returns defaultDatasetItemCount on the aborted run (C1 regression — CTE preserves the LEFT JOIN)', async () => {
+      // Pre-CTE-rewrite, abort/resurrect/PUT used RETURNING * directly
+      // and skipped the LEFT JOIN datasets, so the response payload had
+      // `defaultDatasetItemCount: undefined`. The CTE pattern keeps the
+      // shape identical to list/GET. Asserting per-endpoint here so the
+      // regression class is permanently caught.
+      mockQuery.mockResolvedValueOnce({
+        rows: [createRunRow({ status: 'ABORTED', default_dataset_item_count: 42 })],
+      });
+
+      const response = await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/abort' });
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.data.defaultDatasetItemCount).toBe(42);
+      expect(body.data.stats.datasetItemCount).toBe(42);
+    });
   });
 
   describe('POST /v2/actor-runs/:runId/resurrect', () => {
@@ -297,6 +374,24 @@ describe('Actor Runs Routes', () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body.data.status).toBe('RUNNING');
+    });
+
+    it('returns defaultDatasetItemCount on the resurrected run (C1 regression — CTE preserves the LEFT JOIN)', async () => {
+      // Symmetric with the abort + PUT regression tests. Non-zero
+      // distinct value (88) so "JOIN dropped → undefined → ?? 0 → 0"
+      // cannot silently satisfy the assertion.
+      mockQuery.mockResolvedValueOnce({
+        rows: [createRunRow({ status: 'RUNNING', default_dataset_item_count: 88 })],
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/actor-runs/run-1/resurrect',
+      });
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.data.defaultDatasetItemCount).toBe(88);
+      expect(body.data.stats.datasetItemCount).toBe(88);
     });
   });
 

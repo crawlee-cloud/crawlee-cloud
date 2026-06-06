@@ -2,6 +2,48 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.0] - 2026-06-06
+
+**Crawlee Cloud is now 1.0.** Public API and operator workflows committed: from this release forward, breaking changes go through MAJOR bumps per semver, and the Apify v2 compatibility surface is stable. The 0.9.x line stabilized into a multi-replica-safe, scale-down-correct, semantically-coloured operator console — this release adds the last two operator-quality items and draws the line under that work.
+
+### Dashboard
+
+- **Runs grid now shows live dataset item counts.** The previous "Dataset" column displayed the truncated dataset ID — operators had to click through and wait for the dataset detail page just to learn whether a run produced 12 items or 12,000. The column is now an "Items" cell showing the count (right-aligned, tabular-nums), still linked to `/datasets/:id` for one-click drill-in. `—` for runs with no default dataset; `?` is a defensive sentinel for the (shouldn't-happen) case of a dataset FK that didn't honor `ON DELETE SET NULL`.
+- **Actor detail page mirrors the new Items cell.** The runs sub-table on `/actors/:name` had its own "Dataset" column showing the truncated ID; it now matches the main runs grid so the 1.0 UI is consistent across both views.
+- **Dashboard home — SUCCESS · ALL-TIME tile reads green at ≥90%**, instead of brand orange. Throughput chart legend "OK" dot and bars also flip to green. The brand `--signal` (orange) stays the "right-now activity" colour (RUNNING NOW tile, button accents, focus rings); `--ok` (semantic green, added in v0.9.9) is now used for every "this is healthy" indicator so success state never collides with brand at a glance.
+- **Auto-refresh on the runs grid every 5s.** No more F5 / Cmd-R to see READY → RUNNING → SUCCEEDED transitions land. Re-fetches the current view (page + status filter, captured via a ref so the interval stays stable across renders without thrashing). Matches the existing 10s/POLL pattern on the dashboard home and runners pages. See "Notes" below for why this is polling rather than streaming.
+
+### API
+
+- **`/v2/actor-runs` (list, detail, **and mutating endpoints**) now returns `defaultDatasetItemCount`.** Wired via a single `LEFT JOIN datasets ON datasets.id = runs.default_dataset_id`. The mutating endpoints (PUT `/actor-runs/:id`, POST `/abort`, POST `/resurrect`) use a CTE pattern (`WITH updated AS (UPDATE … RETURNING *) SELECT u.*, d.item_count FROM updated u LEFT JOIN datasets d …`) so the JOIN is in the same statement as the UPDATE — keeps the response shape identical to LIST/GET. No N+1 round-trips for the dashboard. Apify-compatible — additional field is additive, not a breaking change. The WHERE-clause columns now carry an `r.` prefix because `datasets` shares `user_id` and `created_at` column names with `runs` — unqualified references would have errored.
+- **`stats.datasetItemCount` is now populated too** — the Apify-compat location for the same value. `apify-client` reads `run.stats.datasetItemCount`; our dashboard reads the top-level `defaultDatasetItemCount`. Both are kept in sync from the same joined column, so they never drift across the **runs API**. Always the live `datasets.item_count`, never the potentially-stale Crawlee SDK `requestsFinished` value from the ingested stats blob.
+- **Known follow-up (v1.0.1)**: the **webhook payload's `resource.stats` does NOT currently include `datasetItemCount`** — it's still built from the runner-ingested Crawlee statistics blob only. Webhook receivers that need the dataset item count should query `GET /v2/actor-runs/{resource.id}` from the payload's `resource.id`. Parity is planned for v1.0.1 — the fix requires the runner to query `datasets.item_count` at webhook-fire time, which it doesn't currently do. Documented at `docs/api.md`.
+
+### Tests
+
+- **API contract test** for the run-response shape: asserts `defaultDatasetItemCount` and `stats.datasetItemCount` are populated on LIST, and on the abort endpoint (the most representative of the three mutating handlers). Locks the 1.0-committed shape against the regression class the original PR introduced — where mutating endpoints diverged from LIST/GET because they bypassed the centralized JOIN.
+
+### Docs
+
+- **README** "What's new" headline now reflects v1.0.0 instead of the stale v0.8.0 callout, with a brief summary of the 0.9.x line that led into 1.0 and the drop-in upgrade note from 0.9.9.
+- **Roadmap** marks the v1.0.0 stability commitment as ✅ Shipped on 2026-06-06, lists the actual 0.9.x patch-line shipped releases, and re-frames the original "v1.0 wish list" as deferred candidates for v1.1 / v2.0 (zombie row reaper, DO provider pagination, shared workspace, etc.).
+- **`.env.example` / `.env.secure.example`**: `RUNNER_CLONE_REF` (added in v0.9.6, shell-injection hardened the same release) is now documented. The 1.0 surface commits "documented env vars are stable" — operators can now discover this knob from the env examples instead of source code.
+
+### Storage hygiene
+
+- **`DELETE /v2/datasets/:id` now cleans up the S3 prefix.** Pre-1.0, this handler only removed the PG row — the operator-facing dataset disappeared from the dashboard grid but the S3 objects (potentially gigabytes of scraped data) were left orphaned, with no tombstone for the retention reaper to pick up. Operators reasonably assumed their storage bill stopped growing; it didn't. The confirm dialog text on the dashboard (`/datasets`, `/datasets/:id`) was also misleading — it claimed items were deleted from S3, but only PG actually was. The handler now fires the same `deleteDatasetS3Prefix` helper that the retention path already uses. Fire-and-forget: an S3 failure logs but still returns 204, matching the retention path's "stale S3 prefix is just orphaned bytes" posture — operator-visible state (PG row gone) is the source of truth. Three regression tests added (success path, 404, S3-error path).
+- **`DELETE /v2/key-value-stores/:id` now cleans up the S3 prefix.** Symmetric fix — KV value blobs (often large: run state, screenshots, INPUT.json) were also leaked. Same fire-and-forget pattern, same three regression tests.
+
+### Dashboard
+
+- **Actors list page now has a delete affordance per card.** Every other resource list page (datasets, key-value stores, request queues, schedules, webhooks) already had list-page delete — actors was the odd one out. Click → confirm → call `deleteActor` → optimistic remove from the grid. The trash button is inline next to the ID chip in the top-right of each card, and uses `e.stopPropagation()` so clicking it doesn't also navigate to the actor detail page (the whole card is a link).
+
+### Notes for operators
+
+- **No schema migration, no env vars, no provider changes.** Upgrading from 0.9.9 to 1.0.0 is a drop-in.
+- **Why polling, not Postgres `LISTEN/NOTIFY` + SSE?** Considered. Polling at 5s buys 95% of the "live" feel for ~5% of the engineering cost: each operator's open tab issues **12-24 list-queries/minute** (one per tick on the `all` filter; up to two for multi-status filters like `failed` which fans out into `FAILED + TIMED-OUT`) against indexed columns — negligible cost. The 5s tick re-fetches only the current page; status-chip counts and actor metadata stay at their last-loaded values until the next mount / filter-change / explicit refresh, which is fine for an ops console where the operator is watching the table for transitions. `LISTEN/NOTIFY` + SSE would require: a long-lived DB connection per API replica (separate from the pool — `LISTEN` holds its own session), a trigger on `runs` UPDATE/INSERT, a Fastify SSE route with auth + reconnect handling, and a per-replica fan-out story since each replica only receives notifications it itself is `LISTEN`-ing for. Worth it once we feel the polling cost, not before — typical ops dashboards run at 5–10s polling for years without justifying the switch. The door stays open: if needed, the existing Redis pub/sub used for `run:new` runner notifications is a more natural source for SSE than PG NOTIFY.
+- **What "1.0" commits to.** The Apify v2 compatibility surface (run/dataset/KV/queue/build endpoints and their response shapes) is now stable. CLI commands (`crc push|run|call|logs|init|dev|status`) are stable. Operator env vars documented in `.env.example` and `.env.secure.example` are stable. Anything not in those surfaces (internal helpers, undocumented endpoints) may still change without a MAJOR bump.
+
 ## [0.9.9] - 2026-06-06
 
 ### Fixed

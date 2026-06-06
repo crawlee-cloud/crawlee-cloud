@@ -123,26 +123,47 @@ The "platform survives months of operation" gate.
 | Dashboard counts real total                      | ✅ Shipped — counter tiles read `COUNT(*)`, not `items.length` capped at 1000              |
 | Stress-fixture script                            | ✅ Shipped — `scripts/seed-stress-fixtures.ts` for at-scale QA                             |
 
-## v0.9.x patch line
+## v0.9.x patch line ✅
 
-Anything additive or bug-fix-shaped lands here as `0.9.<n+1>` until v1.0 cuts.
+The 0.9.x line was the run-up to 1.0. Highlights:
+
+| Release | Headline                                                                                                              |
+| ------- | --------------------------------------------------------------------------------------------------------------------- |
+| v0.9.4  | Apify proxy support (`useApifyProxy=true`) end-to-end; `PROXY_ENCRYPTION_KEY` plumbing.                               |
+| v0.9.5  | Scaler-provisioned runners inherit `PROXY_ENCRYPTION_KEY` via cloud-init.                                             |
+| v0.9.6  | `RUNNER_CLONE_REF` operator knob pins scaler-provisioned runners to a specific clone ref (shell-injection hardened).  |
+| v0.9.7  | API multi-replica safety via Postgres advisory-lock leader election; poll-based scheduler; actor `default_run_options` propagated to runs. |
+| v0.9.8  | `crc push` now forwards `actor.json` `defaultRunOptions` (timeoutSecs / memoryMbytes / build) — fixes the "scraper stuck at 3600s" report. |
+| v0.9.9  | Autoscaler scale-down freeze fix: math + heartbeat / `started_at` correlation against zombie RUNNING rows. Semantic `--ok` green colour token. |
 
 ---
 
-## v1.0.0 — Stability commitment
+## v1.0.0 — Stability commitment ✅ (2026-06-06)
 
-**The next major after v0.9.x is `1.0.0`, not `0.10.0`.** Going to 1.0 carries semver weight: breaking changes after 1.0 cost a major bump or a deprecation window, so the version is also a commitment to the contract.
+**v1.0.0 cut on 2026-06-06 via PR #53.** The first release where breaking changes cost a MAJOR bump.
 
-What goes in:
+**Committed surfaces:**
 
-| Area                                                    | Why it's a v1.0 task                                                                                                  |
+- Apify v2 API endpoints (run / dataset / KV / queue / build / webhook) and their response shapes
+- `crc` CLI commands (`push | run | call | logs | init | dev | status`)
+- Operator env vars documented in `.env.example` and `.env.secure.example`
+
+**Not committed** (still free to change without MAJOR): internal helpers, undocumented endpoints, scaler internals, dashboard structure.
+
+The 1.0-launch PR was deliberately small (live dataset item counts on the runs grid + 5s auto-refresh + semantic-green success colour); most of the 1.0-worthy substance shipped across 0.9.x — see the patch-line summary above.
+
+### Deferred from the 1.0 push (candidates for v1.1 or v2.0)
+
+The original 1.0 wish-list had more on it than shipped. These are the genuinely-deferred items:
+
+| Area                                                    | Why it's still open                                                                                                   |
 | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `packages/shared` workspace                             | The `applyWebhookTemplate` engine is duplicated in api+runner with KEEP-IN-SYNC headers. Promote to a real workspace. |
-| Apify v2 API drift audit                                | Any gap between our v2 surface and current Apify is cheaper to close before the contract is "supported."              |
-| DB migration policy                                     | Forward-only, additive. No breaking column drops without a deprecation window. Documented.                            |
-| CLI command stability                                   | No rename/repurpose without a `crawlee-cloud migrate` style helper.                                                   |
-| Webhook `payload_template` examples in dashboard editor | So operators don't have to consult Apify docs to discover `{{eventData}}` syntax.                                     |
-| Auth/role surface tightening                            | Admin scopes, API key TTLs — anything role-related lands here so post-1.0 doesn't break tokens.                       |
+| `packages/shared` workspace                             | `applyWebhookTemplate` engine is duplicated in api+runner with KEEP-IN-SYNC headers. Land before v2.0 to keep options open for breaking the engine API. |
+| Apify v2 API drift audit                                | Periodic compatibility check against current Apify, especially as their own surface evolves. Triggers v1.x minors as gaps are closed additively.       |
+| Zombie RUNNING row reaper                               | The v0.9.9 scaler resilience covers the symptom; a dedicated periodic job for the data-integrity cleanup is still pending. Probably v1.0.1 / v1.1.       |
+| DigitalOcean `listRunners` pagination                   | Provider's `per_page=100` with no iteration; deployments with >100 droplets silently underreport capacity. Probably v1.0.1.                              |
+| Webhook `payload_template` examples in dashboard editor | Operators still consult Apify docs to discover `{{eventData}}` syntax. UX-only, no contract change — v1.x minor.                                          |
+| Auth/role surface tightening                            | Admin scopes, API key TTLs. Anything role-related that breaks tokens is a v2.0 candidate; anything additive can land in v1.x.                            |
 
 ---
 

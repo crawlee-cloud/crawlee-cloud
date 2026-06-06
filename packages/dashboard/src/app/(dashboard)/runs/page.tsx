@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   ChevronLeft,
@@ -45,6 +45,15 @@ const STATUS_GROUPS: Record<Exclude<StatusGroup, 'all'>, Run['status'][]> = {
   aborted: ['ABORTING', 'ABORTED'],
 };
 
+/**
+ * Auto-refresh cadence for the runs grid. 5s is the operator-feel sweet
+ * spot — fast enough that READY→RUNNING→SUCCEEDED transitions show up
+ * within a glance, slow enough that a 5-operator team doesn't bury the
+ * runs endpoint. Matches the cadence used on the dashboard home and
+ * runners pages (POLL_RUNNERS_MS etc.).
+ */
+const POLL_RUNS_MS = 5_000;
+
 export default function RunsPage() {
   const [items, setItems] = useState<Run[]>([]);
   const [total, setTotal] = useState(0);
@@ -68,8 +77,19 @@ export default function RunsPage() {
    * page) — operators rarely need cross-status pagination, and when they do
    * they can pick the specific status.
    */
-  async function loadPage(group: StatusGroup, off: number) {
-    setLoading(true);
+  /**
+   * Fetch the current page.
+   *
+   * `silent` suppresses the global `loading` flag — used by the 5s
+   * auto-refresh interval. Without it, every polling tick flashes the
+   * entire grid to the `[ LOADING · · · ]` placeholder for the duration
+   * of the network round-trip, which is jarring at the operator's eye
+   * level (flagged on PR #53 by gemini-code-assist). Initial mount and
+   * filter-change still pass `silent=false` so the operator gets visible
+   * feedback on the calls they actually initiated.
+   */
+  async function loadPage(group: StatusGroup, off: number, silent = false) {
+    if (!silent) setLoading(true);
     try {
       if (group === 'all') {
         const page = await listRuns({ limit: PAGE_SIZE, offset: off });
@@ -91,7 +111,7 @@ export default function RunsPage() {
         setOffset(off);
       }
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }
 
@@ -124,12 +144,38 @@ export default function RunsPage() {
   }
 
   /**
-   * Refresh: counts + actors + (the status-filter effect picks up the page).
-   * The page itself is loaded by the status-filter useEffect below — keeping
-   * loadPage out of refresh() avoids a duplicate first-load request.
+   * Full refresh: page + status-chip counts + actor metadata.
+   *
+   * Used by the explicit "refresh" affordance and the filter-change
+   * effect — NOT the 5s polling tick. The polling tick uses
+   * `pollTick` below, which is intentionally narrower.
+   *
+   * `silent` is forwarded to `loadPage` so callers that don't want the
+   * global `loading` flag flipped (e.g. background revalidation) can
+   * suppress the LOADING placeholder render.
    */
-  async function refresh() {
-    await Promise.all([loadPage(statusFilter, offset), loadCounts(), loadActors()]);
+  async function refresh(silent = false) {
+    await Promise.all([loadPage(statusFilter, offset, silent), loadCounts(), loadActors()]);
+  }
+
+  /**
+   * Narrow tick used by the 5s auto-refresh interval. Re-fetches only
+   * what the operator is actively watching — the runs page.
+   *
+   * Pre-v1.0 the polling tick called `refresh(silent=true)`, which fans
+   * out into ~10 requests per tick: 1 page + 8 status-count COUNTs +
+   * 1 large actor-metadata fetch. At a 5-operator team that's 600
+   * req/min on `/v2/actor-runs` for data that mostly doesn't change.
+   *
+   * Trade-off: status-chip counts and actor titles stay at their
+   * last-loaded values until the next mount / filter-change /
+   * explicit refresh. For an ops console where the operator is
+   * watching the runs table for new rows and status transitions,
+   * 5-second-stale chip counts are fine. Actor titles change on the
+   * order of minutes-to-hours (push-driven), not seconds.
+   */
+  async function pollTick() {
+    await loadPage(statusFilter, offset, /* silent */ true);
   }
 
   // First mount: kick off counts + actors. Page load happens via the
@@ -142,6 +188,25 @@ export default function RunsPage() {
   useEffect(() => {
     void loadPage(statusFilter, 0);
   }, [statusFilter]);
+
+  // Live updates: re-fetch the current page every POLL_RUNS_MS via
+  // pollTick (narrow — page only, no count fan-out, no actor metadata).
+  // The interval calls through a ref so it always invokes the latest
+  // `pollTick` (which closes over current `statusFilter` and `offset`)
+  // without needing to be recreated on every render. Putting `pollTick`
+  // directly in deps would tear down and rebuild the interval on every
+  // state change — fine, but noisier; the ref form is the idiomatic
+  // React 18+ pattern for stable timers over changing state.
+  const pollTickRef = useRef(pollTick);
+  useEffect(() => {
+    pollTickRef.current = pollTick;
+  });
+  useEffect(() => {
+    const id = setInterval(() => {
+      void pollTickRef.current();
+    }, POLL_RUNS_MS);
+    return () => clearInterval(id);
+  }, []);
 
   const q = search.trim().toLowerCase();
   // In-page search only — labelled as such so the operator knows it doesn't
@@ -313,7 +378,7 @@ export default function RunsPage() {
                 <th className="px-5 py-2 font-normal">Actor</th>
                 <th className="px-5 py-2 font-normal">Status</th>
                 <th className="px-5 py-2 font-normal">Duration</th>
-                <th className="px-5 py-2 font-normal">Dataset</th>
+                <th className="px-5 py-2 font-normal text-right">Items</th>
                 <th className="px-5 py-2 font-normal text-right">Started</th>
               </tr>
             </thead>
@@ -354,14 +419,23 @@ export default function RunsPage() {
                     <td className="px-5 py-3 font-mono text-[11px] text-muted-foreground tnum">
                       {fmtDuration(run.startedAt, run.finishedAt)}
                     </td>
-                    <td className="px-5 py-3">
+                    <td className="px-5 py-3 font-mono text-[11px] tnum text-right">
+                      {/* Item count is the cell content; click navigates
+                          to the dataset (per user request). Three states:
+                            - no default dataset            → muted "—"
+                            - dataset present, count known  → linked count
+                            - dataset present, count = null → "?" (dataset
+                              was deleted out-of-band; still link so the
+                              user can verify) */}
                       {run.defaultDatasetId ? (
                         <AppLink
                           href={`/datasets/${run.defaultDatasetId}`}
-                          className="font-mono text-[11px] text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+                          className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 justify-end"
                         >
                           <Database className="h-3 w-3" />
-                          {run.defaultDatasetId.slice(0, 10)}
+                          {run.defaultDatasetItemCount != null
+                            ? run.defaultDatasetItemCount.toLocaleString()
+                            : '?'}
                         </AppLink>
                       ) : (
                         <span className="text-muted-foreground/40">—</span>

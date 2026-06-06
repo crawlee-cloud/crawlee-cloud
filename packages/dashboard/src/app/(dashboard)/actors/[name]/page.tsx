@@ -1366,7 +1366,7 @@ function RunsPanel({ runs }: { runs: Run[] }) {
             <th className="px-5 py-2 font-normal">Run</th>
             <th className="px-5 py-2 font-normal">Status</th>
             <th className="px-5 py-2 font-normal">Duration</th>
-            <th className="px-5 py-2 font-normal">Dataset</th>
+            <th className="px-5 py-2 font-normal text-right">Items</th>
             <th className="px-5 py-2 font-normal text-right">Started</th>
           </tr>
         </thead>
@@ -1390,14 +1390,19 @@ function RunsPanel({ runs }: { runs: Run[] }) {
               <td className="px-5 py-3 font-mono text-[11px] text-muted-foreground tnum">
                 {fmtRunDuration(r.startedAt, r.finishedAt)}
               </td>
-              <td className="px-5 py-3">
+              <td className="px-5 py-3 font-mono text-[11px] tnum text-right">
+                {/* Mirrors the runs grid cell (runs/page.tsx) — count
+                    linked to /datasets/:id; see formatRun's
+                    defaultDatasetItemCount JSDoc for state semantics. */}
                 {r.defaultDatasetId ? (
                   <AppLink
                     href={`/datasets/${r.defaultDatasetId}`}
-                    className="font-mono text-[11px] text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+                    className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 justify-end"
                   >
                     <Database className="h-3 w-3" />
-                    {r.defaultDatasetId.slice(0, 10)}
+                    {r.defaultDatasetItemCount != null
+                      ? r.defaultDatasetItemCount.toLocaleString()
+                      : '?'}
                   </AppLink>
                 ) : (
                   <span className="text-muted-foreground/40">—</span>

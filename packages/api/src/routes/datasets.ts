@@ -8,7 +8,12 @@ import type { FastifyPluginAsync } from 'fastify';
 import { nanoid } from 'nanoid';
 import { query } from '../db/index.js';
 import { appendSearchCondition } from '../db/search.js';
-import { putDatasetBatch, listDatasetItems, iterateDatasetItems } from '../storage/s3.js';
+import {
+  putDatasetBatch,
+  listDatasetItems,
+  iterateDatasetItems,
+  deleteDatasetS3Prefix,
+} from '../storage/s3.js';
 import { authenticate } from '../auth/middleware.js';
 import { config } from '../config.js';
 import { CreateDatasetSchema } from '../schemas/datasets.js';
@@ -129,7 +134,9 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const { datasetId } = request.params;
 
-      const result = await query(
+      // RETURNING id so we have the PG id even when the lookup happened
+      // by name — the S3 prefix is keyed on the dataset id, not the name.
+      const result = await query<{ id: string }>(
         'DELETE FROM datasets WHERE (id = $1 OR name = $2) AND user_id = $3 RETURNING id',
         [datasetId, datasetId, request.user!.id]
       );
@@ -137,6 +144,30 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
         reply.status(404);
         return { error: { type: 'record-not-found', message: 'Dataset not found' } };
       }
+      const deletedId = result.rows[0]!.id;
+
+      // Clean up S3 items immediately. Pre-fix, this DELETE handler only
+      // removed the PG row — operators clicked "delete" in the dashboard,
+      // the row disappeared from the grid, and the items continued to
+      // occupy S3 forever (silent storage leak). The retention reaper
+      // handles the lifecycle path via tombstones, but operator-initiated
+      // deletes never wrote one, so they never got reaped.
+      //
+      // Fire-and-forget at request-completion time: if S3 cleanup fails
+      // we still return 204 (PG is the source of truth — the dataset is
+      // gone from the user's view) and log the failure. Mirrors the
+      // retention path's "stale S3 prefix is just orphaned bytes,
+      // cleanable later by lifecycle policy or a future bookkeeping job"
+      // posture documented at retention.ts:200-203.
+      try {
+        await deleteDatasetS3Prefix(deletedId);
+      } catch (err) {
+        request.log.error(
+          { datasetId: deletedId, err },
+          '[datasets] DELETE: S3 prefix cleanup failed (PG row already gone)'
+        );
+      }
+
       reply.status(204);
     }
   );

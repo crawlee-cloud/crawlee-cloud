@@ -23,10 +23,12 @@ vi.mock('../src/db/index.js', () => ({
 const mockPutDatasetBatch = vi.fn();
 const mockListDatasetItems = vi.fn();
 const mockIterateDatasetItems = vi.fn();
+const mockDeleteDatasetS3Prefix = vi.fn();
 vi.mock('../src/storage/s3.js', () => ({
   putDatasetBatch: (...args: unknown[]) => mockPutDatasetBatch(...args),
   listDatasetItems: (...args: unknown[]) => mockListDatasetItems(...args),
   iterateDatasetItems: (...args: unknown[]) => mockIterateDatasetItems(...args),
+  deleteDatasetS3Prefix: (...args: unknown[]) => mockDeleteDatasetS3Prefix(...args),
 }));
 
 describe('Dataset Routes', () => {
@@ -47,6 +49,8 @@ describe('Dataset Routes', () => {
     mockPutDatasetBatch.mockReset();
     mockListDatasetItems.mockReset();
     mockIterateDatasetItems.mockReset();
+    mockDeleteDatasetS3Prefix.mockReset();
+    mockDeleteDatasetS3Prefix.mockResolvedValue(undefined);
     delete process.env.DATASET_BATCH_SIZE;
   });
 
@@ -131,15 +135,57 @@ describe('Dataset Routes', () => {
   });
 
   describe('DELETE /v2/datasets/:datasetId', () => {
-    it('should delete dataset', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+    it('deletes the PG row AND cleans up the S3 prefix (no silent storage leak)', async () => {
+      // Pre-fix, this DELETE only ran the PG statement — the S3 items
+      // (potentially gigabytes of scraped data) were left orphaned with
+      // no tombstone for the retention reaper to pick up. Operators saw
+      // the dataset disappear from the dashboard and reasonably assumed
+      // the storage bill stopped growing. It didn't.
+      //
+      // Asserts both the rowCount path AND that the S3 cleanup helper
+      // was invoked with the canonical PG id (the lookup accepts name
+      // too, so we have to use the id returned by RETURNING, not the
+      // path param).
+      mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'ds-1' }] });
 
       const response = await app.inject({
         method: 'DELETE',
-        url: '/v2/datasets/ds-1',
+        url: '/v2/datasets/my-dataset-by-name',
       });
 
       expect(response.statusCode).toBe(204);
+      expect(mockDeleteDatasetS3Prefix).toHaveBeenCalledTimes(1);
+      expect(mockDeleteDatasetS3Prefix).toHaveBeenCalledWith('ds-1');
+    });
+
+    it('returns 404 without invoking S3 cleanup when the dataset does not exist', async () => {
+      mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] });
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/v2/datasets/does-not-exist',
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(mockDeleteDatasetS3Prefix).not.toHaveBeenCalled();
+    });
+
+    it('still returns 204 when S3 cleanup fails — PG is the source of truth', async () => {
+      // Operator-visible state: the PG row is gone, the dataset is no
+      // longer in their list. An S3-side network blip means orphaned
+      // bytes (cleanable by lifecycle policy later) — not worth
+      // surfacing as a 500 that would confuse the operator into
+      // thinking the delete didn't happen.
+      mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'ds-2' }] });
+      mockDeleteDatasetS3Prefix.mockRejectedValueOnce(new Error('S3 unreachable'));
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/v2/datasets/ds-2',
+      });
+
+      expect(response.statusCode).toBe(204);
+      expect(mockDeleteDatasetS3Prefix).toHaveBeenCalledWith('ds-2');
     });
   });
 

@@ -12,6 +12,7 @@ import {
   deleteKVRecord,
   listKVKeys,
   presignKVRecord,
+  deleteKVStoreS3Prefix,
 } from '../storage/s3.js';
 import { authenticate } from '../auth/middleware.js';
 import { CreateKeyValueStoreSchema } from '../schemas/key-value-stores.js';
@@ -132,7 +133,10 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
     '/key-value-stores/:storeId',
     async (request, reply) => {
       const { storeId } = request.params;
-      const result = await query(
+      // RETURNING id so the S3 cleanup uses the canonical id even when
+      // the lookup happened by name. See the parallel comment on
+      // routes/datasets.ts for the leak-fix rationale.
+      const result = await query<{ id: string }>(
         'DELETE FROM key_value_stores WHERE (id = $1 OR name = $2) AND user_id = $3 RETURNING id',
         [storeId, storeId, request.user!.id]
       );
@@ -140,6 +144,23 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
         reply.status(404);
         return { error: { type: 'record-not-found', message: 'Key-value store not found' } };
       }
+      const deletedId = result.rows[0]!.id;
+
+      // Fire-and-forget S3 prefix cleanup. PG row is already gone; an S3
+      // failure means orphaned bytes, not a half-deleted store. We still
+      // return 204 because the dataset/KV store IS gone from the user's
+      // view — the failure mode is "you pay for some leftover storage
+      // bytes" which is the same as if a network blip dropped the S3
+      // call. See routes/datasets.ts DELETE handler for full reasoning.
+      try {
+        await deleteKVStoreS3Prefix(deletedId);
+      } catch (err) {
+        request.log.error(
+          { storeId: deletedId, err },
+          '[key-value-stores] DELETE: S3 prefix cleanup failed (PG row already gone)'
+        );
+      }
+
       reply.status(204);
     }
   );

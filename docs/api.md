@@ -159,6 +159,29 @@ Monitor Actor executions.
 | `ABORTED`   | Manually stopped         |
 | `TIMED-OUT` | Exceeded time limit      |
 
+### Run response shape (v1.0-committed)
+
+Every endpoint that returns a run (LIST, GET-by-id, PUT, abort, resurrect) emits the same shape. Notable fields:
+
+| Field                       | Type             | Notes                                                                                                                                                                                                                                                                              |
+| --------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                        | string           | Apify-style 21-char nanoid.                                                                                                                                                                                                                                                        |
+| `actId`                     | string           | Owning actor id.                                                                                                                                                                                                                                                                   |
+| `status`                    | enum             | See "Run Status Values" above.                                                                                                                                                                                                                                                     |
+| `defaultDatasetId`          | string \| null   | Dataset created at run start; null if the run failed before SDK init.                                                                                                                                                                                                              |
+| `defaultDatasetItemCount`   | number \| null   | **Live count** from `datasets.item_count`, joined per-request. Null when there is no default dataset. Always present on the response — sourced via the centralized `RUN_SELECT_WITH_DATASET_COUNT` join in the API. Use this when integrating from the dashboard or custom tooling. |
+| `defaultKeyValueStoreId`    | string \| null   | Default KV store for the run.                                                                                                                                                                                                                                                      |
+| `defaultRequestQueueId`     | string \| null   | Default request queue for the run.                                                                                                                                                                                                                                                 |
+| `options.timeoutSecs`       | number           | Effective timeout for this run.                                                                                                                                                                                                                                                    |
+| `options.memoryMbytes`      | number           | Effective memory limit for this run.                                                                                                                                                                                                                                               |
+| `stats`                     | object           | Crawlee SDK statistics ingested at run completion, plus the live dataset item count below for Apify-client compatibility.                                                                                                                                                          |
+| `stats.datasetItemCount`    | number           | Same value as `defaultDatasetItemCount`, defaulted to `0` when there is no dataset. Mirrors Apify's nested location so `apify-client` consumers reading `run.stats.datasetItemCount` work unchanged.                                                                                |
+| `exitCode`                  | number \| null   | Process exit code from the runner; null while the run is still in flight.                                                                                                                                                                                                          |
+| `startedAt` / `finishedAt`  | ISO string       | Wall-clock timestamps; `finishedAt` is null until terminal.                                                                                                                                                                                                                        |
+| `createdAt` / `modifiedAt`  | ISO string       | Row lifecycle timestamps.                                                                                                                                                                                                                                                          |
+
+**Note on webhooks**: the webhook payload's `resource.stats` is built by the runner from the ingested Crawlee statistics blob and does NOT currently mirror `stats.datasetItemCount` — webhook receivers that need the dataset count should query `/v2/actor-runs/{id}` from the `resource.id` they receive. This is tracked for parity in v1.0.1.
+
 ---
 
 ## Response Format
