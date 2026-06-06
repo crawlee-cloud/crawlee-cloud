@@ -508,8 +508,12 @@ async function scalingLoop(): Promise<void> {
   try {
     const r = await withAdvisoryLock(LOCK_IDS.scaler, async () => {
       const stats = await getQueueStats();
-      let { runners, claimedRunIds } = await getActiveRunners();
-      runners = await reapDeadRunners(runners);
+      const active = await getActiveRunners();
+      const { claimedRunIds } = active;
+      // `runners` is rebound after reaping; `claimedRunIds` stays as-is.
+      // Split this way (rather than `let { runners, claimedRunIds } = ...`)
+      // so `prefer-const` is satisfied for the immutable half.
+      const runners = await reapDeadRunners(active.runners);
       const currentCount = runners.length;
       const desired = calculateDesiredRunners(stats, currentCount, config);
 
