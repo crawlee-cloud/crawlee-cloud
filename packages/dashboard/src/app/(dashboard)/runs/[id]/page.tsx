@@ -160,7 +160,12 @@ function RunDetail() {
   // on /webhooks if they need detail.
   const loadedRunId = run?.id;
   useEffect(() => {
-    if (!loadedRunId || runWebhooks !== null) return;
+    // `loadedRunId !== id` gate: right after navigation, `run` still holds
+    // the PREVIOUS run (its poll hasn't resolved) while the reset effect
+    // has already nulled runWebhooks — without the gate this effect would
+    // fetch the old run's webhooks and, once stored, the runWebhooks
+    // sentinel would block the new run's fetch forever.
+    if (!loadedRunId || loadedRunId !== id || runWebhooks !== null) return;
     let alive = true;
     getWebhooks({ scope: 'run', runId: loadedRunId, limit: 50 })
       .then((page) => alive && setRunWebhooks(page.items))
