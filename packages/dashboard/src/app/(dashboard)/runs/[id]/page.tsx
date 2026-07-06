@@ -121,6 +121,23 @@ function RunDetail() {
     };
   }, [id]);
 
+  // Reset run-scoped lazy state when navigating to a different run. The
+  // App Router keeps this component mounted across /runs/A -> /runs/B (only
+  // the param changes), so without this the "already fetched" guards below
+  // (input !== undefined, dataset !== null, runWebhooks !== null) would pin
+  // the PREVIOUS run's data on screen forever. Keyed on the route param so
+  // the reset lands at navigation time, not after the new run's fetch.
+  // `actor` is intentionally NOT reset: it's actor-scoped, not run-scoped —
+  // the [actId] effect below refetches it iff the new run targets a
+  // different actor, and nulling it here would orphan it when actId is
+  // unchanged (same-actor navigation, e.g. retry links).
+  useEffect(() => {
+    setInput(undefined);
+    setDataset(null);
+    setRunWebhooks(null);
+    setDeliveriesByWebhook({});
+  }, [id]);
+
   // Resolve the actor lazily once we know which one this run targeted.
   // Depend on the stable actId primitive, NOT the `run` object: the 2s
   // poll loop replaces the run reference on every tick, which re-fired
