@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.1] - 2026-07-06
+
+Bug-fix release: runner lifecycle races and dashboard correctness. No schema changes, no new env vars, Apify v2 response shapes unchanged. Developed test-first; the claiming race was reproduced live against PG 16 before fixing.
+
+### Runner / API
+
+- **Resurrect actually works now.** `POST /v2/actor-runs/:id/resurrect` set the run to `RUNNING` — but runners claim exclusively `WHERE status = 'READY'` and nothing was published to Redis, so a resurrected run never executed, showed "running" forever, and (with `finished_at` nulled) was never reaped by retention. It now sets `READY`, clears the stale `exit_code`/`status_message` from the failed attempt, and publishes `run:new`.
+- **Abort now stops the container.** The abort endpoint only flipped the DB row; the container kept crawling until natural exit or `timeout_secs` (default 3600s), and its heartbeat claim blocked scaler scale-down the whole time — the "runner stays busy an extra hour after abort" report. The API publishes `run:abort`; the owning runner stops the container. The abort-during-image-pull and abort-vs-container-start windows are both covered: the runner marks the run aborted before attempting the stop, `executeRun` re-checks the mark after the pull and again after container create, and `stopRun` lists with `all: true` so created-but-unstarted containers are removed too.
+- **Run claiming is atomic.** The old two-statement claim (`SELECT ... FOR UPDATE SKIP LOCKED`, then a separate `UPDATE`) released its row lock at statement end under auto-commit; with `run:new` broadcast to every runner, two runners could both claim the same run and both spawn containers (reproduced live). Now a single `UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING *` — exactly one claimant wins.
+- **Webhook retries no longer double-deliver across runners.** Same race class: retries are now claimed by pushing `next_retry_at` forward 600s (> the 10 × 30s-timeout batch worst case) in the same statement that selects. Crash mid-delivery self-heals; at-least-once semantics preserved.
+- **Timer leak fixed.** `executeRun` leaked one live `setTimeout` per completed run (up to 1h each — hundreds on a busy runner, and a graceful shutdown that waits on them). Extracted to `waitWithTimeout()` which always clears its timer. Stop-after-timeout failures now keep `TIMED-OUT` instead of flipping the run `FAILED`, and the never-read full-container-log buffer fetch is gone.
+
+### Dashboard
+
+- **Actor detail page is correct on busy clusters.** `getActorRuns()` fetched the 50 most-recent runs across ALL actors and filtered client-side — an actor's "Total runs"/"Last run" could be empty or wrong whenever its runs fell outside that page. Now filtered server-side (`actorId`, limit 200). `findProducingRun()` similarly bumped to the 200 max page size.
+- **Run detail page no longer re-fetches the actor and webhooks every 2s poll tick** (~1,800 redundant calls/hour per open tab) — effects depend on stable `actId`/`run.id` primitives instead of the replaced `run` object.
+- **Navigating between runs no longer pins stale data.** Run-scoped lazy state (input, dataset preview, per-run webhooks, deliveries) resets on navigation, and the webhook fetch is gated on the loaded run matching the route param so the previous run's data can't be cached under the new run.
+- **Sign-out clears the auth cookie** the Next.js middleware trusts (previously only cleared `localStorage`, leaving protected routes passing for up to 7 days); the login cookie gains `SameSite=Lax` and `Secure` on https.
+
+### Deploy note
+
+During a rolling deploy, runners still on ≤1.0.0 (two-statement claim, no `run:abort` subscription) can double-claim runs against 1.0.1 runners until they drain.
+
+### Notes
+
+- The webhook-payload `resource.stats.datasetItemCount` parity item pencilled in for v1.0.1 in the 1.0.0 notes was not part of this bug-fix release; it moves to a follow-up.
+
 ## [1.0.0] - 2026-06-06
 
 **Crawlee Cloud is now 1.0.** Public API and operator workflows committed: from this release forward, breaking changes go through MAJOR bumps per semver, and the Apify v2 compatibility surface is stable. The 0.9.x line stabilized into a multi-replica-safe, scale-down-correct, semantically-coloured operator console — this release adds the last two operator-quality items and draws the line under that work.
@@ -49,7 +76,6 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - **Autoscaler scale-down freeze when a zombie RUNNING row exists.** Live production state observed at v0.9.8: `desired=10` held for 5+ hours with `ready=0, running=2`. Two interacting bugs in the scaler:
-
   1. **`calculateDesiredRunners`** returned `currentRunners` whenever `ready <= scaleUpThreshold`, regardless of direction. The intent was hysteresis (don't scale UP on a trickle), but the unconditional return also suppressed scale-DOWN — so once a burst lifted the count, a long-running tail (`running > 0, ready == 0`) kept `totalDemand > 0` and pinned the cluster at high-water. The TODO block at the original site documented this and offered two fix shapes; the corrected Shape A is applied: `if (ready <= threshold && clamped > current && current >= minRunners) return current`. The `current >= minRunners` clause is load-bearing — it preserves the cold-start floor (otherwise a system below `min` with low demand could not bring its first runner up).
 
   2. **`scalingLoop`** refreshed `scaler:last-activity` whenever `stats.total > 0`, where `stats.total` is a DB count that **includes zombie RUNNING rows**. Even after fix #1, the existing `idleTimeoutSecs` gate in `scalingLoop` kept blocking scale-down because `idleMs` stayed near zero forever — the math correctly said `desired < current`, but `scaleDown` was never called.
