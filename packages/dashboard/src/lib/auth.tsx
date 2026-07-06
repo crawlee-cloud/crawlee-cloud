@@ -67,6 +67,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   function logout() {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
+    // The middleware authenticates by this cookie (middleware.ts) — without
+    // clearing it, protected routes keep passing for up to 7 days after
+    // sign-out. Keep in sync with the sidebar's inline sign-out handler.
+    document.cookie = 'token=; path=/; max-age=0';
     setToken(null);
     setUser(null);
     router.push(prefixPath('/login'));

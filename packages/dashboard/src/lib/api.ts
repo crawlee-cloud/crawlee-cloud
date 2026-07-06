@@ -661,9 +661,12 @@ export async function abortRun(id: string): Promise<Run> {
 }
 
 export async function getActorRuns(actorId: string): Promise<Run[]> {
-  // Get all runs and filter by actId
-  const runs = await getRuns();
-  return runs.filter((r) => r.actId === actorId);
+  // Filter server-side. The old form fetched the default page (50
+  // most-recent runs across ALL actors) and filtered client-side — on any
+  // busy cluster this actor's runs could fall entirely outside that page,
+  // making the actor detail page show 0 runs / wrong "last run".
+  const page = await listRuns({ actorId, limit: 200, desc: true });
+  return page.items;
 }
 
 // Actors
@@ -1120,16 +1123,22 @@ export async function deleteRequestQueue(id: string): Promise<void> {
  * The relationship lives on the runs table (default_dataset_id /
  * default_key_value_store_id / default_request_queue_id). The API
  * doesn't expose a reverse-lookup endpoint, so we fetch the user's
- * runs once and filter client-side. Acceptable for typical workloads
- * (the API caps the run list at 100). Pass `runs` if you already
- * have them loaded to avoid an extra request.
+ * runs once and filter client-side, at the API's max page size (200 —
+ * the default page of 50 silently hid producing runs older than the
+ * 50 most-recent). Pass `runs` if you already have them loaded to
+ * avoid an extra request.
  */
 export async function findProducingRun(
   storageType: 'dataset' | 'kv' | 'queue',
   storageId: string,
   runs?: Run[]
 ): Promise<Run | null> {
-  const list = runs ?? (await getRuns().catch(() => [] as Run[]));
+  const list =
+    runs ??
+    (await listRuns({ limit: 200, desc: true }).then(
+      (p) => p.items,
+      () => [] as Run[]
+    ));
   const field =
     storageType === 'dataset'
       ? 'defaultDatasetId'

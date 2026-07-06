@@ -25,6 +25,11 @@ vi.mock('../src/storage/s3.js', () => ({
   getKVRecord: vi.fn().mockResolvedValue(null),
 }));
 
+const mockPublish = vi.fn();
+vi.mock('../src/storage/redis.js', () => ({
+  redis: { publish: (...args: unknown[]) => mockPublish(...args) },
+}));
+
 const createRunRow = (overrides = {}) => ({
   id: 'run-1',
   actor_id: 'actor-1',
@@ -63,6 +68,7 @@ describe('Actor Runs Routes', () => {
 
   beforeEach(() => {
     mockQuery.mockReset();
+    mockPublish.mockReset();
   });
 
   describe('GET /v2/actor-runs', () => {
@@ -358,12 +364,38 @@ describe('Actor Runs Routes', () => {
       expect(body.data.defaultDatasetItemCount).toBe(42);
       expect(body.data.stats.datasetItemCount).toBe(42);
     });
+
+    it('publishes run:abort so the owning runner stops the container', async () => {
+      // Without this signal the container keeps crawling until it exits
+      // on its own or hits timeout_secs (default 3600s) — the runner's
+      // heartbeat keeps claiming the run and blocks scale-down for up to
+      // an extra hour after the operator aborted.
+      mockQuery.mockResolvedValueOnce({
+        rows: [createRunRow({ status: 'ABORTED', finished_at: new Date() })],
+      });
+
+      await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/abort' });
+
+      expect(mockPublish).toHaveBeenCalledWith('run:abort', 'run-1');
+    });
+
+    it('does not publish run:abort when the run was not found', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      await app.inject({ method: 'POST', url: '/v2/actor-runs/missing/abort' });
+
+      expect(mockPublish).not.toHaveBeenCalled();
+    });
   });
 
   describe('POST /v2/actor-runs/:runId/resurrect', () => {
-    it('should resurrect failed run', async () => {
+    it('resurrects to READY so a runner can claim it (RUNNING would orphan it forever)', async () => {
+      // Runners claim exclusively `WHERE status = 'READY'` (see
+      // packages/runner/src/queue.ts processNextRun). Resurrecting
+      // straight to RUNNING left the run permanently unclaimed AND
+      // unreapable (finished_at = NULL exempts it from retention).
       mockQuery.mockResolvedValueOnce({
-        rows: [createRunRow({ status: 'RUNNING', finished_at: null })],
+        rows: [createRunRow({ status: 'READY', finished_at: null })],
       });
 
       const response = await app.inject({
@@ -373,7 +405,33 @@ describe('Actor Runs Routes', () => {
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      expect(body.data.status).toBe('RUNNING');
+      expect(body.data.status).toBe('READY');
+
+      const sql = (mockQuery.mock.calls[0]?.[0] as string) ?? '';
+      expect(sql).toContain("status = 'READY'");
+      expect(sql).not.toContain("SET status = 'RUNNING'");
+    });
+
+    it('publishes run:new so runners pick the resurrected run up immediately', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [createRunRow({ status: 'READY', finished_at: null })],
+      });
+
+      await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/resurrect' });
+
+      expect(mockPublish).toHaveBeenCalledWith('run:new', 'run-1');
+    });
+
+    it('does not publish when the run was not found', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/actor-runs/missing/resurrect',
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(mockPublish).not.toHaveBeenCalled();
     });
 
     it('returns defaultDatasetItemCount on the resurrected run (C1 regression — CTE preserves the LEFT JOIN)', async () => {
@@ -381,7 +439,7 @@ describe('Actor Runs Routes', () => {
       // distinct value (88) so "JOIN dropped → undefined → ?? 0 → 0"
       // cannot silently satisfy the assertion.
       mockQuery.mockResolvedValueOnce({
-        rows: [createRunRow({ status: 'RUNNING', default_dataset_item_count: 88 })],
+        rows: [createRunRow({ status: 'READY', default_dataset_item_count: 88 })],
       });
 
       const response = await app.inject({

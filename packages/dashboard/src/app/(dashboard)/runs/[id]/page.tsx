@@ -122,31 +122,36 @@ function RunDetail() {
   }, [id]);
 
   // Resolve the actor lazily once we know which one this run targeted.
+  // Depend on the stable actId primitive, NOT the `run` object: the 2s
+  // poll loop replaces the run reference on every tick, which re-fired
+  // this effect (a fresh GET /v2/acts/:id) ~1800×/hour per open tab.
+  const actId = run?.actId;
   useEffect(() => {
-    if (!run) return;
+    if (!actId) return;
     let alive = true;
-    getActor(run.actId)
+    getActor(actId)
       .then((a) => alive && setActor(a))
       .catch(() => {});
     return () => {
       alive = false;
     };
-  }, [run]);
+  }, [actId]);
 
   // Per-run webhooks: fetch once on first load. They can't be mutated after
   // dispatch (PUT is rejected server-side via `run_id IS NULL`), so polling
   // adds no value — only the deliveries can change, and operators see those
   // on /webhooks if they need detail.
+  const loadedRunId = run?.id;
   useEffect(() => {
-    if (!run || runWebhooks !== null) return;
+    if (!loadedRunId || runWebhooks !== null) return;
     let alive = true;
-    getWebhooks({ scope: 'run', runId: run.id, limit: 50 })
+    getWebhooks({ scope: 'run', runId: loadedRunId, limit: 50 })
       .then((page) => alive && setRunWebhooks(page.items))
       .catch(() => alive && setRunWebhooks([]));
     return () => {
       alive = false;
     };
-  }, [run, runWebhooks]);
+  }, [loadedRunId, runWebhooks]);
 
   // Lazy-load tab data on demand
   useEffect(() => {

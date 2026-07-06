@@ -73,9 +73,33 @@ export interface RunOptions {
 
 export interface RunResult {
   exitCode: number;
-  logs: string;
   startedAt: Date;
   finishedAt: Date;
+}
+
+/**
+ * Race a promise against a timeout, ALWAYS clearing the timer once either
+ * side settles. The previous inline Promise.race discarded its setTimeout
+ * handle, leaking one live timer per completed run for up to timeoutSecs
+ * (default 3600s) — hundreds of pending timers on a busy runner, and a
+ * graceful shutdown that waits on them.
+ */
+export async function waitWithTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number
+): Promise<{ timedOut: true } | { timedOut: false; value: T }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<{ timedOut: true }>((resolve) => {
+    timer = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      promise.then((value) => ({ timedOut: false as const, value })),
+      timeout,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const docker = new Docker({
@@ -226,46 +250,34 @@ export async function executeRun(options: RunOptions): Promise<RunResult> {
 
   // Wait for completion with timeout
   let exitCode = 0;
-  let timedOut = false;
 
-  const timeoutPromise = new Promise<void>((_, reject) => {
-    setTimeout(() => {
-      timedOut = true;
-      reject(new Error('Container execution timed out'));
-    }, timeoutSecs * 1000);
-  });
+  const waited = await waitWithTimeout(
+    container.wait() as Promise<{ StatusCode: number }>,
+    timeoutSecs * 1000
+  );
 
-  const waitPromise = container.wait();
-
-  try {
-    const result = (await Promise.race([waitPromise, timeoutPromise])) as { StatusCode: number };
-    exitCode = result.StatusCode;
-  } catch (err) {
-    if (timedOut) {
-      console.log(`[${runId}] Container timed out, stopping...`);
-      const timeoutLog = JSON.stringify({
-        timestamp: new Date().toISOString(),
-        level: 'WARN',
-        message: 'Container execution timed out',
-      });
-      await redis.rpush(`logs:${runId}`, timeoutLog);
+  if (waited.timedOut) {
+    console.log(`[${runId}] Container timed out, stopping...`);
+    const timeoutLog = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'WARN',
+      message: 'Container execution timed out',
+    });
+    await redis.rpush(`logs:${runId}`, timeoutLog);
+    try {
       await container.stop({ t: 10 });
-      exitCode = 143; // SIGTERM
-    } else {
-      throw err;
+    } catch (err) {
+      // Container may have exited or been removed in the race window
+      // (e.g. periodic cleanup). A throw here used to escape and flip
+      // the run FAILED — the run DID time out, keep 143.
+      console.warn(`[${runId}] Stop after timeout failed: ${(err as Error).message}`);
     }
+    exitCode = 143; // SIGTERM
+  } else {
+    exitCode = waited.value.StatusCode;
   }
 
   const finishedAt = new Date();
-
-  // Collect final logs
-  const logStream = await container.logs({
-    stdout: true,
-    stderr: true,
-    timestamps: true,
-  });
-
-  const logs = logStream.toString('utf-8');
 
   // Log finish message
   const finishLog = JSON.stringify({
@@ -283,7 +295,6 @@ export async function executeRun(options: RunOptions): Promise<RunResult> {
 
   return {
     exitCode,
-    logs,
     startedAt,
     finishedAt,
   };

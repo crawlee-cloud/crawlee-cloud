@@ -4,6 +4,7 @@
 
 import type { FastifyPluginAsync } from 'fastify';
 import { query } from '../db/index.js';
+import { redis } from '../storage/redis.js';
 import { authenticate } from '../auth/middleware.js';
 import { UpdateRunSchema, ListRunsQuerySchema, RunsHistogramQuerySchema } from '../schemas/runs.js';
 
@@ -273,10 +274,10 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get<{ Params: { runId: string } }>('/actor-runs/:runId', async (request, reply) => {
     const { runId } = request.params;
 
-    const result = await query<RunRow>(`${RUN_SELECT_WITH_DATASET_COUNT} WHERE r.id = $1 AND r.user_id = $2`, [
-      runId,
-      request.user!.id,
-    ]);
+    const result = await query<RunRow>(
+      `${RUN_SELECT_WITH_DATASET_COUNT} WHERE r.id = $1 AND r.user_id = $2`,
+      [runId, request.user!.id]
+    );
 
     if (!result.rows[0]) {
       reply.status(404);
@@ -381,6 +382,17 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
         };
       }
 
+      // Tell the owning runner to stop the container. Without this the
+      // container keeps crawling until natural exit or timeout_secs
+      // (default 3600s), and its heartbeat claim blocks scale-down the
+      // whole time. Best-effort: the DB status is already terminal, so a
+      // failed publish only delays the kill (timeout still bounds it).
+      try {
+        await redis.publish('run:abort', runId);
+      } catch (err) {
+        fastify.log.warn(`Failed to publish run:abort for ${runId}: ${(err as Error).message}`);
+      }
+
       return { data: formatRun(result.rows[0]) };
     }
   );
@@ -395,11 +407,17 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
 
       // CTE pattern (see PUT handler above for rationale) — keeps the
       // formatRun output shape consistent across endpoints.
+      //
+      // Resurrect to READY, not RUNNING: runners claim exclusively
+      // `WHERE status = 'READY'` (packages/runner/src/queue.ts). A run
+      // resurrected to RUNNING was never picked up by any runner and —
+      // because finished_at is NULL — never reaped by retention either:
+      // it sat "running" on the dashboard forever.
       const result = await query<RunRow>(
         `
       WITH updated AS (
         UPDATE runs
-        SET status = 'RUNNING', finished_at = NULL, modified_at = NOW()
+        SET status = 'READY', finished_at = NULL, modified_at = NOW()
         WHERE id = $1 AND status IN ('FAILED', 'ABORTED', 'TIMED-OUT') AND user_id = $2
         RETURNING *
       )
@@ -415,6 +433,14 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
         return {
           error: { type: 'record-not-found', message: 'Run not found or not in terminal state' },
         };
+      }
+
+      // Wake the runners — same signal run creation uses (actors.ts).
+      // Without it the resurrected run waits for a runner's next poll.
+      try {
+        await redis.publish('run:new', runId);
+      } catch (err) {
+        fastify.log.warn(`Failed to publish run:new for ${runId}: ${(err as Error).message}`);
       }
 
       return { data: formatRun(result.rows[0]) };
@@ -523,10 +549,10 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
     const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
 
-    const run = await query<RunRow>(`${RUN_SELECT_WITH_DATASET_COUNT} WHERE r.id = $1 AND r.user_id = $2`, [
-      runId,
-      request.user!.id,
-    ]);
+    const run = await query<RunRow>(
+      `${RUN_SELECT_WITH_DATASET_COUNT} WHERE r.id = $1 AND r.user_id = $2`,
+      [runId, request.user!.id]
+    );
 
     if (!run.rows[0] || !run.rows[0].default_dataset_id) {
       reply.status(404);
@@ -556,10 +582,10 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const { runId, key } = request.params;
 
-      const run = await query<RunRow>(`${RUN_SELECT_WITH_DATASET_COUNT} WHERE r.id = $1 AND r.user_id = $2`, [
-        runId,
-        request.user!.id,
-      ]);
+      const run = await query<RunRow>(
+        `${RUN_SELECT_WITH_DATASET_COUNT} WHERE r.id = $1 AND r.user_id = $2`,
+        [runId, request.user!.id]
+      );
 
       if (!run.rows[0] || !run.rows[0].default_key_value_store_id) {
         reply.status(404);

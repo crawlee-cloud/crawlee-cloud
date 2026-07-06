@@ -8,7 +8,7 @@ import pg from 'pg';
 import { Redis } from 'ioredis';
 import { nanoid } from 'nanoid';
 import { config } from './config.js';
-import { executeRun, buildActorEnv } from './docker.js';
+import { executeRun, buildActorEnv, stopRun } from './docker.js';
 import { applyWebhookTemplate } from './webhook-template.js';
 import { resolveProxy } from './proxy-resolver.js';
 
@@ -163,14 +163,52 @@ export async function initJobQueue(): Promise<void> {
 
   // Subscribe to run notifications
   const subscriber = new Redis(config.redisUrl);
-  await subscriber.subscribe('run:new');
+  await subscriber.subscribe('run:new', 'run:abort');
 
-  subscriber.on('message', (_channel, message) => {
+  const onAbort = createAbortHandler(
+    () => activeRunIds,
+    (id) => stopRun(id)
+  );
+
+  subscriber.on('message', (channel, message) => {
+    if (channel === 'run:abort') {
+      void onAbort(message);
+      return;
+    }
     console.log(`New run notification: ${message}`);
     void processNextRun();
   });
 
   console.log('Job queue initialized');
+}
+
+/**
+ * Build the handler for `run:abort` notifications (published by the API's
+ * abort endpoint). Dependency-injected so the containment logic is unit
+ * testable: only stop containers for runs THIS runner owns — stopRun on a
+ * foreign runId is a harmless no-op (label filter matches nothing), but
+ * skipping it avoids a Docker round-trip on every abort fleet-wide.
+ *
+ * The container stop surfaces in processRun as a non-zero exit; its
+ * `WHERE status = 'RUNNING'` guard then preserves the ABORTED status the
+ * API already committed.
+ */
+export function createAbortHandler(
+  getActiveIds: () => Set<string>,
+  stop: (runId: string) => Promise<void>
+): (runId: string) => Promise<void> {
+  return async (runId: string) => {
+    if (!getActiveIds().has(runId)) return;
+    console.log(`Abort requested for run ${runId} — stopping container`);
+    try {
+      await stop(runId);
+    } catch (err) {
+      // Container may have exited between the abort and the stop — the
+      // normal completion path already handles final status. Never throw
+      // from a pub-sub handler.
+      console.warn(`Failed to stop container for aborted run ${runId}: ${(err as Error).message}`);
+    }
+  };
 }
 
 /**
@@ -194,6 +232,34 @@ export async function startProcessing(): Promise<void> {
 }
 
 /**
+ * Atomically claim the next READY run: flip it to RUNNING and return it in
+ * ONE statement. The previous two-statement form (SELECT ... FOR UPDATE
+ * SKIP LOCKED, then a separate UPDATE) was racy under auto-commit: the row
+ * lock dies when the SELECT statement returns, and `run:new` is broadcast
+ * to every runner — two runners landing in each other's SELECT→UPDATE gap
+ * both claimed the run and both spawned containers (reproduced live on
+ * PG 16). Inside a single statement the inner SELECT's lock is held until
+ * the UPDATE commits, so exactly one claimant wins; the outer
+ * `status = 'READY'` recheck is defense in depth, matching the
+ * CTE-with-recheck pattern in the API's retention reaper.
+ */
+export async function claimNextRun(dbPool: pg.Pool): Promise<RunJob | null> {
+  const result = await dbPool.query<RunJob>(`
+    UPDATE runs
+    SET status = 'RUNNING', started_at = NOW(), modified_at = NOW()
+    WHERE id = (
+      SELECT id FROM runs
+      WHERE status = 'READY' AND (run_after IS NULL OR run_after <= NOW())
+      ORDER BY created_at ASC
+      LIMIT 1
+      FOR UPDATE SKIP LOCKED
+    ) AND status = 'READY'
+    RETURNING *
+  `);
+  return result.rows[0] ?? null;
+}
+
+/**
  * Process the next pending run.
  */
 async function processNextRun(): Promise<void> {
@@ -204,30 +270,14 @@ async function processNextRun(): Promise<void> {
   isProcessing = true;
 
   try {
-    // Get next pending run (FIFO), respecting delayed retries
-    const result = await pool.query<RunJob>(`
-      SELECT * FROM runs
-      WHERE status = 'READY' AND (run_after IS NULL OR run_after <= NOW())
-      ORDER BY created_at ASC
-      LIMIT 1
-      FOR UPDATE SKIP LOCKED
-    `);
+    // Claim the next pending run (FIFO, respecting delayed retries)
+    const run = await claimNextRun(pool);
 
-    if (!result.rows[0]) {
+    if (!run) {
       return; // No pending runs
     }
 
-    const run = result.rows[0];
     console.log(`Processing run ${run.id}`);
-
-    // Update status to RUNNING
-    await pool.query(
-      `
-      UPDATE runs SET status = 'RUNNING', started_at = NOW(), modified_at = NOW() 
-      WHERE id = $1
-    `,
-      [run.id]
-    );
 
     activeRuns++;
     activeRunIds.add(run.id);
@@ -832,25 +882,52 @@ async function scheduleRetry(
 }
 
 /**
+ * Atomically claim due webhook retries. Same race class as claimNextRun:
+ * the old standalone `SELECT ... FOR UPDATE SKIP LOCKED` released its locks
+ * at statement end, so two runner processes polling within the same window
+ * both fetched the same PENDING rows and both POSTed to the receiver
+ * (duplicate deliveries). Claiming = pushing next_retry_at 120s into the
+ * future in the SAME statement that selects: sibling pollers no longer see
+ * the row, and if this process crashes mid-delivery the row simply comes
+ * due again — at-least-once, but no longer concurrently-twice.
+ */
+export async function claimWebhookRetries(dbPool: pg.Pool): Promise<
+  {
+    id: string;
+    webhook_id: string;
+    run_id: string;
+    event_type: string;
+  }[]
+> {
+  const result = await dbPool.query<{
+    id: string;
+    webhook_id: string;
+    run_id: string;
+    event_type: string;
+  }>(
+    `UPDATE webhook_deliveries
+     SET next_retry_at = NOW() + INTERVAL '120 seconds'
+     WHERE id IN (
+       SELECT id FROM webhook_deliveries
+       WHERE status = 'PENDING' AND next_retry_at <= NOW()
+       ORDER BY next_retry_at ASC
+       LIMIT 10
+       FOR UPDATE SKIP LOCKED
+     ) AND status = 'PENDING'
+     RETURNING id, webhook_id, run_id, event_type`
+  );
+  return result.rows;
+}
+
+/**
  * Process pending webhook delivery retries.
  * Runs on a 10-second interval.
  */
 async function processWebhookRetries(): Promise<void> {
   try {
-    const pending = await pool.query<{
-      id: string;
-      webhook_id: string;
-      run_id: string;
-      event_type: string;
-    }>(
-      `SELECT wd.id, wd.webhook_id, wd.run_id, wd.event_type
-       FROM webhook_deliveries wd
-       WHERE wd.status = 'PENDING' AND wd.next_retry_at <= NOW()
-       LIMIT 10
-       FOR UPDATE SKIP LOCKED`
-    );
+    const pending = await claimWebhookRetries(pool);
 
-    for (const delivery of pending.rows) {
+    for (const delivery of pending) {
       const webhook = await pool.query<{
         id: string;
         request_url: string;
