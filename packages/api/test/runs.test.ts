@@ -410,6 +410,10 @@ describe('Actor Runs Routes', () => {
       const sql = (mockQuery.mock.calls[0]?.[0] as string) ?? '';
       expect(sql).toContain("status = 'READY'");
       expect(sql).not.toContain("SET status = 'RUNNING'");
+      // The new attempt must not carry the failed attempt's exit code /
+      // error message while it waits to run.
+      expect(sql).toContain('exit_code = NULL');
+      expect(sql).toContain('status_message = NULL');
     });
 
     it('publishes run:new so runners pick the resurrected run up immediately', async () => {

@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { waitWithTimeout } from '../src/docker.js';
+import { waitWithTimeout } from '../src/wait.js';
 
 describe('waitWithTimeout', () => {
   beforeEach(() => {

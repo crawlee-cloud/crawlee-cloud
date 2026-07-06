@@ -417,7 +417,8 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
         `
       WITH updated AS (
         UPDATE runs
-        SET status = 'READY', finished_at = NULL, modified_at = NOW()
+        SET status = 'READY', finished_at = NULL, exit_code = NULL,
+            status_message = NULL, modified_at = NOW()
         WHERE id = $1 AND status IN ('FAILED', 'ABORTED', 'TIMED-OUT') AND user_id = $2
         RETURNING *
       )

@@ -56,31 +56,57 @@ describe('claimWebhookRetries', () => {
     // mid-delivery self-heals instead of duplicating the POST.
     expect(sql).toMatch(/SET next_retry_at = NOW\(\) \+/i);
     expect(sql).toMatch(/status = 'PENDING'/);
+    // The re-arm horizon must exceed the batch worst case: up to 10
+    // sequential deliveries × 30s fetch timeout = 300s. A shorter horizon
+    // (the original 120s) let rows come due again while their own batch
+    // was still draining — the same duplicate-POST class this fixes.
+    expect(sql).toMatch(/INTERVAL '600 seconds'/);
   });
 });
 
 describe('createAbortHandler', () => {
   it('stops the container when the aborted run is active on this runner', async () => {
     const stop = vi.fn().mockResolvedValue(undefined);
-    const handler = createAbortHandler(() => new Set(['run-1']), stop);
+    const handler = createAbortHandler(() => new Set(['run-1']), stop, vi.fn());
 
     await handler('run-1');
 
     expect(stop).toHaveBeenCalledWith('run-1');
   });
 
+  it('marks the run aborted BEFORE stopping, so a pull-in-progress sees it', async () => {
+    // During pullImageIfNeeded the container doesn't exist yet — stopRun
+    // finds nothing and no-ops. The mark is what executeRun checks after
+    // the pull, before starting the container; it must be recorded even
+    // when there is nothing to stop yet.
+    const order: string[] = [];
+    const stop = vi.fn().mockImplementation(() => {
+      order.push('stop');
+      return Promise.resolve();
+    });
+    const markAborted = vi.fn().mockImplementation(() => order.push('mark'));
+    const handler = createAbortHandler(() => new Set(['run-1']), stop, markAborted);
+
+    await handler('run-1');
+
+    expect(markAborted).toHaveBeenCalledWith('run-1');
+    expect(order).toEqual(['mark', 'stop']);
+  });
+
   it('ignores aborts for runs owned by other runners', async () => {
     const stop = vi.fn();
-    const handler = createAbortHandler(() => new Set(['run-1']), stop);
+    const markAborted = vi.fn();
+    const handler = createAbortHandler(() => new Set(['run-1']), stop, markAborted);
 
     await handler('run-owned-elsewhere');
 
     expect(stop).not.toHaveBeenCalled();
+    expect(markAborted).not.toHaveBeenCalled();
   });
 
   it('does not throw when stopping fails (container may have already exited)', async () => {
     const stop = vi.fn().mockRejectedValue(new Error('404 no such container'));
-    const handler = createAbortHandler(() => new Set(['run-1']), stop);
+    const handler = createAbortHandler(() => new Set(['run-1']), stop, vi.fn());
 
     await expect(handler('run-1')).resolves.toBeUndefined();
   });

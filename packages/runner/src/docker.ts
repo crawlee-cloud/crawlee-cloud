@@ -12,6 +12,7 @@ import os from 'node:os';
 import Docker from 'dockerode';
 import { Redis } from 'ioredis';
 import { config } from './config.js';
+import { waitWithTimeout } from './wait.js';
 
 let warnedAboutDarwinTranslate = false;
 
@@ -69,37 +70,20 @@ export interface RunOptions {
   // Resource limits
   memoryMb?: number;
   timeoutSecs?: number;
+
+  /**
+   * Polled after the image pull, before the container is created. Covers
+   * the abort-during-pull window: run:abort → stopRun finds no container
+   * (it doesn't exist yet) → without this check the container would start
+   * anyway and run to natural exit or timeout, pinning the runner busy.
+   */
+  isAborted?: () => boolean;
 }
 
 export interface RunResult {
   exitCode: number;
   startedAt: Date;
   finishedAt: Date;
-}
-
-/**
- * Race a promise against a timeout, ALWAYS clearing the timer once either
- * side settles. The previous inline Promise.race discarded its setTimeout
- * handle, leaking one live timer per completed run for up to timeoutSecs
- * (default 3600s) — hundreds of pending timers on a busy runner, and a
- * graceful shutdown that waits on them.
- */
-export async function waitWithTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number
-): Promise<{ timedOut: true } | { timedOut: false; value: T }> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<{ timedOut: true }>((resolve) => {
-    timer = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
-  });
-  try {
-    return await Promise.race([
-      promise.then((value) => ({ timedOut: false as const, value })),
-      timeout,
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 const docker = new Docker({
@@ -221,6 +205,21 @@ export async function executeRun(options: RunOptions): Promise<RunResult> {
     });
     await redis.rpush(`logs:${runId}`, errorLog);
     throw err;
+  }
+
+  // Abort may have landed during the pull, when there was no container
+  // for stopRun to stop. Bail before creating one — the run's status is
+  // already terminal (ABORTED) in the DB; processRun's guarded UPDATE
+  // no-ops and fires the ACTOR.RUN.ABORTED webhook from the re-read.
+  if (options.isAborted?.()) {
+    console.log(`[${runId}] Run aborted during image pull — not starting container`);
+    const abortLog = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'WARN',
+      message: 'Run aborted before container start',
+    });
+    await redis.rpush(`logs:${runId}`, abortLog);
+    return { exitCode: 137, startedAt, finishedAt: new Date() };
   }
 
   // Create container
