@@ -240,6 +240,24 @@ export async function executeRun(options: RunOptions): Promise<RunResult> {
 
   console.log(`[${runId}] Container created: ${container.id}`);
 
+  // Recheck after creation: an abort landing between the pre-create check
+  // and start() would otherwise slip through — at that moment the abort
+  // handler's stopRun can only act on the container if it exists, and the
+  // container must never start. Remove the created-but-unstarted container
+  // and bail. (stopRun also lists with all:true for the same reason — the
+  // two sides close the window from both ends.)
+  if (options.isAborted?.()) {
+    console.log(`[${runId}] Run aborted after container create — removing without start`);
+    await container.remove({ force: true }).catch(() => {});
+    const abortLog = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      level: 'WARN',
+      message: 'Run aborted before container start',
+    });
+    await redis.rpush(`logs:${runId}`, abortLog);
+    return { exitCode: 137, startedAt, finishedAt: new Date() };
+  }
+
   // Start streaming logs BEFORE starting container
   await streamLogs(container, runId);
 
@@ -552,9 +570,17 @@ export async function listRunningContainers(): Promise<Docker.ContainerInfo[]> {
 
 /**
  * Stop a specific run's container.
+ *
+ * Lists with `all: true`: without it, a container that exists but is not
+ * yet running (created, start() pending — the abort-vs-start race) is
+ * invisible and the abort is silently lost. Running containers get a
+ * graceful stop (SIGTERM, 10s); non-running ones are force-removed —
+ * stop() on a created container errors, and there is no process to let
+ * exit gracefully anyway.
  */
 export async function stopRun(runId: string): Promise<void> {
   const containers = await docker.listContainers({
+    all: true,
     filters: {
       label: [`crawlee-cloud.run-id=${runId}`],
     },
@@ -562,7 +588,14 @@ export async function stopRun(runId: string): Promise<void> {
 
   for (const containerInfo of containers) {
     const container = docker.getContainer(containerInfo.Id);
-    await container.stop({ t: 10 });
-    console.log(`Stopped container ${containerInfo.Id} for run ${runId}`);
+    if (containerInfo.State === 'running') {
+      await container.stop({ t: 10 });
+      console.log(`Stopped container ${containerInfo.Id} for run ${runId}`);
+    } else {
+      await container.remove({ force: true });
+      console.log(
+        `Removed non-running container ${containerInfo.Id} (${containerInfo.State}) for run ${runId}`
+      );
+    }
   }
 }
