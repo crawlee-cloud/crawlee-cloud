@@ -90,6 +90,24 @@ describe('buildRunStatusMessage', () => {
     expect(msg).toMatch(/exit(ed)? .*7/i);
   });
 
+  it('collapses newlines and runs of whitespace in the log line to single spaces', () => {
+    // status_message is a one-line dashboard field; a stack trace pasted
+    // verbatim (newlines, indentation) breaks the layout.
+    const msg = buildRunStatusMessage({
+      status: 'FAILED',
+      exitCode: 1,
+      oomKilled: false,
+      memoryMb: 2048,
+      timeoutSecs: 3600,
+      lastErrorLine:
+        'TypeError: boom\n    at listOnTimeout (node:internal/timers:585:17)\n    at processTimers',
+    });
+    expect(msg).toContain(
+      'TypeError: boom at listOnTimeout (node:internal/timers:585:17) at processTimers'
+    );
+    expect(msg).not.toMatch(/[\n\t]/);
+  });
+
   it('truncates an oversized log line so status_message stays scannable', () => {
     const huge = 'x'.repeat(5000);
     const msg = buildRunStatusMessage({

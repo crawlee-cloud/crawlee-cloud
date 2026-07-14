@@ -442,7 +442,17 @@ async function getActiveRunners(): Promise<{
   let prevMisses: Record<string, number | MissEntry> = {};
   try {
     const raw = await redis.get(missKey);
-    if (raw) prevMisses = JSON.parse(raw) as Record<string, number | MissEntry>;
+    if (raw) {
+      // JSON.parse doesn't throw on "null"/"3"/"[...]" — it returns a
+      // non-object that would TypeError on property access downstream,
+      // aborting every tick until the key's TTL clears it (the
+      // corrective write never runs because the crash comes first).
+      // Non-object shapes degrade the same way as unparseable JSON.
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        prevMisses = parsed as Record<string, number | MissEntry>;
+      }
+    }
   } catch {
     // Corrupt state → start counting fresh (conservative direction).
   }
@@ -716,15 +726,27 @@ async function reapZombieRuns(client: pg.PoolClient, zombieIds: string[]): Promi
     // claims PENDING rows with next_retry_at <= NOW() every 10s and
     // re-renders the payload from the DB. No runner alive right now →
     // delivered when one boots.
+    //
+    // One SELECT for the whole batch, actor/run scoping applied in
+    // memory: this transaction holds locks on the reaped `runs` rows,
+    // so per-run round-trips (N+1) would stretch the lock window for
+    // no benefit — the enabled-webhook set is small by nature.
+    const webhooks = await client.query<{
+      id: string;
+      actor_id: string | null;
+      run_id: string | null;
+    }>(
+      `SELECT id, actor_id, run_id FROM webhooks
+       WHERE is_enabled = true AND $1 = ANY(event_types)`,
+      ['ACTOR.RUN.TIMED_OUT']
+    );
     for (const run of updated.rows) {
-      const webhooks = await client.query<{ id: string }>(
-        `SELECT id FROM webhooks
-         WHERE is_enabled = true AND $1 = ANY(event_types)
-           AND (actor_id IS NULL OR actor_id = $2)
-           AND (run_id IS NULL OR run_id = $3)`,
-        ['ACTOR.RUN.TIMED_OUT', run.actor_id, run.id]
+      const matched = webhooks.rows.filter(
+        (w) =>
+          (w.actor_id === null || w.actor_id === run.actor_id) &&
+          (w.run_id === null || w.run_id === run.id)
       );
-      for (const webhook of webhooks.rows) {
+      for (const webhook of matched) {
         await client.query(
           `INSERT INTO webhook_deliveries (id, webhook_id, run_id, event_type, status, attempt_count, max_attempts, next_retry_at)
            VALUES ($1, $2, $3, 'ACTOR.RUN.TIMED_OUT', 'PENDING', 0, 5, NOW())`,

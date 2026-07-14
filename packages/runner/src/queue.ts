@@ -599,11 +599,11 @@ export function buildRunStatusMessage(params: {
 
   let msg = `Container exited with code ${params.exitCode}`;
   if (params.lastErrorLine) {
-    // status_message is a one-line dashboard field, not a log sink.
-    const line =
-      params.lastErrorLine.length > 300
-        ? `${params.lastErrorLine.slice(0, 300)}…`
-        : params.lastErrorLine;
+    // status_message is a one-line dashboard field, not a log sink:
+    // collapse newlines/indentation (stack traces) to single spaces
+    // before truncating.
+    const clean = params.lastErrorLine.replace(/\s+/g, ' ').trim();
+    const line = clean.length > 300 ? `${clean.slice(0, 300)}…` : clean;
     msg += `. Last error: ${line}`;
   }
   return msg;

@@ -123,7 +123,9 @@ function dbRows(stats: { ready?: number; running?: number }) {
 function setupQueryMock(opts: {
   stats: { ready?: number; running?: number };
   runningRows?: { id: string; started_at: Date | null; timeout_secs?: number | null }[];
-  webhooks?: { id: string }[];
+  // Shape matches the reaper's batch SELECT: scoping columns are
+  // filtered in memory, so mock rows must carry them.
+  webhooks?: { id: string; actor_id: string | null; run_id: string | null }[];
   /** Make webhook-delivery INSERTs reject — exercises the reap ROLLBACK path. */
   rejectWebhookInserts?: boolean;
 }) {
@@ -497,6 +499,30 @@ describe('scaler loop', () => {
       expect(noopCreate).toHaveBeenCalledTimes(1);
     });
 
+    it('survives a corrupt miss map that parses to a non-object (e.g. "null")', async () => {
+      // JSON.parse('"null"') doesn't throw — it returns null. Assigning
+      // that to prevMisses would make evaluateDeadCandidates throw a
+      // TypeError on property access, aborting EVERY tick until the
+      // key's TTL clears it (the corrective write never runs because the
+      // crash happens first). Corrupt state must degrade to counting
+      // fresh, same as unparseable JSON.
+      queryMock.mockResolvedValue(dbRows({ ready: 6 })); // demand: ceil(6/2)=3
+      noopList.mockResolvedValue([
+        makeRunner('r1', { createdAt: new Date(Date.now() - 300_000) }), // past boot grace
+      ]);
+      redisScan.mockResolvedValue(scanResult([])); // no heartbeat → miss-map path runs
+      redisGet.mockImplementation(async (key: string) =>
+        key === 'scaler:hb-misses' ? 'null' : String(Date.now() - 60_000)
+      );
+
+      await initScaler();
+
+      // The tick completed: scale-up fired (desired 3, current 1 → +2)
+      // and the runner was not condemned (fresh count, first miss).
+      expect(noopCreate).toHaveBeenCalledTimes(2);
+      expect(noopDestroy).not.toHaveBeenCalled();
+    });
+
     it('keeps a failed-to-reap runner in the count to avoid over-provisioning', async () => {
       // Codex P1: if reaper drops a dead runner from the list before destroy
       // has actually succeeded, currentCount understates real capacity and
@@ -543,7 +569,7 @@ describe('scaler loop', () => {
         runningRows: [
           { id: 'ghost', started_at: new Date(Date.now() - 20 * HOUR), timeout_secs: 3600 },
         ],
-        webhooks: [{ id: 'wh-1' }],
+        webhooks: [{ id: 'wh-1', actor_id: null, run_id: null }],
       });
       noopList.mockResolvedValue([makeRunner('r1')]);
       redisScan.mockResolvedValue(scanResult(['runner:heartbeat:r1']));
@@ -592,6 +618,35 @@ describe('scaler loop', () => {
       expect(updateIdx).toBeLessThan(commitIdx);
       expect(insertIdx).toBeGreaterThan(updateIdx);
       expect(insertIdx).toBeLessThan(commitIdx);
+    });
+
+    it('does not enqueue deliveries for webhooks scoped to a different actor or run', async () => {
+      // Scoping moved from SQL to memory when the per-run SELECT was
+      // hoisted out of the transaction (one batch query) — this pins the
+      // in-memory filter so a refactor can't silently fan out global
+      // deliveries. The reap UPDATE mock reports actor_id 'actor-1'.
+      setupQueryMock({
+        stats: { ready: 0, running: 1 },
+        runningRows: [
+          { id: 'ghost', started_at: new Date(Date.now() - 20 * HOUR), timeout_secs: 3600 },
+        ],
+        webhooks: [
+          { id: 'wh-other-actor', actor_id: 'someone-else', run_id: null },
+          { id: 'wh-other-run', actor_id: null, run_id: 'not-ghost' },
+        ],
+      });
+      noopList.mockResolvedValue([makeRunner('r1')]);
+      redisScan.mockResolvedValue(scanResult([]));
+      redisGet.mockResolvedValue(String(Date.now() - 60_000));
+
+      await initScaler();
+
+      expect(updateCalls()).toHaveLength(1); // reap still happens
+      const inserts = queryMock.mock.calls.filter(
+        (c: unknown[]) =>
+          typeof c[0] === 'string' && c[0].includes('INSERT INTO webhook_deliveries')
+      );
+      expect(inserts).toHaveLength(0); // ...but neither webhook matches
     });
 
     it('leaves a heartbeat-claimed run alone no matter how old', async () => {
@@ -651,7 +706,7 @@ describe('scaler loop', () => {
         runningRows: [
           { id: 'ghost', started_at: new Date(Date.now() - 20 * HOUR), timeout_secs: 3600 },
         ],
-        webhooks: [{ id: 'wh-1' }],
+        webhooks: [{ id: 'wh-1', actor_id: null, run_id: null }],
         rejectWebhookInserts: true,
       });
       noopList.mockResolvedValue([makeRunner('r1')]);
