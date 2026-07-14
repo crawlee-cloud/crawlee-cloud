@@ -281,6 +281,17 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
         );
       }
 
+      if (!store.rows[0]) {
+        // The id exists globally but under another user: the INSERT
+        // no-ops on conflict and the user-scoped re-SELECT comes back
+        // empty. Pre-fix, the non-null assertion below turned this into
+        // an unhandled TypeError (HTTP 500). A clean 404 matches the GET
+        // route's posture and lets callers (e.g. the runner's failed-run
+        // log archiver) treat it as a quiet skip.
+        reply.status(404);
+        return { error: { type: 'record-not-found', message: 'Store not found' } };
+      }
+
       const body = request.body;
       // Pass Buffer bodies through unchanged. toString('utf-8') would corrupt
       // any non-UTF-8 bytes into U+FFFD replacement chars — fatal for binary
@@ -295,10 +306,10 @@ export const keyValueStoresRoutes: FastifyPluginAsync = async (fastify) => {
         data = JSON.stringify(body);
       }
 
-      await putKVRecord(store.rows[0]!.id, key, data, contentType);
+      await putKVRecord(store.rows[0].id, key, data, contentType);
 
       await query('UPDATE key_value_stores SET modified_at = NOW() WHERE id = $1', [
-        store.rows[0]!.id,
+        store.rows[0].id,
       ]);
 
       reply.status(201);

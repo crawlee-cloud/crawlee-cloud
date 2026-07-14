@@ -727,6 +727,15 @@ async function reapZombieRuns(client: pg.PoolClient, zombieIds: string[]): Promi
     // re-renders the payload from the DB. No runner alive right now →
     // delivered when one boots.
     //
+    // Known limit: in a scale-to-zero deployment (SCALER_MIN_RUNNERS=0)
+    // that goes idle after the reap, the PENDING row waits until the
+    // next runner boots for any reason — pending deliveries don't count
+    // as scaler demand. Accepted for now: runners are the only component
+    // holding webhook delivery semantics (template render, attempt
+    // bookkeeping, retry backoff), and duplicating that here for a
+    // corner case isn't worth the drift risk. Revisit if an API-side
+    // delivery worker ever exists.
+    //
     // One SELECT for the whole batch, actor/run scoping applied in
     // memory: this transaction holds locks on the reaped `runs` rows,
     // so per-run round-trips (N+1) would stretch the lock window for

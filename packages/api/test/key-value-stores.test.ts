@@ -242,6 +242,28 @@ describe('Key-Value Store Routes', () => {
       expect(response.statusCode).toBe(201);
       expect(mockPutKVRecord).toHaveBeenCalled();
     });
+
+    it('returns 404 (not 500) when the store id exists under another user', async () => {
+      // Auto-create path collision: the id is taken globally, so the
+      // INSERT no-ops (ON CONFLICT DO NOTHING) and the user-scoped
+      // re-SELECT finds nothing. Pre-fix this dereferenced
+      // store.rows[0]!.id on undefined -> unhandled TypeError -> 500.
+      // Surfaced by the runner's failed-run log archiver PUTting to a
+      // foreign user's run store.
+      mockQuery
+        .mockResolvedValueOnce({ rows: [] }) // user-scoped lookup: miss
+        .mockResolvedValueOnce({ rows: [] }) // INSERT .. ON CONFLICT DO NOTHING: no-op
+        .mockResolvedValueOnce({ rows: [] }); // user-scoped re-SELECT: still miss
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/v2/key-value-stores/foreign-store-id/records/RUN_LOG.txt',
+        payload: 'log text',
+        headers: { 'content-type': 'text/plain' },
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(mockPutKVRecord).not.toHaveBeenCalled();
+    });
   });
 
   describe('DELETE /v2/key-value-stores/:storeId (store-level)', () => {
