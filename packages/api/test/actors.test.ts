@@ -618,7 +618,7 @@ describe('Actor Routes', () => {
     it('accepts a per-run webhooks array and persists rows scoped to run_id', async () => {
       // 1. Actor lookup
       mockQuery.mockResolvedValueOnce({
-        rows: [{ id: 'actor-1', name: 'bravo-com', user_id: 'test-user-id' }],
+        rows: [{ id: 'actor-1', name: 'demo-actor', user_id: 'test-user-id' }],
       });
       // 2-4. Storage inserts (datasets, kv, request_queues) — return empty rows
       mockQuery.mockResolvedValueOnce({ rows: [] });
@@ -650,7 +650,7 @@ describe('Actor Routes', () => {
 
       const response = await app.inject({
         method: 'POST',
-        url: '/v2/acts/bravo-com/runs',
+        url: '/v2/acts/demo-actor/runs',
         payload: {
           input: { startUrls: [] },
           timeout: 3600,
@@ -680,12 +680,12 @@ describe('Actor Routes', () => {
 
     it('rejects per-run webhooks subscribing to events Crawlee Cloud does not fire', async () => {
       mockQuery.mockResolvedValueOnce({
-        rows: [{ id: 'actor-1', name: 'bravo-com', user_id: 'test-user-id' }],
+        rows: [{ id: 'actor-1', name: 'demo-actor', user_id: 'test-user-id' }],
       });
 
       const response = await app.inject({
         method: 'POST',
-        url: '/v2/acts/bravo-com/runs',
+        url: '/v2/acts/demo-actor/runs',
         payload: {
           webhooks: [
             {
