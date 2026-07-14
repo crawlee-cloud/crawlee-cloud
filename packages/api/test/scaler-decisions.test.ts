@@ -16,6 +16,8 @@ import { describe, it, expect } from 'vitest';
 import {
   calculateDesiredRunners,
   countLiveRunning,
+  evaluateDeadCandidates,
+  findZombieRuns,
   PICKUP_GRACE_MS,
   type QueueStats,
 } from '../src/scaler/index.js';
@@ -224,14 +226,175 @@ describe('calculateDesiredRunners', () => {
       // must never return NaN or a negative — both would corrupt the
       // scaleUp/scaleDown arithmetic in scalingLoop.
       const cfg = makeConfig({ minRunners: 1 });
-      const desired = calculateDesiredRunners(
-        { ready: NaN, running: -3, total: NaN },
-        5,
-        cfg
-      );
+      const desired = calculateDesiredRunners({ ready: NaN, running: -3, total: NaN }, 5, cfg);
       expect(desired).toBe(1); // totalDemand coerces to 0 → returns minRunners
       expect(Number.isFinite(desired)).toBe(true);
     });
+  });
+});
+
+describe('zombie-aware demand (liveRunningCount)', () => {
+  // Live production incident 2026-07-13: 12 zombie RUNNING rows (owning
+  // runners long dead) kept totalDemand at 25 while real work was 13 runs.
+  // The scaler spawned and held 10 droplets — desired=ceil(25/3)=9 — even
+  // though the activity gate correctly ignored the zombies. Demand and
+  // activity disagreed because only the activity gate used
+  // countLiveRunning. These tests pin demand to the same source of truth.
+
+  it('excludes unclaimed RUNNING rows from demand when liveRunningCount is provided', () => {
+    // 12 zombies, 0 ready, 0 live claims → no real demand → floor.
+    const cfg = makeConfig({
+      runsPerRunner: 3,
+      scaleUpThreshold: 5,
+      minRunners: 0,
+      maxRunners: 10,
+    });
+    expect(calculateDesiredRunners(stats(0, 12), 10, cfg, 0)).toBe(0);
+  });
+
+  it('still counts live-claimed RUNNING rows toward demand', () => {
+    // 12 RUNNING in the DB but only 6 have live owners → ceil(6/3)=2.
+    const cfg = makeConfig({
+      runsPerRunner: 3,
+      scaleUpThreshold: 0,
+      minRunners: 0,
+      maxRunners: 10,
+    });
+    expect(calculateDesiredRunners(stats(0, 12), 10, cfg, 6)).toBe(2);
+  });
+
+  it('falls back to stats.running when liveRunningCount is omitted (back-compat)', () => {
+    const cfg = makeConfig({
+      runsPerRunner: 1,
+      scaleUpThreshold: 0,
+      minRunners: 0,
+      maxRunners: 10,
+    });
+    expect(calculateDesiredRunners(stats(0, 5), 5, cfg)).toBe(5);
+  });
+
+  it('coerces NaN/negative liveRunningCount to 0', () => {
+    const cfg = makeConfig({ minRunners: 1 });
+    expect(calculateDesiredRunners(stats(0, 5), 5, cfg, NaN)).toBe(1);
+    expect(calculateDesiredRunners(stats(0, 5), 5, cfg, -2)).toBe(1);
+  });
+});
+
+describe('evaluateDeadCandidates (consecutive-miss dead detection)', () => {
+  // Live production incident 2026-07-09..12: the pre-v1.0.2 code marked a
+  // runner 'dead' — and hard-destroyed the droplet — on a SINGLE tick where
+  // its heartbeat key was missing, as long as the droplet was >3min old.
+  // Runner heartbeats have a 90s TTL in Redis; one managed-Redis failover
+  // or restart wipes every heartbeat at once, and the very next tick
+  // destroyed the whole busy fleet. Each destroyed runner's claimed runs
+  // (runsPerRunner per droplet) became immortal zombie RUNNING rows —
+  // observed as four batches of exactly 3 runs, always at night (managed
+  // DB maintenance windows).
+  //
+  // Condemnation requires BOTH `missThreshold` consecutive misses AND
+  // `missWindowMs` of wall-clock time since the FIRST miss. Ticks alone
+  // are not enough: the advisory lock is a per-tick try-lock, so N API
+  // replicas with offset timers can interleave N ticks per poll interval
+  // — 3 misses can accumulate in seconds, which would re-open the single-
+  // blip massacre through the counter itself.
+  const now = Date.now();
+  const opts = { deadAfterMs: 180_000, missThreshold: 3, missWindowMs: 90_000, now };
+  const oldRunner = (id: string) => ({ id, createdAt: new Date(now - 3_600_000) });
+
+  it('never condemns a runner that has a heartbeat, and clears its miss counter', () => {
+    const { deadIds, nextMisses } = evaluateDeadCandidates(
+      [oldRunner('r1')],
+      new Set(['r1']),
+      { r1: { c: 2, t: now - 120_000 } }, // was one miss away from death — heartbeat came back
+      opts
+    );
+    expect(deadIds.size).toBe(0);
+    expect(nextMisses.r1).toBeUndefined();
+  });
+
+  it('does not accrue misses for a still-booting runner (age <= deadAfterMs)', () => {
+    const booting = { id: 'b1', createdAt: new Date(now - 60_000) }; // 1min old
+    const { deadIds, nextMisses } = evaluateDeadCandidates([booting], new Set(), {}, opts);
+    expect(deadIds.size).toBe(0);
+    expect(nextMisses.b1).toBeUndefined();
+  });
+
+  it('accrues a miss but does NOT condemn before the threshold, preserving firstMissAt', () => {
+    // Tick 1 and 2 of a Redis blip: counter rises, nobody dies. The
+    // first-miss timestamp is set on tick 1 and must survive tick 2 —
+    // it anchors the wall-clock window.
+    const first = evaluateDeadCandidates([oldRunner('r1')], new Set(), {}, opts);
+    expect(first.deadIds.size).toBe(0);
+    expect(first.nextMisses.r1).toEqual({ c: 1, t: now });
+
+    const second = evaluateDeadCandidates([oldRunner('r1')], new Set(), first.nextMisses, {
+      ...opts,
+      now: now + 30_000,
+    });
+    expect(second.deadIds.size).toBe(0);
+    expect(second.nextMisses.r1).toEqual({ c: 2, t: now });
+  });
+
+  it('condemns once misses reach the threshold AND the miss window has elapsed', () => {
+    const { deadIds, nextMisses } = evaluateDeadCandidates(
+      [oldRunner('r1')],
+      new Set(),
+      { r1: { c: 2, t: now - 120_000 } }, // two prior misses, first one 2min ago
+      opts
+    );
+    expect(deadIds.has('r1')).toBe(true);
+    expect(nextMisses.r1).toEqual({ c: 3, t: now - 120_000 });
+  });
+
+  it('does NOT condemn on threshold misses accumulated within seconds (interleaved replica ticks)', () => {
+    // Multi-replica exposure: with offset timers, 3 ticks can land in
+    // ~20s. Count says condemn, but the runner never had a full
+    // heartbeat-TTL window to get a beat through — must survive.
+    const { deadIds, nextMisses } = evaluateDeadCandidates(
+      [oldRunner('r1')],
+      new Set(),
+      { r1: { c: 2, t: now - 5_000 } }, // first miss only 5s ago
+      opts
+    );
+    expect(deadIds.size).toBe(0);
+    expect(nextMisses.r1).toEqual({ c: 3, t: now - 5_000 });
+  });
+
+  it('tolerates legacy plain-number miss entries without instantly condemning', () => {
+    // Pre-window deploys persisted `{ runnerId: count }` in Redis. Reading
+    // one must not crash, and must restart the clock (conservative: the
+    // legacy shape has no firstMissAt, so the window starts now).
+    const { deadIds, nextMisses } = evaluateDeadCandidates(
+      [oldRunner('r1')],
+      new Set(),
+      { r1: 2 }, // legacy shape from a pre-upgrade scaler
+      opts
+    );
+    expect(deadIds.size).toBe(0); // count hits 3, but window restarted at `now`
+    expect(nextMisses.r1).toEqual({ c: 3, t: now });
+  });
+
+  it('survives the incident scenario: fleet-wide heartbeat wipe followed by recovery', () => {
+    // Redis failover wipes all heartbeats for one tick; keys are
+    // re-published within 30s (next runner beat). Ticks 1-2 miss, tick 3
+    // heartbeats are back. Nobody must die.
+    const fleet = [oldRunner('a'), oldRunner('b'), oldRunner('c')];
+    const t1 = evaluateDeadCandidates(fleet, new Set(), {}, opts);
+    const t2 = evaluateDeadCandidates(fleet, new Set(), t1.nextMisses, opts);
+    expect(t1.deadIds.size + t2.deadIds.size).toBe(0);
+    const t3 = evaluateDeadCandidates(fleet, new Set(['a', 'b', 'c']), t2.nextMisses, opts);
+    expect(t3.deadIds.size).toBe(0);
+    expect(Object.keys(t3.nextMisses)).toHaveLength(0); // all counters reset
+  });
+
+  it('prunes counters for runners that no longer exist', () => {
+    const { nextMisses } = evaluateDeadCandidates(
+      [oldRunner('alive')],
+      new Set(['alive']),
+      { ghost: { c: 2, t: now - 120_000 } }, // destroyed last tick — counter must not leak
+      opts
+    );
+    expect(nextMisses.ghost).toBeUndefined();
   });
 });
 
@@ -252,11 +415,7 @@ describe('countLiveRunning (runId+started_at correlation)', () => {
 
   it('counts a RUNNING row claimed by a heartbeat as live work', () => {
     expect(
-      countLiveRunning(
-        [{ id: 'r1', started_at: new Date(now - 60_000) }],
-        new Set(['r1']),
-        now
-      )
+      countLiveRunning([{ id: 'r1', started_at: new Date(now - 60_000) }], new Set(['r1']), now)
     ).toBe(1);
   });
 
@@ -308,5 +467,62 @@ describe('countLiveRunning (runId+started_at correlation)', () => {
 
   it('returns 0 for an empty input', () => {
     expect(countLiveRunning([], new Set(), now)).toBe(0);
+  });
+});
+
+describe('findZombieRuns (API-side zombie-run reaper)', () => {
+  const now = 1_750_000_000_000;
+  const HOUR = 3_600_000;
+
+  it('flags an unclaimed RUNNING row past its timeout + grace', () => {
+    const rows = [{ id: 'z1', started_at: new Date(now - 2 * HOUR), timeout_secs: 3600 }];
+    expect(findZombieRuns(rows, new Set(), now)).toEqual(['z1']);
+  });
+
+  it('never flags a run claimed by a live heartbeat, even far past timeout', () => {
+    // Timeout enforcement for OWNED runs belongs to the owning runner
+    // (docker stop → exit 143 → TIMED-OUT). The API reaper only covers
+    // runs whose owner is gone; double-enforcement would race the runner's
+    // terminal UPDATE.
+    const rows = [{ id: 'owned', started_at: new Date(now - 20 * HOUR), timeout_secs: 3600 }];
+    expect(findZombieRuns(rows, new Set(['owned']), now)).toEqual([]);
+  });
+
+  it('does NOT flag an unclaimed run still within its timeout window', () => {
+    // Unclaimed-but-in-window = possibly a heartbeat blip; the run may
+    // finish normally. Only reap once even a healthy owner would have
+    // timed it out.
+    const rows = [{ id: 'r1', started_at: new Date(now - HOUR / 2), timeout_secs: 3600 }];
+    expect(findZombieRuns(rows, new Set(), now)).toEqual([]);
+  });
+
+  it('respects the grace window just past the timeout boundary', () => {
+    const rows = [
+      {
+        id: 'boundary',
+        started_at: new Date(now - HOUR - PICKUP_GRACE_MS + 1),
+        timeout_secs: 3600,
+      },
+    ];
+    expect(findZombieRuns(rows, new Set(), now)).toEqual([]);
+  });
+
+  it('falls back to 3600s when timeout_secs is null', () => {
+    const rows = [{ id: 'nt', started_at: new Date(now - 2 * HOUR), timeout_secs: null }];
+    expect(findZombieRuns(rows, new Set(), now)).toEqual(['nt']);
+  });
+
+  it('skips rows with null started_at (cannot judge age)', () => {
+    const rows = [{ id: 'ns', started_at: null, timeout_secs: 3600 }];
+    expect(findZombieRuns(rows, new Set(), now)).toEqual([]);
+  });
+
+  it('returns only the zombies from a mixed set', () => {
+    const rows = [
+      { id: 'owned', started_at: new Date(now - 20 * HOUR), timeout_secs: 3600 },
+      { id: 'fresh', started_at: new Date(now - 1_000), timeout_secs: 3600 },
+      { id: 'zombie', started_at: new Date(now - 20 * HOUR), timeout_secs: 3600 },
+    ];
+    expect(findZombieRuns(rows, new Set(['owned']), now)).toEqual(['zombie']);
   });
 });

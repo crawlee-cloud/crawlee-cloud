@@ -84,6 +84,13 @@ export interface RunResult {
   exitCode: number;
   startedAt: Date;
   finishedAt: Date;
+  /**
+   * True when Docker reports `State.OOMKilled` for the finished container.
+   * The exit code alone can't distinguish OOM: the kernel's OOM killer
+   * produces 137, but so does `docker stop`; and when it SIGKILLs a child
+   * process instead of PID 1, the container exits 1 like any crash.
+   */
+  oomKilled: boolean;
 }
 
 const docker = new Docker({
@@ -219,7 +226,7 @@ export async function executeRun(options: RunOptions): Promise<RunResult> {
       message: 'Run aborted before container start',
     });
     await redis.rpush(`logs:${runId}`, abortLog);
-    return { exitCode: 137, startedAt, finishedAt: new Date() };
+    return { exitCode: 137, startedAt, finishedAt: new Date(), oomKilled: false };
   }
 
   // Create container
@@ -255,7 +262,7 @@ export async function executeRun(options: RunOptions): Promise<RunResult> {
       message: 'Run aborted before container start',
     });
     await redis.rpush(`logs:${runId}`, abortLog);
-    return { exitCode: 137, startedAt, finishedAt: new Date() };
+    return { exitCode: 137, startedAt, finishedAt: new Date(), oomKilled: false };
   }
 
   // Start streaming logs BEFORE starting container
@@ -296,11 +303,21 @@ export async function executeRun(options: RunOptions): Promise<RunResult> {
 
   const finishedAt = new Date();
 
+  // Read OOM state BEFORE remove() — inspect on a removed container 404s.
+  // Best-effort: a failed inspect must not break run terminalization.
+  let oomKilled = false;
+  try {
+    const info = await container.inspect();
+    oomKilled = info.State?.OOMKilled === true;
+  } catch (err) {
+    console.warn(`[${runId}] Inspect after exit failed: ${(err as Error).message}`);
+  }
+
   // Log finish message
   const finishLog = JSON.stringify({
     timestamp: new Date().toISOString(),
     level: exitCode === 0 ? 'INFO' : 'ERROR',
-    message: `Container finished with exit code ${String(exitCode)}`,
+    message: `Container finished with exit code ${String(exitCode)}${oomKilled ? ' (OOM-killed)' : ''}`,
   });
   await redis.rpush(`logs:${runId}`, finishLog);
 
@@ -314,6 +331,7 @@ export async function executeRun(options: RunOptions): Promise<RunResult> {
     exitCode,
     startedAt,
     finishedAt,
+    oomKilled,
   };
 }
 

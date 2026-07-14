@@ -409,6 +409,19 @@ async function processRun(run: RunJob): Promise<void> {
       status = 'FAILED';
     }
 
+    // Operator-facing cause line. Log-line enrichment only matters for
+    // plain failures (OOM/timeout produce their own message) and costs a
+    // Redis round-trip, so skip it otherwise.
+    const statusMessage = buildRunStatusMessage({
+      status,
+      exitCode: result.exitCode,
+      oomKilled: result.oomKilled,
+      memoryMb: run.memory_mbytes,
+      timeoutSecs: run.timeout_secs,
+      lastErrorLine:
+        status === 'FAILED' && !result.oomKilled ? await getLastErrorLogLine(run.id) : null,
+    });
+
     // Update run record. Persist exit_code alongside status so receivers
     // reading the webhook payload (resource.exitCode) and the runs API see
     // the real exit value rather than null.
@@ -424,14 +437,18 @@ async function processRun(run: RunJob): Promise<void> {
     //
     // RETURNING to detect the no-op case so we can log it (operator
     // signal that some other path won the race — usually Actor.fail()).
+    // COALESCE keeps any message written by an earlier path (e.g.
+    // Actor.fail() with a custom message) — we only fill the blank.
     const updateResult = await pool.query<{ status: string }>(
       `
       UPDATE runs
-      SET status = $1, finished_at = $2, exit_code = $3, modified_at = NOW()
-      WHERE id = $4 AND status = 'RUNNING'
+      SET status = $1, finished_at = $2, exit_code = $3,
+          status_message = COALESCE(status_message, $4),
+          modified_at = NOW()
+      WHERE id = $5 AND status = 'RUNNING'
       RETURNING status
     `,
-      [status, result.finishedAt, result.exitCode, runId]
+      [status, result.finishedAt, result.exitCode, statusMessage, runId]
     );
 
     if (updateResult.rowCount === 0) {
@@ -454,6 +471,9 @@ async function processRun(run: RunJob): Promise<void> {
     // carry real numbers instead of zero placeholders. Quiet no-op when
     // the file isn't there (actor crashed before crawler.run()).
     await ingestCrawlerStats(runId);
+
+    // Archive logs for bad endings before the Redis copy expires.
+    await persistFailureLog(run, status);
 
     // Trigger webhooks
     await triggerWebhooks(runId, status);
@@ -495,6 +515,7 @@ async function processRun(run: RunJob): Promise<void> {
       );
     }
 
+    await persistFailureLog(run, webhookStatus);
     await triggerWebhooks(runId, webhookStatus);
     if (webhookStatus === 'FAILED') {
       await maybeRetryRun(run, runId);
@@ -544,6 +565,124 @@ async function ingestCrawlerStats(runId: string): Promise<void> {
     }
   } catch (err) {
     console.warn(`[stats] ingest failed for ${runId}: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * Turn a container's exit into an operator-readable status_message.
+ * Pure — exported for unit testing.
+ *
+ * Priority: OOM > timeout > generic failure. OOM must win because its
+ * observable symptoms masquerade as the others: the kernel OOM killer
+ * yields exit 137 (or SIGKILLs the actor's child process → exit 1),
+ * and before this existed those runs showed an empty message —
+ * one prod actor had 7/8 runs "exit 1" whose real cause (OOM) was only visible
+ * in a Redis log tail that expires after 24h.
+ */
+export function buildRunStatusMessage(params: {
+  status: string;
+  exitCode: number;
+  oomKilled: boolean;
+  memoryMb: number | null;
+  timeoutSecs: number | null;
+  lastErrorLine: string | null;
+}): string | null {
+  if (params.oomKilled) {
+    const limit = params.memoryMb != null ? ` (${params.memoryMb} MB limit)` : '';
+    return `Out of memory: container was OOM-killed${limit}, exit code ${params.exitCode}`;
+  }
+  if (params.status === 'TIMED-OUT') {
+    const limit = params.timeoutSecs != null ? ` after ${params.timeoutSecs} seconds` : '';
+    return `Run timed out${limit}`;
+  }
+  if (params.status === 'SUCCEEDED') return null;
+
+  let msg = `Container exited with code ${params.exitCode}`;
+  if (params.lastErrorLine) {
+    // status_message is a one-line dashboard field, not a log sink.
+    const line =
+      params.lastErrorLine.length > 300
+        ? `${params.lastErrorLine.slice(0, 300)}…`
+        : params.lastErrorLine;
+    msg += `. Last error: ${line}`;
+  }
+  return msg;
+}
+
+/**
+ * Best-effort: last ERROR-level line from the run's Redis log stream,
+ * used to enrich status_message for plain failures. Returns null on any
+ * problem — enrichment must never break run terminalization.
+ */
+async function getLastErrorLogLine(runId: string): Promise<string | null> {
+  try {
+    const tail = await redis.lrange(`logs:${runId}`, -100, -1);
+    for (let i = tail.length - 1; i >= 0; i--) {
+      const raw = tail[i];
+      if (!raw) continue;
+      try {
+        const entry = JSON.parse(raw) as { level?: string; message?: string };
+        if (entry.level === 'ERROR' && entry.message) {
+          // Skip the runner's own epilogue line — it repeats the exit
+          // code, which the message already carries.
+          if (entry.message.startsWith('Container finished with exit code')) continue;
+          return entry.message;
+        }
+      } catch {
+        // non-JSON line — skip
+      }
+    }
+  } catch {
+    // Redis unavailable — fine, message just stays generic.
+  }
+  return null;
+}
+
+/** KV record key for archived run logs — shared with the scaler's zombie-reap salvage path. */
+export const RUN_LOG_KV_KEY = 'RUN_LOG.txt';
+
+/**
+ * Persist the run's Redis log stream to its default KV store when the run
+ * ends badly. The Redis list (`logs:<runId>`) has a 24h TTL and a
+ * 1000-line cap — during the 2026-07-09..13 zombie incident, 4-day-old
+ * failed runs were un-autopsiable because their logs had already
+ * evaporated. SUCCEEDED runs are skipped: their logs are rarely needed
+ * and the KV write isn't free.
+ *
+ * Best-effort by design — a log-archival failure must never affect run
+ * terminalization or webhooks.
+ */
+async function persistFailureLog(run: RunJob, status: string): Promise<void> {
+  if (status !== 'FAILED' && status !== 'TIMED-OUT') return;
+  if (!run.default_key_value_store_id || !runnerApiKey) return;
+  try {
+    const lines = await redis.lrange(`logs:${run.id}`, 0, -1);
+    if (lines.length === 0) return;
+    const text = lines
+      .map((raw) => {
+        try {
+          const e = JSON.parse(raw) as { timestamp?: string; level?: string; message?: string };
+          return `${e.timestamp ?? ''} ${e.level ?? ''} ${e.message ?? ''}`.trim();
+        } catch {
+          return raw;
+        }
+      })
+      .join('\n');
+    const url = `${selfApiBaseUrl()}/v2/key-value-stores/${run.default_key_value_store_id}/records/${RUN_LOG_KV_KEY}`;
+    const response = await fetch(url, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        Authorization: `Bearer ${runnerApiKey}`,
+      },
+      body: text,
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      console.warn(`[logs] persist returned HTTP ${String(response.status)} for ${run.id}`);
+    }
+  } catch (err) {
+    console.warn(`[logs] persist failed for ${run.id}: ${(err as Error).message}`);
   }
 }
 

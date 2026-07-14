@@ -40,10 +40,14 @@ const {
   noopCreate: vi.fn(),
   noopDestroy: vi.fn(),
   noopList: vi.fn(),
-  // Default: leader path — runs the work and returns its result.
+  // Default: leader path — runs the work and returns its result. The
+  // pinned client's `query` routes to the same queryMock as the pooled
+  // `query` helper, so transactional statements (BEGIN/UPDATE/INSERT/
+  // COMMIT issued on the advisory-lock session) are observable alongside
+  // the non-transactional ones.
   withAdvisoryLockMock: vi.fn(async (_id: number, work: (c: never) => Promise<unknown>) => ({
     acquired: true,
-    result: await work({} as never),
+    result: await work({ query: queryMock } as never),
   })),
 }));
 
@@ -104,11 +108,13 @@ function dbRows(stats: { ready?: number; running?: number }) {
 }
 
 /**
- * Route queryMock based on SQL pattern. The scaler issues two distinct
- * queries per tick when there are RUNNING rows:
+ * Route queryMock based on SQL pattern. The scaler issues several
+ * distinct queries per tick when there are RUNNING rows:
  *   1. `SELECT status, COUNT(*) ... GROUP BY status`  (queue depth)
- *   2. `SELECT id, started_at FROM runs WHERE status = 'RUNNING'`
- *      (heartbeat-claim correlation for the realActivity gate)
+ *   2. `SELECT id, started_at, timeout_secs FROM runs WHERE status = 'RUNNING'`
+ *      (heartbeat-claim correlation + zombie-run reaper input)
+ *   3. `UPDATE runs SET status = 'TIMED-OUT' ...`  (zombie reap)
+ *   4. webhook lookup + delivery INSERT for reaped runs
  *
  * Tests that exercise the correlation path use this helper to give each
  * query its own response shape; tests that only need the GROUP BY can
@@ -116,11 +122,30 @@ function dbRows(stats: { ready?: number; running?: number }) {
  */
 function setupQueryMock(opts: {
   stats: { ready?: number; running?: number };
-  runningRows?: { id: string; started_at: Date | null }[];
+  runningRows?: { id: string; started_at: Date | null; timeout_secs?: number | null }[];
+  webhooks?: { id: string }[];
+  /** Make webhook-delivery INSERTs reject — exercises the reap ROLLBACK path. */
+  rejectWebhookInserts?: boolean;
 }) {
-  queryMock.mockImplementation((sql: string) => {
+  queryMock.mockImplementation((sql: string, params?: unknown[]) => {
+    if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') {
+      return Promise.resolve({ rows: [] });
+    }
     if (typeof sql === 'string' && sql.includes("FROM runs WHERE status = 'RUNNING'")) {
       return Promise.resolve({ rows: opts.runningRows ?? [] });
+    }
+    if (typeof sql === 'string' && sql.includes("SET status = 'TIMED-OUT'")) {
+      const ids = (params?.[0] as string[]) ?? [];
+      return Promise.resolve({ rows: ids.map((id) => ({ id, actor_id: 'actor-1' })) });
+    }
+    if (typeof sql === 'string' && sql.includes('FROM webhooks')) {
+      return Promise.resolve({ rows: opts.webhooks ?? [] });
+    }
+    if (typeof sql === 'string' && sql.includes('INSERT INTO webhook_deliveries')) {
+      if (opts.rejectWebhookInserts) {
+        return Promise.reject(new Error('insert failed (simulated)'));
+      }
+      return Promise.resolve({ rows: [] });
     }
     return Promise.resolve(dbRows(opts.stats));
   });
@@ -286,19 +311,59 @@ describe('scaler loop', () => {
   });
 
   describe('dead-runner reaping', () => {
-    it('reaps runners with no heartbeat for >3 minutes', async () => {
+    // Condemnation requires SCALER_REAPER_MISS_TICKS (default 3) consecutive
+    // ticks without a heartbeat AND SCALER_REAPER_MISS_WINDOW_SECS (default
+    // 90s) elapsed since the first miss. Seeding the persisted miss map at
+    // threshold-1 with a first-miss timestamp past the window makes the
+    // current tick the condemning one.
+    function seedMisses(
+      misses: Record<string, { c: number; t: number }>,
+      idle = String(Date.now() - 60_000)
+    ) {
+      redisGet.mockImplementation(async (key: string) =>
+        key === 'scaler:hb-misses' ? JSON.stringify(misses) : idle
+      );
+    }
+
+    it('reaps runners with no heartbeat after 3 consecutive missed ticks', async () => {
       queryMock.mockResolvedValue({ rows: [] });
       noopList.mockResolvedValue([
         makeRunner('stuck-runner', { createdAt: new Date(Date.now() - 300_000) }), // 5min old, no heartbeat
       ]);
       redisScan.mockResolvedValue(scanResult([])); // no heartbeat
-      redisGet.mockResolvedValue(String(Date.now() - 60_000)); // idle timeout NOT yet passed
+      seedMisses({ 'stuck-runner': { c: 2, t: Date.now() - 120_000 } }); // this tick = 3rd miss, window elapsed
 
       await initScaler();
 
       // Reaping is INDEPENDENT of idle timeout — dead runners are zombies,
       // not capacity. They get destroyed whether the queue is busy or quiet.
       expect(noopDestroy).toHaveBeenCalledWith('stuck-runner');
+    });
+
+    it('does NOT reap on a single missing heartbeat (Redis blip)', async () => {
+      // Regression for the 2026-07-09..12 incident: heartbeat keys live in
+      // Redis with a 90s TTL, so one managed-Redis failover makes the whole
+      // fleet look dead for a tick. Single-tick condemnation massacred every
+      // busy runner and orphaned their claimed runs as zombie RUNNING rows.
+      queryMock.mockResolvedValue({ rows: [] });
+      noopList.mockResolvedValue([
+        makeRunner('blipped-runner', { createdAt: new Date(Date.now() - 300_000) }), // well past boot grace
+      ]);
+      redisScan.mockResolvedValue(scanResult([])); // heartbeat missing THIS tick only
+      seedMisses({}); // no prior misses recorded; idle timer recent (isolates the reaper path)
+
+      await initScaler();
+
+      expect(noopDestroy).not.toHaveBeenCalled();
+      // The miss must be recorded for the next tick to build on. Entries
+      // are `{ c, t }` where t is a wall-clock timestamp, so match the
+      // count structurally rather than the exact serialized string.
+      const missCall = redisSet.mock.calls.find((c) => c[0] === 'scaler:hb-misses');
+      expect(missCall).toBeDefined();
+      const [, missJson] = missCall ?? [];
+      const persisted = JSON.parse(missJson as string) as Record<string, { c: number; t: number }>;
+      expect(persisted['blipped-runner']).toMatchObject({ c: 1 });
+      expect(persisted['blipped-runner'].t).toEqual(expect.any(Number));
     });
 
     it('does not reap runners that are still booting (<3min old, no heartbeat)', async () => {
@@ -389,6 +454,7 @@ describe('scaler loop', () => {
           memoryUsageRatio: 0.4,
         }),
       ]);
+      seedMisses({ 'dead-1': { c: 2, t: Date.now() - 120_000 } }); // this tick condemns dead-1
 
       await initScaler();
 
@@ -407,10 +473,28 @@ describe('scaler loop', () => {
         makeRunner('zombie', { createdAt: new Date(Date.now() - 300_000) }),
       ]);
       redisScan.mockResolvedValue(scanResult([]));
+      seedMisses({ zombie: { c: 2, t: Date.now() - 120_000 } }); // condemned this tick → destroy is attempted
       noopDestroy.mockRejectedValueOnce(new Error('transient API failure'));
 
       // Should not throw out of initScaler
       await expect(initScaler()).resolves.toBeUndefined();
+    });
+
+    it('survives a failed miss-map write (set-only Redis failure) and completes the tick', async () => {
+      // The miss-map persist is best-effort: losing it only restarts
+      // counting (conservative). A Redis SET failure aborting the tick
+      // would block scale-up/scale-down entirely — worse than the loss.
+      queryMock.mockResolvedValue(dbRows({ ready: 2 })); // ceil(2/2)=1 desired
+      noopList.mockResolvedValue([]);
+      redisSet.mockImplementation(async (key: string) => {
+        if (key === 'scaler:hb-misses') throw new Error('redis write refused');
+        return 'OK';
+      });
+
+      await initScaler();
+
+      // The tick must survive the failed write and still scale up.
+      expect(noopCreate).toHaveBeenCalledTimes(1);
     });
 
     it('keeps a failed-to-reap runner in the count to avoid over-provisioning', async () => {
@@ -428,6 +512,7 @@ describe('scaler loop', () => {
         makeRunner('failed-reap', { createdAt: new Date(Date.now() - 300_000) }),
       ]);
       redisScan.mockResolvedValue(scanResult([])); // no heartbeat → marked 'dead'
+      seedMisses({ 'failed-reap': { c: 2, t: Date.now() - 120_000 } }); // condemned this tick
       noopDestroy.mockRejectedValueOnce(new Error('transient API failure'));
 
       await initScaler();
@@ -437,6 +522,187 @@ describe('scaler loop', () => {
       // Critical: NO new runner spawned. The dead one is still counted as
       // capacity until destroy actually succeeds on a future tick.
       expect(noopCreate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('zombie-run reaping', () => {
+    const HOUR = 3_600_000;
+
+    function updateCalls() {
+      return queryMock.mock.calls.filter(
+        (c: unknown[]) => typeof c[0] === 'string' && c[0].includes("SET status = 'TIMED-OUT'")
+      );
+    }
+
+    it('terminalizes an unclaimed RUNNING row past its timeout and enqueues its webhook', async () => {
+      // The 2026-07-13 incident shape: owning runner destroyed, row stuck
+      // RUNNING for days against a 3600s timeout. Nobody enforces
+      // timeout_secs once the owner dies — except this reaper.
+      setupQueryMock({
+        stats: { ready: 0, running: 1 },
+        runningRows: [
+          { id: 'ghost', started_at: new Date(Date.now() - 20 * HOUR), timeout_secs: 3600 },
+        ],
+        webhooks: [{ id: 'wh-1' }],
+      });
+      noopList.mockResolvedValue([makeRunner('r1')]);
+      redisScan.mockResolvedValue(scanResult(['runner:heartbeat:r1']));
+      redisMget.mockResolvedValue([
+        JSON.stringify({
+          runnerId: 'r1',
+          activeRuns: 0,
+          runIds: [], // live runner, but it does NOT claim 'ghost'
+          healthy: true,
+          cpuUsage: 0.1,
+          memoryUsageRatio: 0.2,
+        }),
+      ]);
+      redisGet.mockResolvedValue(String(Date.now() - 60_000));
+
+      await initScaler();
+
+      const updates = updateCalls();
+      expect(updates).toHaveLength(1);
+      expect(updates[0][1]).toEqual([['ghost']]);
+      // Reaper UPDATE must refresh modified_at like the runner's terminal
+      // UPDATE does — keeps dashboard recency sorting honest for reaped runs.
+      expect(updates[0][0] as string).toContain('modified_at = NOW()');
+      // Webhook handed to the runner-side retry processor via next_retry_at=NOW()
+      const inserts = queryMock.mock.calls.filter(
+        (c: unknown[]) =>
+          typeof c[0] === 'string' && c[0].includes('INSERT INTO webhook_deliveries')
+      );
+      expect(inserts).toHaveLength(1);
+      expect(inserts[0][0] as string).toContain('NOW()');
+      expect((inserts[0][1] as unknown[])[1]).toBe('wh-1');
+      expect((inserts[0][1] as unknown[])[2]).toBe('ghost');
+
+      // Atomicity: the terminal UPDATE and the webhook enqueue must share
+      // one transaction on the advisory-lock client. A crash between them
+      // previously lost the TIMED_OUT delivery forever — the run was no
+      // longer RUNNING, so no later tick would re-discover it.
+      const sqls = queryMock.mock.calls.map((c: unknown[]) => c[0] as string);
+      const beginIdx = sqls.indexOf('BEGIN');
+      const commitIdx = sqls.indexOf('COMMIT');
+      const updateIdx = sqls.findIndex((s) => s.includes("SET status = 'TIMED-OUT'"));
+      const insertIdx = sqls.findIndex((s) => s.includes('INSERT INTO webhook_deliveries'));
+      expect(beginIdx).toBeGreaterThanOrEqual(0);
+      expect(commitIdx).toBeGreaterThan(beginIdx);
+      expect(updateIdx).toBeGreaterThan(beginIdx);
+      expect(updateIdx).toBeLessThan(commitIdx);
+      expect(insertIdx).toBeGreaterThan(updateIdx);
+      expect(insertIdx).toBeLessThan(commitIdx);
+    });
+
+    it('leaves a heartbeat-claimed run alone no matter how old', async () => {
+      // Timeout enforcement for OWNED runs stays with the owning runner.
+      setupQueryMock({
+        stats: { ready: 0, running: 1 },
+        runningRows: [
+          { id: 'long', started_at: new Date(Date.now() - 20 * HOUR), timeout_secs: 3600 },
+        ],
+      });
+      noopList.mockResolvedValue([makeRunner('r1')]);
+      redisScan.mockResolvedValue(scanResult(['runner:heartbeat:r1']));
+      redisMget.mockResolvedValue([
+        JSON.stringify({
+          runnerId: 'r1',
+          activeRuns: 1,
+          runIds: ['long'],
+          healthy: true,
+          cpuUsage: 0.3,
+          memoryUsageRatio: 0.5,
+        }),
+      ]);
+      redisGet.mockResolvedValue(String(Date.now() - 60_000));
+
+      await initScaler();
+
+      expect(updateCalls()).toHaveLength(0);
+    });
+
+    it('leaves an unclaimed run alone while still inside its timeout window', async () => {
+      // Unclaimed-but-in-window could be a heartbeat blip; the run may
+      // finish normally under its real owner.
+      setupQueryMock({
+        stats: { ready: 0, running: 1 },
+        runningRows: [
+          { id: 'inflight', started_at: new Date(Date.now() - HOUR / 2), timeout_secs: 3600 },
+        ],
+      });
+      noopList.mockResolvedValue([makeRunner('r1')]);
+      redisScan.mockResolvedValue(scanResult([]));
+      redisGet.mockResolvedValue(String(Date.now() - 60_000));
+
+      await initScaler();
+
+      expect(updateCalls()).toHaveLength(0);
+    });
+
+    it('rolls back the reap transaction on a mid-transaction failure and finishes the tick', async () => {
+      // If any statement inside the reap transaction fails (here: the
+      // webhook-delivery INSERT), the whole reap must roll back — the run
+      // stays RUNNING for the next tick to retry — and the tick's scaling
+      // work must still complete. A rethrow here would abort the tick and
+      // skip the desired-count/scale decisions for no reason.
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      setupQueryMock({
+        stats: { ready: 0, running: 1 },
+        runningRows: [
+          { id: 'ghost', started_at: new Date(Date.now() - 20 * HOUR), timeout_secs: 3600 },
+        ],
+        webhooks: [{ id: 'wh-1' }],
+        rejectWebhookInserts: true,
+      });
+      noopList.mockResolvedValue([makeRunner('r1')]);
+      redisScan.mockResolvedValue(scanResult(['runner:heartbeat:r1']));
+      redisMget.mockResolvedValue([
+        JSON.stringify({
+          runnerId: 'r1',
+          activeRuns: 0,
+          runIds: [],
+          healthy: true,
+          cpuUsage: 0.1,
+          memoryUsageRatio: 0.2,
+        }),
+      ]);
+      redisGet.mockResolvedValue(String(Date.now() - 60_000));
+
+      await expect(initScaler()).resolves.toBeUndefined();
+
+      const sqls = queryMock.mock.calls.map((c: unknown[]) => c[0] as string);
+      expect(sqls).toContain('ROLLBACK');
+      expect(sqls).not.toContain('COMMIT');
+      // The tick completed past the failed reap: the end-of-tick runner
+      // snapshot write is the last thing scalingLoop does.
+      expect(redisSet).toHaveBeenCalledWith(
+        'scaler:runners',
+        expect.any(String),
+        'EX',
+        expect.any(Number)
+      );
+      errorSpy.mockRestore();
+    });
+
+    it('warns about RUNNING rows with null started_at instead of silently skipping them', async () => {
+      // findZombieRuns skips ageless rows (cannot judge them), so without
+      // the warning they would linger RUNNING forever with zero trace.
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      setupQueryMock({
+        stats: { ready: 0, running: 1 },
+        runningRows: [{ id: 'no-start', started_at: null }],
+      });
+      noopList.mockResolvedValue([]);
+      redisScan.mockResolvedValue(scanResult([]));
+      redisGet.mockResolvedValue(String(Date.now() - 60_000));
+
+      await initScaler();
+
+      expect(updateCalls()).toHaveLength(0); // surfaced, not reaped
+      expect(
+        warnSpy.mock.calls.some((c) => typeof c[0] === 'string' && c[0].includes('no-start'))
+      ).toBe(true);
+      warnSpy.mockRestore();
     });
   });
 
@@ -604,7 +870,7 @@ describe('scalingLoop — leader election', () => {
     withAdvisoryLockMock.mockImplementation(
       async (_id: number, work: (c: never) => Promise<unknown>) => ({
         acquired: true,
-        result: await work({} as never),
+        result: await work({ query: queryMock } as never),
       })
     );
 

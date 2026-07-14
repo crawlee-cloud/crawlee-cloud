@@ -361,6 +361,15 @@ CREATE INDEX IF NOT EXISTS idx_request_queues_unnamed_accessed
 CREATE INDEX IF NOT EXISTS idx_runs_finished
   ON runs(finished_at) WHERE finished_at IS NOT NULL;
 
+-- The scaler polls active rows every 30s (status IN ('READY','RUNNING')
+-- GROUP BY, plus a RUNNING-row fetch feeding zombie detection), and the
+-- runner's claim query filters on status='READY'. Partial over just the
+-- active statuses: stays tiny (bounded by maxRunners * runsPerRunner + queue
+-- depth) no matter how many terminal rows accumulate, unlike a full
+-- runs(status) index which would be ~all SUCCEEDED/FAILED rows.
+CREATE INDEX IF NOT EXISTS idx_runs_status_active
+  ON runs(status) WHERE status IN ('READY', 'RUNNING');
+
 ALTER TABLE users  ADD COLUMN IF NOT EXISTS proxy_password_encrypted TEXT;
 ALTER TABLE actors ADD COLUMN IF NOT EXISTS proxy_password_encrypted TEXT;
 `;

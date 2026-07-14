@@ -7,8 +7,11 @@
  * single-Droplet or docker-compose deployments.
  */
 
+import { nanoid } from 'nanoid';
+import type pg from 'pg';
 import { query, withAdvisoryLock, LOCK_IDS } from '../db/index.js';
 import { redis } from '../storage/redis.js';
+import { putKVRecord } from '../storage/s3.js';
 import type { RunnerProvider, RunnerInfo, ScalerConfig } from './types.js';
 import { NoopProvider } from './providers/noop.js';
 import { DigitalOceanProvider } from './providers/digitalocean.js';
@@ -137,21 +140,32 @@ export function getCloudInitScript(runsPerRunner: number): string {
   }
   const cloneRefFlag = cloneRef ? `--branch '${cloneRef}' ` : '';
 
-  return `#!/bin/bash
-set -e
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-apt-get install -y nodejs
+  // Optional prebuilt runner image. When set, the droplet boots the runner
+  // as a container instead of apt-install nodejs + git clone + npm install
+  // + build — the cold path measured at ~4.5 minutes per scale-up in prod
+  // (2026-07-13 audit: pickup latency p50 ~5min; the one day the pool was
+  // pinned it was 24s). The 'docker-20-04' base image ships docker, so
+  // pull+run is the only boot work left.
+  //
+  // Same shell-safety posture as RUNNER_CLONE_REF above: allow-list the
+  // charset (image refs add ':' for tags and '@' for digests), then
+  // single-quote at every use site.
+  const runnerImage = (process.env.RUNNER_IMAGE || '').trim();
+  if (runnerImage && !/^[A-Za-z0-9._/+:@-]+$/.test(runnerImage)) {
+    throw new Error(
+      `RUNNER_IMAGE contains characters outside the safe set [A-Za-z0-9._/+:@-]: ${JSON.stringify(runnerImage)}`
+    );
+  }
 
-# Clone and build runner
-git clone ${cloneRefFlag}https://github.com/crawlee-cloud/crawlee-cloud.git /opt/crawlee-cloud
-cd /opt/crawlee-cloud
-npm install
-npm run build --workspace=@crawlee-cloud/runner
-
-# Login to GHCR if configured (for pulling pre-built actor images)
-${ghcrToken ? `echo "${ghcrToken}" | docker login ghcr.io -u github --password-stdin` : '# No GHCR token'}
-
-# Configure runner
+  // Shared between both boot modes: runner env file + RUNNER_ID pin.
+  //
+  // RUNNER_ID is pinned to the DO droplet id (queried from the metadata
+  // service at boot). The runner uses RUNNER_ID as its Redis heartbeat
+  // key; without this, it falls back to os.hostname() (the droplet
+  // *name*), and the scaler — which looks up heartbeats by droplet id —
+  // never matches it, so every runner is marked dead and reaped. The api
+  // also matches by name as a fallback, so this curl failing isn't fatal.
+  const envFileBlock = `# Configure runner
 cat > /etc/crawlee-runner.env << 'ENVEOF'
 DATABASE_URL=${dbUrl}
 REDIS_URL=${redisUrl}
@@ -168,16 +182,64 @@ PROXY_ENCRYPTION_KEY=${process.env.PROXY_ENCRYPTION_KEY || ''}
 ${tlsEnvFileLine}
 ENVEOF
 
-# Pin RUNNER_ID to the DO droplet id (queried from the metadata service at
-# boot). The runner uses RUNNER_ID as its Redis heartbeat key; without this,
-# it falls back to os.hostname() (the droplet *name*), and the scaler — which
-# looks up heartbeats by droplet id — never matches it, so every runner is
-# marked dead and reaped. The api also matches by name as a fallback, so
-# this curl failing isn't fatal.
 DO_ID=$(curl -fsSL --max-time 5 http://169.254.169.254/metadata/v1/id 2>/dev/null || echo "")
 [ -n "$DO_ID" ] && echo "RUNNER_ID=$DO_ID" >> /etc/crawlee-runner.env
 
-chmod 600 /etc/crawlee-runner.env
+chmod 600 /etc/crawlee-runner.env`;
+
+  const ghcrLoginBlock = ghcrToken
+    ? `echo "${ghcrToken}" | docker login ghcr.io -u github --password-stdin`
+    : '# No GHCR token';
+
+  const readyBlock = `# Signal ready
+curl -s -X POST "${apiBaseUrl}/v2/internal/runner-ready" -H "Content-Type: application/json" -d '{}' || true`;
+
+  if (runnerImage) {
+    return `#!/bin/bash
+set -e
+
+# Login to GHCR if configured (private runner image and/or actor images)
+${ghcrLoginBlock}
+
+${envFileBlock}
+
+# Boot the prebuilt runner image. The host docker socket is mounted so
+# the containerized runner can drive sibling actor containers — actor
+# containers land on the HOST daemon, exactly as in the git-clone mode.
+#
+# Pull retries a few times: a transient registry blip at boot would
+# otherwise strand the droplet as a billed-but-runnerless zombie. If the
+# image still isn't present, the docker run below fails hard (set -e)
+# rather than booting nothing silently.
+#
+# No extra TLS env flag on docker run: when SCALER_INSECURE_TLS=true the
+# env-file already carries NODE_TLS_REJECT_UNAUTHORIZED into the container.
+for i in 1 2 3; do docker pull '${runnerImage}' && break || sleep 10; done
+docker run -d --name crawlee-runner \\
+  --restart=always \\
+  -v /var/run/docker.sock:/var/run/docker.sock \\
+  --env-file /etc/crawlee-runner.env \\
+  '${runnerImage}'
+
+${readyBlock}
+`;
+  }
+
+  return `#!/bin/bash
+set -e
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt-get install -y nodejs
+
+# Clone and build runner
+git clone ${cloneRefFlag}https://github.com/crawlee-cloud/crawlee-cloud.git /opt/crawlee-cloud
+cd /opt/crawlee-cloud
+npm install
+npm run build --workspace=@crawlee-cloud/runner
+
+# Login to GHCR if configured (for pulling pre-built actor images)
+${ghcrLoginBlock}
+
+${envFileBlock}
 
 # Create systemd service
 cat > /etc/systemd/system/crawlee-runner.service << 'EOF'
@@ -202,8 +264,7 @@ systemctl daemon-reload
 systemctl enable crawlee-runner
 systemctl start crawlee-runner
 
-# Signal ready
-curl -s -X POST "${apiBaseUrl}/v2/internal/runner-ready" -H "Content-Type: application/json" -d '{}' || true
+${readyBlock}
 `;
 }
 
@@ -241,7 +302,16 @@ async function getQueueStats(): Promise<QueueStats> {
 export function calculateDesiredRunners(
   stats: QueueStats,
   currentRunners: number,
-  cfg: ScalerConfig
+  cfg: ScalerConfig,
+  /**
+   * Zombie-filtered RUNNING count (heartbeat-claimed + fresh pickups),
+   * i.e. `countLiveRunning(...)`. When provided, demand uses it instead
+   * of the raw DB `stats.running` so orphaned RUNNING rows can't pin
+   * capacity (live incident 2026-07-13: 12 zombies held desired at 9,
+   * keeping 10 droplets alive with 0 real work on most of them). Omit
+   * to preserve the raw-DB behavior.
+   */
+  liveRunningCount?: number
 ): number {
   // Defensive coercion. `stats.ready` / `stats.running` come from parseInt
   // of a PG COUNT(*) result; under normal operation they're finite
@@ -250,8 +320,9 @@ export function calculateDesiredRunners(
   // decides how many droplets to spawn. Same for `currentRunners`, which
   // is `runners.length` after reaping — finite by construction, but the
   // guard costs nothing.
+  const rawRunning = liveRunningCount ?? stats.running;
   const ready = Math.max(0, Number.isFinite(stats.ready) ? stats.ready : 0);
-  const running = Math.max(0, Number.isFinite(stats.running) ? stats.running : 0);
+  const running = Math.max(0, Number.isFinite(rawRunning) ? rawRunning : 0);
   const current = Math.max(0, Number.isFinite(currentRunners) ? currentRunners : 0);
   const totalDemand = ready + running;
 
@@ -341,35 +412,160 @@ async function getActiveRunners(): Promise<{
   // `name` (DO droplet name; local-docker container name), so this
   // catches the gap without requiring every cloud-init path to be
   // perfect.
+  const heartbeatMatchedIds = new Set<string>();
   for (const runner of runners) {
     const hb =
       heartbeats.get(runner.id) ||
       heartbeats.get(runner.ip) ||
       (runner.name ? heartbeats.get(runner.name) : undefined);
     if (hb) {
+      heartbeatMatchedIds.add(runner.id);
       runner.activeRuns = hb.activeRuns;
       runner.status = hb.activeRuns > 0 ? 'busy' : 'ready';
       // Mark unhealthy runners
       if (!hb.healthy || hb.memoryUsageRatio > 0.95 || hb.cpuUsage > 0.95) {
         runner.status = 'draining';
       }
-    } else {
-      // No heartbeat — runner may still be booting or is dead.
-      // Threshold is env-configurable because cold-cloud-init paths
-      // (apt install nodejs + git clone + npm install + build) can
-      // exceed the default on slow apt mirrors or cold image caches,
-      // causing healthy-but-still-booting droplets to be reaped.
-      const ageMs = Date.now() - runner.createdAt.getTime();
-      const deadAfterMs = intEnv('SCALER_REAPER_DEAD_AFTER_SECS', 180) * 1000;
-      if (ageMs > deadAfterMs) {
-        // Distinct from 'draining' (alive but stressed) so the reaper
-        // can destroy it without conflating with demand-based scale-down.
-        runner.status = 'dead';
-      }
+    }
+    // No heartbeat → handled below by consecutive-miss dead detection.
+    // Boot-grace and condemnation thresholds live in
+    // evaluateDeadCandidates; see its doc comment for why a single
+    // missing heartbeat must never condemn a runner.
+  }
+
+  // Miss counters must survive across ticks (each tick is a fresh call),
+  // across scaler restarts, and across leadership handoffs between API
+  // instances — so they live in Redis, not process memory. A lost/expired
+  // counter map degrades safely: counting restarts from zero, which
+  // delays reaping by a few ticks rather than causing a false destroy.
+  const missKey = 'scaler:hb-misses';
+  let prevMisses: Record<string, number | MissEntry> = {};
+  try {
+    const raw = await redis.get(missKey);
+    if (raw) prevMisses = JSON.parse(raw) as Record<string, number | MissEntry>;
+  } catch {
+    // Corrupt state → start counting fresh (conservative direction).
+  }
+
+  const { deadIds, nextMisses } = evaluateDeadCandidates(runners, heartbeatMatchedIds, prevMisses, {
+    deadAfterMs: intEnv('SCALER_REAPER_DEAD_AFTER_SECS', 180) * 1000,
+    missThreshold: intEnv('SCALER_REAPER_MISS_TICKS', 3),
+    // Default = the heartbeat TTL (90s): guarantees the runner had a
+    // full TTL window to get one beat through before condemnation,
+    // regardless of how fast ticks interleave across replicas.
+    missWindowMs: intEnv('SCALER_REAPER_MISS_WINDOW_SECS', 90) * 1000,
+    now: Date.now(),
+  });
+
+  for (const runner of runners) {
+    if (deadIds.has(runner.id)) {
+      // Distinct from 'draining' (alive but stressed) so the reaper
+      // can destroy it without conflating with demand-based scale-down.
+      runner.status = 'dead';
     }
   }
 
+  // TTL >> tick interval so counters persist between ticks, but stale
+  // maps from a long scaler outage self-clean instead of condemning
+  // runners with pre-outage counts the moment the scaler comes back.
+  // Write is best-effort: a set-only Redis failure must not abort the
+  // tick — losing the map just restarts counting (the read above is
+  // already guarded in the same conservative direction).
+  try {
+    await redis.set(missKey, JSON.stringify(nextMisses), 'EX', 900);
+  } catch (err) {
+    console.warn(`[Scaler] Failed to persist heartbeat-miss map:`, (err as Error).message);
+  }
+
   return { runners, claimedRunIds };
+}
+
+/**
+ * Consecutive-miss + time-window dead detection.
+ *
+ * A missing heartbeat key is weak evidence: the key has a 90s TTL and
+ * lives in Redis, so a managed-Redis failover/restart (or a runner-side
+ * Redis reconnect) makes the entire fleet look dead for one tick even
+ * though every droplet is fine. Pre-v1.0.2 the scaler hard-destroyed on
+ * that single tick — one nightly Redis blip massacred the busy fleet and
+ * orphaned every claimed run as an immortal zombie RUNNING row (live
+ * incident, four nights 2026-07-09..12).
+ *
+ * A runner is condemned only when BOTH hold, and only once it is past
+ * the `deadAfterMs` boot grace:
+ *   - `missThreshold` CONSECUTIVE observations without a heartbeat, AND
+ *   - at least `missWindowMs` of wall-clock time since the FIRST miss.
+ * The count alone is not enough: the scaler's advisory lock is a
+ * per-tick try-lock, so N API replicas with offset timers can interleave
+ * N ticks per poll interval — 3 misses can accumulate in ~20s, which
+ * would re-open the single-blip massacre through the counter itself.
+ * The time window guarantees the runner had a full heartbeat-TTL span
+ * to get a beat through, regardless of tick cadence.
+ *
+ * Any heartbeat resets its entry. Counters for runners no longer
+ * reported by the provider are pruned.
+ *
+ * Pure function: caller owns persistence of the miss map (Redis, so the
+ * state survives leader hand-offs between API replicas).
+ */
+export interface DeadDetectionOptions {
+  /** Boot grace: runners younger than this never accrue misses. */
+  deadAfterMs: number;
+  /** Consecutive missed observations required before a runner is 'dead'. */
+  missThreshold: number;
+  /** Minimum wall-clock time since the first miss before condemnation. */
+  missWindowMs: number;
+  now: number;
+}
+
+/** Persisted miss-map entry: consecutive miss count + first-miss epoch ms. */
+export interface MissEntry {
+  c: number;
+  t: number;
+}
+
+export function evaluateDeadCandidates(
+  runners: { id: string; createdAt: Date }[],
+  heartbeatMatchedIds: Set<string>,
+  // `number` values are the legacy pre-window format still possibly
+  // persisted in Redis across a deploy — tolerated on read, never written.
+  prevMisses: Record<string, number | MissEntry>,
+  opts: DeadDetectionOptions
+): { deadIds: Set<string>; nextMisses: Record<string, MissEntry> } {
+  const deadIds = new Set<string>();
+  const nextMisses: Record<string, MissEntry> = {};
+
+  for (const runner of runners) {
+    if (heartbeatMatchedIds.has(runner.id)) continue; // alive — entry resets by omission
+
+    const ageMs = opts.now - runner.createdAt.getTime();
+    if (ageMs <= opts.deadAfterMs) continue; // still booting — no misses accrue
+
+    const prev = prevMisses[runner.id];
+    let entry: MissEntry;
+    if (typeof prev === 'number' && Number.isFinite(prev)) {
+      // Legacy plain-count entry: keep the count but restart the clock —
+      // conservative (delays condemnation by at most one window) and the
+      // only safe choice since the legacy shape has no firstMissAt.
+      entry = { c: prev + 1, t: opts.now };
+    } else if (
+      prev &&
+      typeof prev === 'object' &&
+      Number.isFinite(prev.c) &&
+      Number.isFinite(prev.t)
+    ) {
+      entry = { c: prev.c + 1, t: prev.t };
+    } else {
+      entry = { c: 1, t: opts.now };
+    }
+    nextMisses[runner.id] = entry;
+
+    if (entry.c >= opts.missThreshold && opts.now - entry.t >= opts.missWindowMs) {
+      deadIds.add(runner.id);
+    }
+  }
+
+  return { deadIds, nextMisses };
 }
 
 /**
@@ -410,23 +606,187 @@ export function countLiveRunning(
 }
 
 /**
- * Thin DB wrapper around `countLiveRunning`. Skips the query entirely
- * when there are no RUNNING rows to evaluate — saves a round-trip on
- * the common quiet-cluster tick.
+ * Rows eligible for zombie-run reaping. Shape matches the one SELECT in
+ * `fetchRunningRows` so the demand count and the reaper share a single
+ * DB round-trip per tick.
+ */
+export interface RunningRow {
+  id: string;
+  started_at: Date | null;
+  timeout_secs: number | null;
+}
+
+/**
+ * Identify zombie RUNNING rows: runs whose owning runner died without
+ * issuing the terminal UPDATE. `timeout_secs` is enforced ONLY by the
+ * owning runner (docker stop → exit 143 → TIMED-OUT), so when that
+ * runner is destroyed the row overruns forever — the 2026-07-13 incident
+ * had rows RUNNING for 4 days against a 3600s timeout.
+ *
+ * A run is a zombie only when BOTH hold:
+ *   - no live heartbeat claims it (owner is gone, not just between beats)
+ *   - it has outlived its own timeout + PICKUP_GRACE_MS (even a healthy
+ *     owner would have killed it by now, so reaping can't race a
+ *     legitimate finish — the `WHERE status='RUNNING'` guard on the
+ *     UPDATE covers the residual window)
+ *
+ * Runs claimed by a live heartbeat are NEVER reaped here, however old:
+ * timeout enforcement for owned runs belongs to the owning runner, and
+ * double-enforcement would race its terminal UPDATE.
+ */
+export function findZombieRuns(
+  rows: RunningRow[],
+  claimedRunIds: Set<string>,
+  now: number = Date.now()
+): string[] {
+  const zombies: string[] = [];
+  for (const row of rows) {
+    if (claimedRunIds.has(row.id)) continue;
+    if (!row.started_at) continue; // cannot judge age — leave for operators
+    const timeoutMs = (row.timeout_secs ?? 3600) * 1000;
+    if (now - new Date(row.started_at).getTime() > timeoutMs + PICKUP_GRACE_MS) {
+      zombies.push(row.id);
+    }
+  }
+  return zombies;
+}
+
+/**
+ * One SELECT per tick feeding BOTH consumers of RUNNING-row state:
+ * `countLiveRunning` (zombie-filtered demand) and `findZombieRuns`
+ * (the reaper). Skips the query entirely when there are no RUNNING
+ * rows to evaluate — saves a round-trip on the common quiet tick.
  *
  * The SELECT is bounded: there can be at most `maxRunners * runsPerRunner`
  * RUNNING rows at any time, so this stays well under a dozen rows for
- * default configs. The single index on `runs.status` keeps it cheap.
+ * default configs.
  */
-async function countLiveRunningFromDb(
-  reportedRunning: number,
-  claimedRunIds: Set<string>
-): Promise<number> {
-  if (reportedRunning <= 0) return 0;
-  const result = await query<{ id: string; started_at: Date | null }>(
-    `SELECT id, started_at FROM runs WHERE status = 'RUNNING'`
+async function fetchRunningRows(reportedRunning: number): Promise<RunningRow[]> {
+  if (reportedRunning <= 0) return [];
+  const result = await query<RunningRow>(
+    `SELECT id, started_at, timeout_secs FROM runs WHERE status = 'RUNNING'`
   );
-  return countLiveRunning(result.rows, claimedRunIds);
+  return result.rows;
+}
+
+/**
+ * Terminalize zombie runs (see `findZombieRuns`) and enqueue their
+ * TIMED_OUT webhooks. Runs under the scaler advisory lock, so at most
+ * one API instance reaps per tick. The lock's pinned `client` is used
+ * for a single transaction wrapping the terminal UPDATE and the webhook
+ * enqueue — a crash between the two previously lost the TIMED_OUT
+ * delivery forever, since the run was no longer RUNNING and no later
+ * tick would re-discover it.
+ *
+ * The `AND status = 'RUNNING'` guard makes the UPDATE a no-op for any
+ * run whose owner terminalized it between our SELECT and now — same
+ * lifecycle invariant the runner relies on (queue.ts terminal UPDATE).
+ *
+ * Accepted at-least-once window: an owner that is alive but heartbeat-
+ * invisible (e.g. runner-side Redis outage) can still terminalize its
+ * run late and enqueue its own webhook — producing a duplicate
+ * TIMED_OUT delivery. The status guard prevents state clobbering, and
+ * webhook delivery is at-least-once by design, so the duplicate is
+ * accepted rather than raced against.
+ */
+async function reapZombieRuns(client: pg.PoolClient, zombieIds: string[]): Promise<void> {
+  if (zombieIds.length === 0) return;
+
+  let reaped: { id: string; actor_id: string; default_key_value_store_id: string | null }[] = [];
+  try {
+    await client.query('BEGIN');
+    const updated = await client.query<{
+      id: string;
+      actor_id: string;
+      default_key_value_store_id: string | null;
+    }>(
+      `UPDATE runs
+       SET status = 'TIMED-OUT',
+           finished_at = NOW(),
+           modified_at = NOW(),
+           status_message = 'Runner lost before completion; reaped by scaler after timeout overrun'
+       WHERE id = ANY($1) AND status = 'RUNNING'
+       RETURNING id, actor_id, default_key_value_store_id`,
+      [zombieIds]
+    );
+
+    // Unlike the runner's insert (next_retry_at = NULL + synchronous
+    // first attempt), the API has no delivery worker — next_retry_at =
+    // NOW() hands the row to any live runner's retry processor, which
+    // claims PENDING rows with next_retry_at <= NOW() every 10s and
+    // re-renders the payload from the DB. No runner alive right now →
+    // delivered when one boots.
+    for (const run of updated.rows) {
+      const webhooks = await client.query<{ id: string }>(
+        `SELECT id FROM webhooks
+         WHERE is_enabled = true AND $1 = ANY(event_types)
+           AND (actor_id IS NULL OR actor_id = $2)
+           AND (run_id IS NULL OR run_id = $3)`,
+        ['ACTOR.RUN.TIMED_OUT', run.actor_id, run.id]
+      );
+      for (const webhook of webhooks.rows) {
+        await client.query(
+          `INSERT INTO webhook_deliveries (id, webhook_id, run_id, event_type, status, attempt_count, max_attempts, next_retry_at)
+           VALUES ($1, $2, $3, 'ACTOR.RUN.TIMED_OUT', 'PENDING', 0, 5, NOW())`,
+          [nanoid(), webhook.id, run.id]
+        );
+      }
+    }
+    await client.query('COMMIT');
+    reaped = updated.rows;
+  } catch (err) {
+    // Roll back so the runs stay RUNNING and the next tick retries the
+    // whole reap — partial state (terminalized run, no webhook row) is
+    // exactly what the transaction exists to prevent. Never abort the
+    // tick over it.
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // Connection-level failure; withAdvisoryLock's release handles it.
+    }
+    console.error(`[Scaler] Zombie-run reap transaction failed:`, (err as Error).message);
+    return;
+  }
+  if (reaped.length === 0) return;
+
+  console.log(
+    `[Scaler] Reaped ${reaped.length} zombie run(s): ${reaped.map((r) => r.id).join(', ')}`
+  );
+
+  // Salvage whatever log tail is still in Redis before its 24h TTL takes
+  // the only evidence of what the run was doing when its runner died —
+  // 4-day-old zombies in the 2026-07-13 incident were un-autopsiable.
+  // The owning runner is gone by definition, so nobody else will archive
+  // these. Best-effort and deliberately AFTER the commit: never let
+  // archival break (or roll back) the reap.
+  for (const run of reaped) {
+    if (!run.default_key_value_store_id) continue;
+    try {
+      const lines = await redis.lrange(`logs:${run.id}`, 0, -1);
+      if (lines.length === 0) continue;
+      const text = lines
+        .map((raw) => {
+          try {
+            const e = JSON.parse(raw) as { timestamp?: string; level?: string; message?: string };
+            return `${e.timestamp ?? ''} ${e.level ?? ''} ${e.message ?? ''}`.trim();
+          } catch {
+            return raw;
+          }
+        })
+        .join('\n');
+      await putKVRecord(
+        run.default_key_value_store_id,
+        'RUN_LOG.txt',
+        text,
+        'text/plain; charset=utf-8'
+      );
+    } catch (err) {
+      console.error(
+        `[Scaler] Failed to archive logs for reaped run ${run.id}:`,
+        (err as Error).message
+      );
+    }
+  }
 }
 
 async function scaleUp(count: number): Promise<void> {
@@ -506,7 +866,7 @@ async function scalingLoop(): Promise<void> {
   if (isScaling) return; // intra-replica re-entrancy fast-path
   isScaling = true;
   try {
-    const r = await withAdvisoryLock(LOCK_IDS.scaler, async () => {
+    const r = await withAdvisoryLock(LOCK_IDS.scaler, async (client) => {
       const stats = await getQueueStats();
       const active = await getActiveRunners();
       const { claimedRunIds } = active;
@@ -515,7 +875,33 @@ async function scalingLoop(): Promise<void> {
       // so `prefer-const` is satisfied for the immutable half.
       const runners = await reapDeadRunners(active.runners);
       const currentCount = runners.length;
-      const desired = calculateDesiredRunners(stats, currentCount, config);
+
+      // Zombie-filtered RUNNING count, computed BEFORE the desired calc so
+      // both demand and the activity gate share one source of truth. Before
+      // v1.0.2 only the activity gate was zombie-aware: 12 orphaned RUNNING
+      // rows (2026-07-13) inflated desired to 9 and pinned a mostly-idle
+      // 10-droplet pool that the idle gate could never drain.
+      const runningRows = await fetchRunningRows(stats.running);
+      const realRunningCount = countLiveRunning(runningRows, claimedRunIds);
+      const desired = calculateDesiredRunners(stats, currentCount, config, realRunningCount);
+
+      // RUNNING rows without started_at are invisible to the zombie
+      // reaper (findZombieRuns can't judge their age and skips them) and
+      // to the pickup-grace path — they'd otherwise linger silently
+      // forever. Surface them each tick so operators can close them out.
+      const noStartRows = runningRows.filter((row) => !row.started_at);
+      if (noStartRows.length > 0) {
+        console.warn(
+          `[Scaler] ${noStartRows.length} RUNNING row(s) have null started_at and are skipped by the zombie reaper: ${noStartRows.map((row) => row.id).join(', ')}`
+        );
+      }
+
+      // Terminalize runs whose owner is gone AND whose own timeout has
+      // lapsed. Without this, `timeout_secs` is enforced by nobody once
+      // the owning runner dies — prod had rows RUNNING for 4 days against
+      // a 3600s timeout (2026-07-13). Reuses this tick's rows + claims,
+      // and the advisory-lock client for the reap transaction.
+      await reapZombieRuns(client, findZombieRuns(runningRows, claimedRunIds));
 
       // "Activity" must reflect physical reality, not DB-status alone, and
       // must NOT false-idle during a legitimate pickup-vs-heartbeat race.
@@ -541,8 +927,8 @@ async function scalingLoop(): Promise<void> {
       // A RUNNING row counts as real work if either (a) a live heartbeat
       // claims it, or (b) it started within `PICKUP_GRACE_MS` and the
       // claim simply hasn't landed yet. Older runs with no live claim are
-      // zombies and don't count.
-      const realRunningCount = await countLiveRunningFromDb(stats.running, claimedRunIds);
+      // zombies and don't count. (`realRunningCount` is computed above,
+      // before the desired calc, and shared with it.)
       const realActivity = stats.ready > 0 || realRunningCount > 0;
       if (realActivity) {
         await redis.set(
@@ -568,8 +954,17 @@ async function scalingLoop(): Promise<void> {
       }
 
       if (stats.total > 0 || currentCount > config.minRunners) {
+        // Surface zombie divergence in the one log line operators watch.
+        // "N running (M zombie)" was the missing signal in the 2026-07-13
+        // incident — raw DB count and live-claimed count disagreed for
+        // four days with no visible trace.
+        const zombieCount = stats.running - realRunningCount;
+        const runningLabel =
+          zombieCount > 0
+            ? `${stats.running} running (${zombieCount} zombie)`
+            : `${stats.running} running`;
         console.log(
-          `[Scaler] Queue: ${stats.ready} ready, ${stats.running} running | Runners: ${currentCount}/${config.maxRunners} (desired: ${desired})`
+          `[Scaler] Queue: ${stats.ready} ready, ${runningLabel} | Runners: ${currentCount}/${config.maxRunners} (desired: ${desired})`
         );
       }
 
