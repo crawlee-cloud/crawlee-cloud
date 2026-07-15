@@ -308,6 +308,23 @@ ALTER TABLE runs ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS origin_run_id VARCHAR(21);
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS run_after TIMESTAMPTZ;
 
+-- Run cost attribution (see docs/superpowers/specs/2026-07-15-run-cost-analysis-design.md).
+-- Stamped by the runner at claim time (packages/runner/src/queue.ts):
+--   runner_id           — runner identity (DO droplet id, hostname fallback)
+--   runner_price_hourly — droplet $/hr captured at claim time; NULL when
+--                         unknown (local-docker, price lookup failure).
+--                         Claim-time capture keeps historical runs accurate
+--                         if DO reprices.
+--   runner_provider     — 'digitalocean' | 'local-docker'
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS runner_id TEXT;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS runner_price_hourly NUMERIC;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS runner_provider TEXT;
+
+-- Sibling-overlap lookup for GET /v2/actor-runs/:runId/cost:
+-- WHERE runner_id = $1 AND started_at < $end AND COALESCE(finished_at, NOW()) > $start
+CREATE INDEX IF NOT EXISTS idx_runs_runner_window
+  ON runs(runner_id, started_at);
+
 -- Retention slice #3: tombstone audit log for reaped resources.
 -- BIGSERIAL diverges from the project-wide VARCHAR(21) nanoid convention
 -- because tombstones are operator-internal — never user-referenced, never
