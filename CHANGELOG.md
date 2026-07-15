@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-07-15
+
+Reliability release: closes every link in the zombie-run chain found in a live production incident (2026-07-09..14), where dead runners orphaned their claimed RUNNING rows as rows nothing ever timed out, and the orphans in turn inflated scaler demand and pinned a paid droplet fleet for days. Also fixes two observability gaps the incident autopsy exposed (invisible OOM kills, evaporating failure logs) and adds a prebuilt-image boot path that removes the ~4.5-minute cold-boot penalty per scale-up. Developed test-first; independently reviewed with an adversarial pass over concurrency and failure modes.
+
+### Scaler / API
+
+- **Dead-runner detection now survives Redis blips.** Heartbeat keys live in Redis with a 90s TTL, so a single managed-Redis failover made the whole fleet look dead for one tick — and the scaler hard-destroyed on that single tick, orphaning every claimed run (the incident's root cause). A runner is now condemned only after `SCALER_REAPER_MISS_TICKS` consecutive misses (default 3) AND `SCALER_REAPER_MISS_WINDOW_SECS` elapsed since the first miss (default 90s = one heartbeat TTL) — the time window holds even with multiple API replicas producing interleaved ticks or a lowered poll interval. Counters persist in Redis (`scaler:hb-misses`, self-cleaning TTL); corrupt or legacy-shaped state degrades to counting fresh, never to a false destroy.
+- **Zombie-run reaper.** `timeout_secs` was enforced only by the run's owning runner — when that runner died (scaler reap, process crash losing its in-memory claims), the RUNNING row overran forever (observed: 4 days against a 3600s timeout). Each tick, unclaimed RUNNING rows past their own timeout + pickup grace are flipped to `TIMED-OUT` (guarded `WHERE status = 'RUNNING'` — never overwrites `Actor.fail()`/abort). The terminal UPDATE and the `ACTOR.RUN.TIMED_OUT` webhook enqueue share one transaction on the advisory-lock connection, so a crash between them can't lose the delivery; deliveries are inserted `PENDING` with `next_retry_at = NOW()` for any live runner's retry processor to deliver (at-least-once). The run's Redis log tail is salvaged to its KV store as `RUN_LOG.txt` after commit, best-effort. Runs claimed by a live heartbeat are never touched, however old.
+- **Zombies no longer count as scaling demand.** `calculateDesiredRunners` now uses the live-claimed running count instead of the raw DB `RUNNING` count (which included zombies — the incident held `desired` at 6-8 for ~11 hours on zombie demand alone). The tick log surfaces divergence as `N running (M zombie)`.
+- **Prebuilt runner image boot.** New `RUNNER_IMAGE` env: when set, droplets boot the runner via `docker pull` (3-attempt retry) + `docker run -d --restart=always -v /var/run/docker.sock:...` instead of apt + git clone + npm install + build (~4.5 min measured per scale-up; pickup latency p50 was ~5 min). Same shell-injection posture as `RUNNER_CLONE_REF`: charset allow-list plus single-quoting, with the same injection test matrix. Unset → the git-clone path is unchanged. A `docker/Dockerfile.runner` already exists for building the image.
+- **Partial index `idx_runs_status_active`** on `runs(status) WHERE status IN ('READY','RUNNING')` — the scaler's 30s polls and the runner claim query stay index-assisted no matter how many terminal rows accumulate. Applied automatically by migrations.
+- **KV record PUT returns 404 instead of crashing** when a store id exists under another user (auto-create collision hit a non-null assertion → unhandled 500).
+
+### Runner
+
+- **OOM kills are finally visible.** `executeRun` inspects the container's `State.OOMKilled` before removal — exit codes alone can't distinguish OOM (the kernel yields 137 like `docker stop`, or SIGKILLs a child process and the container exits 1 like any crash). A live example: 7/8 failed runs of one production actor were OOM kills carrying an empty status message.
+- **`status_message` is set on every terminal update** (via `COALESCE` — a message from `Actor.fail()` is never overwritten): OOM (with the memory limit) > timeout (with the configured seconds) > exit code + the last ERROR-level log line (whitespace-collapsed, truncated at 300 chars).
+- **Failed-run logs survive.** The Redis log stream (`logs:<runId>`) has a 24h TTL and a 1000-line cap — failed runs older than a day were un-diagnosable. On `FAILED`/`TIMED-OUT`, the runner archives the full log to the run's default KV store as `RUN_LOG.txt`, best-effort.
+
+### New environment variables
+
+- `SCALER_REAPER_MISS_TICKS` (default 3), `SCALER_REAPER_MISS_WINDOW_SECS` (default 90) — dead-runner condemnation thresholds.
+- `RUNNER_IMAGE` (unset by default) — prebuilt runner image ref; enables the docker-mode boot path.
+
+### Deploy notes
+
+- On the first tick after deploy, the reaper terminalizes any accumulated zombie runs and enqueues their `TIMED_OUT` webhooks (throttled to 10 per 10s by the retry claimer) — warn webhook consumers expecting a quiet stream.
+- Runner builds that pre-date `runIds` in heartbeats read as claiming nothing; their runs are protected only by the pickup-grace window. Bump `RUNNER_CLONE_REF` (or adopt `RUNNER_IMAGE`) to a current runner promptly after deploying.
+
 ## [1.0.1] - 2026-07-06
 
 Bug-fix release: runner lifecycle races and dashboard correctness. No schema changes, no new env vars, Apify v2 response shapes unchanged. Developed test-first; the claiming race was reproduced live against PG 16 before fixing.
