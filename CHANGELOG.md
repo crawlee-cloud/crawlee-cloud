@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.1] - 2026-07-15
+
+Patch: reaped-run timestamps.
+
+### Scaler / API
+
+- **Zombie-run reaper stamps `finished_at` at the run's own deadline** (`started_at + timeout_secs`) instead of the reap moment. Zombies are discovered hours-to-days after their runner died; stamping `NOW()` made an 8h-dead run display an 8h runtime against a 3600s timeout on the run detail page and skewed duration stats. Matches Apify semantics (a timed-out run finishes at its timeout). Operators with already-reaped rows can normalize them with: `UPDATE runs SET finished_at = started_at + (COALESCE(timeout_secs,3600) * interval '1 second') WHERE status = 'TIMED-OUT' AND status_message LIKE '%reaped%' AND finished_at > started_at + (COALESCE(timeout_secs,3600) * interval '1 second');`
+
 ## [1.1.0] - 2026-07-15
 
 Reliability release: closes every link in the zombie-run chain found in a live production incident (2026-07-09..14), where dead runners orphaned their claimed RUNNING rows as rows nothing ever timed out, and the orphans in turn inflated scaler demand and pinned a paid droplet fleet for days. Also fixes two observability gaps the incident autopsy exposed (invisible OOM kills, evaporating failure logs) and adds a prebuilt-image boot path that removes the ~4.5-minute cold-boot penalty per scale-up. Developed test-first; independently reviewed with an adversarial pass over concurrency and failure modes.

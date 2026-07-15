@@ -705,6 +705,12 @@ async function reapZombieRuns(client: pg.PoolClient, zombieIds: string[]): Promi
   let reaped: { id: string; actor_id: string; default_key_value_store_id: string | null }[] = [];
   try {
     await client.query('BEGIN');
+    // finished_at is the run's own deadline, not NOW(): zombies are
+    // discovered hours-to-days after their runner died, and stamping the
+    // reap moment made an 8h-dead run display an 8h runtime against a
+    // 3600s timeout (and skewed duration stats). Apify semantics: a
+    // timed-out run finishes at its timeout. started_at is always set
+    // here — findZombieRuns skips ageless rows.
     const updated = await client.query<{
       id: string;
       actor_id: string;
@@ -712,7 +718,7 @@ async function reapZombieRuns(client: pg.PoolClient, zombieIds: string[]): Promi
     }>(
       `UPDATE runs
        SET status = 'TIMED-OUT',
-           finished_at = NOW(),
+           finished_at = started_at + (COALESCE(timeout_secs, 3600) * interval '1 second'),
            modified_at = NOW(),
            status_message = 'Runner lost before completion; reaped by scaler after timeout overrun'
        WHERE id = ANY($1) AND status = 'RUNNING'

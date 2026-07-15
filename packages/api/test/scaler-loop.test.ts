@@ -593,6 +593,15 @@ describe('scaler loop', () => {
       // Reaper UPDATE must refresh modified_at like the runner's terminal
       // UPDATE does — keeps dashboard recency sorting honest for reaped runs.
       expect(updates[0][0] as string).toContain('modified_at = NOW()');
+      // finished_at must be the run's own deadline, not the reap moment.
+      // Zombies are discovered hours or days after their runner died;
+      // stamping NOW() made an 8h-dead run display an 8h runtime against
+      // a 3600s timeout (and skewed duration stats). Apify semantics: a
+      // timed-out run finishes at its timeout.
+      expect(updates[0][0] as string).toContain(
+        "finished_at = started_at + (COALESCE(timeout_secs, 3600) * interval '1 second')"
+      );
+      expect(updates[0][0] as string).not.toContain('finished_at = NOW()');
       // Webhook handed to the runner-side retry processor via next_retry_at=NOW()
       const inserts = queryMock.mock.calls.filter(
         (c: unknown[]) =>
