@@ -13,113 +13,164 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { createLogLineWriter, boundedFlush, type LogRedis } from '../src/docker.js';
+import {
+  createLogLineWriter,
+  boundedFlush,
+  type LogRedis,
+  type LogRedisPipeline,
+} from '../src/docker.js';
 
-function mockRedis(overrides: Partial<LogRedis> = {}): LogRedis & { order: string[] } {
-  const order: string[] = [];
-  return {
-    order,
-    rpush: vi.fn().mockImplementation((_key: string, value: string) => {
-      order.push(value);
-      return Promise.resolve(1);
-    }),
-    ltrim: vi.fn().mockResolvedValue('OK'),
-    expire: vi.fn().mockResolvedValue(1),
-    publish: vi.fn().mockResolvedValue(0),
-    ...overrides,
+type PipelineCmd = [op: string, ...args: unknown[]];
+type ExecResult = Array<[Error | null, unknown]> | null;
+
+/**
+ * Pipeline-shaped mock (the writer issues one exec() per batch since the
+ * PR #57 review). `onExec` receives that batch's commands and its ordinal;
+ * return a result array / null, or throw to simulate a connection-level
+ * failure. Landed rpush values accumulate in `landed` at exec-resolution
+ * time — the observable "what actually reached Redis, in what order".
+ */
+function mockRedis(
+  onExec?: (cmds: PipelineCmd[], batchNo: number) => Promise<ExecResult> | ExecResult
+): { client: LogRedis; landed: string[]; batches: PipelineCmd[][]; pipelineCalls: () => number } {
+  const landed: string[] = [];
+  const batches: PipelineCmd[][] = [];
+  let batchNo = 0;
+  let pipelines = 0;
+  const client: LogRedis = {
+    pipeline(): LogRedisPipeline {
+      pipelines++;
+      const cmds: PipelineCmd[] = [];
+      const p: LogRedisPipeline = {
+        rpush: (key, value) => cmds.push(['rpush', key, value]),
+        ltrim: (key, start, stop) => cmds.push(['ltrim', key, start, stop]),
+        expire: (key, seconds) => cmds.push(['expire', key, seconds]),
+        publish: (channel, message) => cmds.push(['publish', channel, message]),
+        exec: async () => {
+          const result = onExec
+            ? await onExec(cmds, batchNo++)
+            : cmds.map(() => [null, 1] as [Error | null, unknown]);
+          batches.push(cmds);
+          if (result !== null && !result.some(([err]) => err)) {
+            for (const c of cmds) if (c[0] === 'rpush') landed.push(c[2] as string);
+          }
+          return result;
+        },
+      };
+      return p;
+    },
   };
+  return { client, landed, batches, pipelineCalls: () => pipelines };
 }
 
 describe('createLogLineWriter', () => {
-  it('writes rpush/ltrim/expire/publish for every entry, in enqueue order', async () => {
-    const redis = mockRedis();
-    const writer = createLogLineWriter(redis, 'run-1');
+  it('pipelines rpush+publish per entry with one ltrim/expire per batch, in enqueue order', async () => {
+    const { client, batches, landed } = mockRedis();
+    const writer = createLogLineWriter(client, 'run-1');
 
     writer.enqueue(['a', 'b']);
     writer.enqueue(['c']);
     await writer.drain();
 
-    expect(redis.order).toEqual(['a', 'b', 'c']);
-    expect(redis.rpush).toHaveBeenCalledWith('logs:run-1', 'a');
-    expect(redis.ltrim).toHaveBeenCalledWith('logs:run-1', -1000, -1);
-    expect(redis.expire).toHaveBeenCalledWith('logs:run-1', 86400);
-    expect(redis.publish).toHaveBeenCalledWith('logs:run-1', 'c');
+    expect(landed).toEqual(['a', 'b', 'c']);
+    // Batch shape: per-entry rpush+publish (order-preserving for both the
+    // list and subscribers), then a single cap-trim + TTL refresh — the
+    // first batch setting the TTL is the no-immortal-key invariant.
+    expect(batches[0]).toEqual([
+      ['rpush', 'logs:run-1', 'a'],
+      ['publish', 'logs:run-1', 'a'],
+      ['rpush', 'logs:run-1', 'b'],
+      ['publish', 'logs:run-1', 'b'],
+      ['ltrim', 'logs:run-1', -1000, -1],
+      ['expire', 'logs:run-1', 86400],
+    ]);
+    expect(batches).toHaveLength(2);
   });
 
-  it('serializes batches even when individual writes resolve slowly', async () => {
-    const order: string[] = [];
-    const redis = mockRedis({
-      rpush: vi.fn().mockImplementation((_key: string, value: string) => {
-        // First batch is slow — without serialization the second batch's
-        // rpush would be issued (and land) first.
-        const delay = value.startsWith('slow') ? 20 : 0;
-        return new Promise((resolve) => {
-          setTimeout(() => {
-            order.push(value);
-            resolve(1);
-          }, delay);
-        });
-      }),
+  it('serializes batches even when an exec resolves slowly', async () => {
+    const { client, landed } = mockRedis(async (cmds, batchNo) => {
+      // First batch is slow — without serialization the second batch's
+      // exec would be issued (and land) first.
+      if (batchNo === 0) await new Promise((r) => setTimeout(r, 20));
+      return cmds.map(() => [null, 1] as [Error | null, unknown]);
     });
-    const writer = createLogLineWriter(redis, 'run-1');
+    const writer = createLogLineWriter(client, 'run-1');
 
     writer.enqueue(['slow-1']);
     writer.enqueue(['fast-2']);
     await writer.drain();
 
-    expect(order).toEqual(['slow-1', 'fast-2']);
+    expect(landed).toEqual(['slow-1', 'fast-2']);
   });
 
-  it('never throws or rejects when a write fails — drops the batch and keeps going', async () => {
-    let calls = 0;
-    const redis = mockRedis({
-      rpush: vi.fn().mockImplementation((_key: string, value: string) => {
-        calls++;
-        if (calls === 1) return Promise.reject(new Error('MaxRetriesPerRequestError'));
-        redis.order.push(value);
-        return Promise.resolve(1);
-      }),
+  it('never throws or rejects when exec fails — drops the batch and keeps going', async () => {
+    const { client, landed } = mockRedis((cmds, batchNo) => {
+      if (batchNo === 0) throw new Error('MaxRetriesPerRequestError');
+      return cmds.map(() => [null, 1] as [Error | null, unknown]);
     });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
-    const writer = createLogLineWriter(redis, 'run-1');
+    const writer = createLogLineWriter(client, 'run-1');
     writer.enqueue(['doomed', 'also-dropped-with-batch']);
     writer.enqueue(['survives']);
 
     await expect(writer.drain()).resolves.toBeUndefined();
-    expect(redis.order).toEqual(['survives']);
+    expect(landed).toEqual(['survives']);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('Dropped 2 log line(s)'));
     warn.mockRestore();
   });
 
+  it('surfaces per-command errors from the exec result tuples (ioredis does not reject on those)', async () => {
+    const { client } = mockRedis((cmds) =>
+      cmds.map((c, i) =>
+        i === 0
+          ? ([new Error('OOM command not allowed'), null] as [Error | null, unknown])
+          : ([null, 1] as [Error | null, unknown])
+      )
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const writer = createLogLineWriter(client, 'run-1');
+    writer.enqueue(['x']);
+
+    await expect(writer.drain()).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('OOM command not allowed'));
+    warn.mockRestore();
+  });
+
+  it('treats a null exec result (discarded pipeline) as a dropped batch', async () => {
+    const { client } = mockRedis(() => null);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const writer = createLogLineWriter(client, 'run-1');
+    writer.enqueue(['x']);
+
+    await expect(writer.drain()).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Dropped 1 log line(s)'));
+    warn.mockRestore();
+  });
+
   it('drain resolves only after previously enqueued entries flushed', async () => {
-    const redis = mockRedis({
-      rpush: vi.fn().mockImplementation(
-        (_key: string, value: string) =>
-          new Promise((resolve) => {
-            setTimeout(() => {
-              redis.order.push(value);
-              resolve(1);
-            }, 10);
-          })
-      ),
+    const { client, landed } = mockRedis(async (cmds) => {
+      await new Promise((r) => setTimeout(r, 10));
+      return cmds.map(() => [null, 1] as [Error | null, unknown]);
     });
-    const writer = createLogLineWriter(redis, 'run-1');
+    const writer = createLogLineWriter(client, 'run-1');
 
     writer.enqueue(['pending']);
     await writer.drain();
 
-    expect(redis.order).toEqual(['pending']);
+    expect(landed).toEqual(['pending']);
   });
 
   it('ignores empty enqueues', async () => {
-    const redis = mockRedis();
-    const writer = createLogLineWriter(redis, 'run-1');
+    const { client, pipelineCalls } = mockRedis();
+    const writer = createLogLineWriter(client, 'run-1');
 
     writer.enqueue([]);
     await writer.drain();
 
-    expect(redis.rpush).not.toHaveBeenCalled();
+    expect(pipelineCalls()).toBe(0);
   });
 });
 

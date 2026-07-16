@@ -110,13 +110,20 @@ const redis = new Redis(config.redisUrl);
 
 /**
  * Minimal Redis surface the log writer needs — lets tests inject a mock
- * without a live server.
+ * without a live server. Pipeline-shaped (PR #57 review): the writer
+ * issues one round-trip per BATCH instead of four per line, which is
+ * what caps flush throughput (and thus the boundedFlush backlog) under
+ * chatty actors. Matches ioredis' ChainableCommander structurally.
  */
+export interface LogRedisPipeline {
+  rpush(key: string, value: string): unknown;
+  ltrim(key: string, start: number, stop: number): unknown;
+  expire(key: string, seconds: number): unknown;
+  publish(channel: string, message: string): unknown;
+  exec(): Promise<Array<[error: Error | null, result: unknown]> | null>;
+}
 export interface LogRedis {
-  rpush(key: string, value: string): Promise<unknown>;
-  ltrim(key: string, start: number, stop: number): Promise<unknown>;
-  expire(key: string, seconds: number): Promise<unknown>;
-  publish(channel: string, message: string): Promise<unknown>;
+  pipeline(): LogRedisPipeline;
 }
 
 /**
@@ -145,12 +152,28 @@ export function createLogLineWriter(
     if (entries.length === 0) return;
     chain = chain
       .then(async () => {
+        // One pipelined round-trip per batch (PR #57 review) instead of
+        // four awaited commands per LINE: per-entry rpush+publish keep
+        // list order and subscriber order intact, while ltrim/expire are
+        // cap/TTL maintenance that only need to run once per batch (the
+        // list transiently exceeds the cap by at most the batch size,
+        // trimmed in the same round-trip; the first batch still sets the
+        // TTL, preserving the no-immortal-key invariant).
+        const pipe = client.pipeline();
         for (const entry of entries) {
-          await client.rpush(key, entry);
-          await client.ltrim(key, -1000, -1);
-          await client.expire(key, 86400);
-          await client.publish(key, entry);
+          pipe.rpush(key, entry);
+          pipe.publish(key, entry);
         }
+        pipe.ltrim(key, -1000, -1);
+        pipe.expire(key, 86400);
+        const results = await pipe.exec();
+        // ioredis exec() only rejects on connection-level failures;
+        // per-command errors come back in the result tuples and a null
+        // result means the pipeline was discarded. Surface both so the
+        // batch takes the drop-warning path instead of vanishing quietly.
+        if (results === null) throw new Error('pipeline discarded (connection lost)');
+        const firstErr = results.find(([err]) => err !== null)?.[0];
+        if (firstErr) throw firstErr;
       })
       .catch((err: unknown) => {
         console.warn(
