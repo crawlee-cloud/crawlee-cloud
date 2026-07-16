@@ -2,6 +2,8 @@
  * Runner configuration from environment variables.
  */
 
+import os from 'node:os';
+
 export interface Config {
   // API connection
   apiBaseUrl: string;
@@ -28,12 +30,37 @@ export interface Config {
   defaultTimeoutSecs: number;
   maxConcurrentRuns: number;
 
+  // Host-memory admission control. The sum of active containers' memory
+  // LIMITS must never exceed host RAM minus this reserve (OS + dockerd +
+  // this runner process): limits the kernel can't honor turn coincident
+  // memory peaks into host-level OOM — which sometimes kills the actor
+  // container (clean FAILED) and sometimes wedges the whole droplet
+  // (2026-07-16: two droplets pinned at 0MB available, heartbeat death,
+  // 3 zombie runs). See claimNextRun (queue.ts) and clampMemoryToHost
+  // (docker.ts).
+  hostTotalMemoryMb: number;
+  memoryReserveMb: number;
+  // How long an unfittable READY run may wait (from eligibility) before
+  // busy hosts stop claiming past it and drain toward idle — the claim-
+  // side half of starvation protection; the scaler's
+  // SCALER_MAX_READY_WAIT_SECS escalation is the capacity-side half.
+  starvedReadyWaitSecs: number;
+
   // Apify proxy defaults — injected into actor containers as the
   // platform-level fallback. Per-actor and per-user overrides resolved
   // in queue.ts → proxy-resolver.ts take precedence over these.
   apifyProxyPassword: string;
   apifyProxyHostname: string; // '' → SDK default (proxy.apify.com)
   apifyProxyPort: number; // 0  → SDK default (8000)
+
+  // Cost attribution — stamped onto runs at claim time (queue.ts), see
+  // docs/superpowers/specs/2026-07-15-run-cost-analysis-design.md.
+  // runnerId doubles as the heartbeat identity: on DO, cloud-init pins
+  // RUNNER_ID to the droplet id; the hostname fallback (= droplet name)
+  // is also unique per droplet, so overlap grouping is safe either way.
+  runnerId: string;
+  runnerPriceHourly: number | null; // null → "not recorded" in cost views
+  runnerProvider: string; // 'digitalocean' via cloud-init; local default
 
   // Logging
   logLevel: string;
@@ -46,9 +73,31 @@ function env(key: string, defaultValue?: string): string {
   throw new Error(`Missing required environment variable: ${key}`);
 }
 
+// Number() (not parseInt): "4GB" must not silently become 4 — a garbage
+// HOST_TOTAL_MEMORY_MB would otherwise produce NaN/nonsense headroom in
+// the claim SQL (errors every poll tick) and a wrong container limit.
+// Invalid values fall back to the default with a warning.
 function envInt(key: string, defaultValue: number): number {
   const value = process.env[key];
-  return value ? parseInt(value, 10) : defaultValue;
+  if (!value) return defaultValue;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 0) {
+    console.warn(
+      `[Runner] Ignoring invalid ${key}="${value}" — using default ${String(defaultValue)}`
+    );
+    return defaultValue;
+  }
+  return parsed;
+}
+
+// Null (not 0) for unset/garbage: the cost endpoint treats NULL as "price
+// not recorded" while 0 would read as "this droplet is free" and produce a
+// confidently wrong $0.00 cost.
+function envFloatOrNull(key: string): number | null {
+  const value = process.env[key];
+  if (!value) return null;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 export const config: Config = {
@@ -69,9 +118,25 @@ export const config: Config = {
   defaultTimeoutSecs: envInt('DEFAULT_TIMEOUT_SECS', 3600),
   maxConcurrentRuns: envInt('MAX_CONCURRENT_RUNS', 10),
 
+  // os.totalmem() is the physical host RAM in both boot modes: the
+  // git-clone runner runs directly on the droplet, and the prebuilt-image
+  // runner container has no memory limit of its own. Overridable for
+  // exotic setups where the runner's view of RAM isn't the actors' host.
+  hostTotalMemoryMb: envInt('HOST_TOTAL_MEMORY_MB', Math.round(os.totalmem() / (1024 * 1024))),
+  memoryReserveMb: envInt('RUNNER_MEMORY_RESERVE_MB', 768),
+  starvedReadyWaitSecs: envInt('RUNNER_MAX_READY_WAIT_SECS', 300),
+
   apifyProxyPassword: env('APIFY_PROXY_PASSWORD', ''),
   apifyProxyHostname: env('APIFY_PROXY_HOSTNAME', ''),
   apifyProxyPort: envInt('APIFY_PROXY_PORT', 0),
+
+  // Truthiness (not env()'s set-vs-unset default): cloud-init derives
+  // RUNNER_ID from the DO metadata service, and a set-but-EMPTY value must
+  // still fall back to the hostname — heartbeating as '' would desync
+  // heartbeat identity from run stamping and break overlap grouping.
+  runnerId: (process.env.RUNNER_ID ?? '').trim() || os.hostname(),
+  runnerPriceHourly: envFloatOrNull('RUNNER_PRICE_HOURLY'),
+  runnerProvider: env('RUNNER_PROVIDER', 'local-docker'),
 
   logLevel: env('LOG_LEVEL', 'info'),
 };

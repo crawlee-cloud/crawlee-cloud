@@ -72,6 +72,27 @@ function getCpuUsage(): number {
 }
 
 /**
+ * MemAvailable from /proc/meminfo, in MB — the kernel's estimate of memory
+ * available to new workloads WITHOUT swapping (reclaimable page cache
+ * counts as available). `os.freemem()` reports "free", which on a busy
+ * Linux box is near zero even when gigabytes of cache are reclaimable —
+ * useless for admission decisions. Returns null off-Linux (dev machines)
+ * or when the field is missing; callers must treat null as "unknown", not
+ * "empty".
+ *
+ * Exported for queue.ts (claim backpressure) and unit tests.
+ */
+export function getAvailableMemoryMb(): number | null {
+  try {
+    const meminfo = fs.readFileSync('/proc/meminfo', 'utf-8');
+    const match = /MemAvailable:\s+(\d+)\s*kB/.exec(meminfo);
+    return match?.[1] ? Math.round(parseInt(match[1], 10) / 1024) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Get root disk usage ratio (0-1).
  * Falls back to 0 if unavailable.
  */

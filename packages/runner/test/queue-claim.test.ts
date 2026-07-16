@@ -10,7 +10,12 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { claimNextRun, claimWebhookRetries, createAbortHandler } from '../src/queue.js';
+import {
+  claimNextRun,
+  claimWebhookRetries,
+  createAbortHandler,
+  processNextRun,
+} from '../src/queue.js';
 
 function mockPool(rows: unknown[] = []) {
   return { query: vi.fn().mockResolvedValue({ rows }) };
@@ -20,7 +25,7 @@ describe('claimNextRun', () => {
   it('claims READY -> RUNNING in ONE atomic statement (no separate UPDATE)', async () => {
     const pool = mockPool([{ id: 'run-1', status: 'RUNNING' }]);
 
-    const run = await claimNextRun(pool as never);
+    const run = await claimNextRun(pool as never, null);
 
     expect(run).toEqual({ id: 'run-1', status: 'RUNNING' });
     // The race lives between statements — the claim must be exactly one.
@@ -33,9 +38,107 @@ describe('claimNextRun', () => {
     expect(sql).toMatch(/RETURNING/i);
   });
 
+  it('stamps cost-attribution columns in the SAME claim statement', async () => {
+    // Claim-time stamping per the run-cost-analysis design
+    // (docs/superpowers/specs/2026-07-15-run-cost-analysis-design.md):
+    // runner_id groups sibling runs per droplet for overlap math and
+    // per-droplet forensics; price/provider degrade to NULL/'local-docker'
+    // when the scaler didn't inject them. A separate UPDATE would reopen
+    // the claim race this file exists to prevent.
+    const pool = mockPool([{ id: 'run-1', status: 'RUNNING' }]);
+
+    await claimNextRun(pool as never, null);
+
+    const sql = pool.query.mock.calls[0][0] as string;
+    expect(sql).toMatch(/runner_id = \$1/);
+    expect(sql).toMatch(/runner_price_hourly = \$2/);
+    expect(sql).toMatch(/runner_provider = \$3/);
+
+    const params = pool.query.mock.calls[0][1] as unknown[];
+    expect(typeof params[0]).toBe('string'); // RUNNER_ID env or os.hostname()
+    expect(params[1]).toBeNull(); // RUNNER_PRICE_HOURLY unset in tests
+    expect(params[2]).toBe('local-docker'); // RUNNER_PROVIDER default
+  });
+
+  it('gates the claim on memory headroom INSIDE the same statement', async () => {
+    // Memory-aware admission (2026-07-16 host-wedge incident): the claim
+    // must skip runs whose effective limit — LEAST(memory_mbytes, host
+    // usable) — exceeds remaining headroom, so co-located limits stay
+    // enforceable by the kernel. Doing it in the claim statement keeps
+    // the single-statement atomicity; a separate check would reopen the
+    // two-claimants race.
+    const pool = mockPool([]);
+
+    await claimNextRun(pool as never, 1096);
+
+    const sql = pool.query.mock.calls[0][0] as string;
+    expect(sql).toMatch(/LEAST\(COALESCE\(memory_mbytes, \$5\), \$6\) <= \$4/);
+
+    const params = pool.query.mock.calls[0][1] as unknown[];
+    expect(params).toHaveLength(7);
+    expect(params[3]).toBe(1096); // headroom
+    expect(typeof params[4]).toBe('number'); // default memory for NULL rows
+    expect(typeof params[5]).toBe('number'); // host-usable clamp
+    expect(typeof params[6]).toBe('number'); // starvation drain bound (secs)
+  });
+
+  it('busy hosts stop claiming past a starved run that fits nowhere (anti-starvation drain)', async () => {
+    // A run whose limit exceeds every busy host's headroom is claimable
+    // only via the idle null-gate — and hosts ping-ponging small claims
+    // may never go idle. Past the wait bound, busy hosts must claim
+    // NOTHING (NOT EXISTS guard) so the fleet drains toward an idle
+    // claimant; idle hosts ($4 NULL) are never blocked.
+    const pool = mockPool([]);
+
+    await claimNextRun(pool as never, 1096);
+
+    const sql = pool.query.mock.calls[0][0] as string;
+    expect(sql).toMatch(/NOT EXISTS/);
+    expect(sql).toMatch(/LEAST\(COALESCE\(starved\.memory_mbytes, \$5\), \$6\) > \$4/);
+    // The wait clock starts at eligibility (run_after), not insert time —
+    // a delayed retry must not trigger the drain the moment it appears.
+    expect(sql).toMatch(
+      /GREATEST\(starved\.created_at, COALESCE\(starved\.run_after, starved\.created_at\)\)/
+    );
+  });
+
+  it('claims without a memory gate when headroom is null (idle host)', async () => {
+    // Null (not "usable MB") on an idle host: an oversized run
+    // (memory_mbytes > host usable) must still be claimable SOMEWHERE —
+    // it runs solo with a clamped limit instead of starving READY forever.
+    const pool = mockPool([{ id: 'run-big', status: 'RUNNING' }]);
+
+    const run = await claimNextRun(pool as never, null);
+
+    expect(run).not.toBeNull();
+    const params = pool.query.mock.calls[0][1] as unknown[];
+    expect(params[3]).toBeNull();
+  });
+
   it('returns null when no READY run is available', async () => {
     const pool = mockPool([]);
-    expect(await claimNextRun(pool as never)).toBeNull();
+    expect(await claimNextRun(pool as never, null)).toBeNull();
+  });
+});
+
+describe('processNextRun', () => {
+  it('contains claim failures — one lost poll tick, never a process-killing rejection', async () => {
+    // The module-level pool is uninitialized in unit tests, so the claim
+    // inside processNextRun fails exactly like a DB outage (failover,
+    // 53300 no-slots, or 42703 against a not-yet-migrated schema) would.
+    // Before the catch was added this rejection propagated through
+    // startProcessing's poll loop into main().catch → exit with NO drain,
+    // orphaning every active container. The crash guards can't help: a
+    // rejection consumed by main().catch is a HANDLED rejection.
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await expect(processNextRun()).resolves.toBeUndefined();
+
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('Claim poll failed'),
+      expect.anything()
+    );
+    error.mockRestore();
   });
 });
 

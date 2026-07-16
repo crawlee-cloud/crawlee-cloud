@@ -26,6 +26,7 @@ vi.mock('../src/storage/redis.js', () => ({
   redis: {
     rpush: vi.fn(),
     ltrim: vi.fn(),
+    expire: vi.fn(),
     publish: vi.fn(),
     lrange: vi.fn(),
     llen: vi.fn(),
@@ -52,6 +53,7 @@ describe('Logs Routes', () => {
     mockQuery.mockReset();
     vi.mocked(redis.rpush).mockReset();
     vi.mocked(redis.ltrim).mockReset();
+    vi.mocked(redis.expire).mockReset();
     vi.mocked(redis.publish).mockReset();
     vi.mocked(redis.lrange).mockReset();
     vi.mocked(redis.llen).mockReset();
@@ -87,6 +89,11 @@ describe('Logs Routes', () => {
         'logs:run-1',
         expect.stringContaining('Test log message')
       );
+
+      // Every write must refresh the 24h TTL: for a never-claimed run this
+      // POST can be the key's FIRST write, and without the expire the key
+      // is immortal (runner-side writers uphold the same invariant).
+      expect(redis.expire).toHaveBeenCalledWith('logs:run-1', 86400);
     });
 
     it('should return 404 for run owned by another user', async () => {

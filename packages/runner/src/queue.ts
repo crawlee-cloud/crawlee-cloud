@@ -8,7 +8,14 @@ import pg from 'pg';
 import { Redis } from 'ioredis';
 import { nanoid } from 'nanoid';
 import { config } from './config.js';
-import { executeRun, buildActorEnv, stopRun } from './docker.js';
+import {
+  executeRun,
+  buildActorEnv,
+  stopRun,
+  writeLifecycleLog,
+  clampMemoryToHost,
+} from './docker.js';
+import { getAvailableMemoryMb } from './heartbeat.js';
 import { applyWebhookTemplate } from './webhook-template.js';
 import { resolveProxy } from './proxy-resolver.js';
 
@@ -131,6 +138,14 @@ const activeRunIds = new Set<string>();
 // pull in progress). executeRun checks this after the pull, before
 // starting the container — stopRun alone can't cover that window.
 const abortedRunIds = new Set<string>();
+// Effective (host-clamped) container memory limit per active run, in MB.
+// Feeds the claim gate: the sum of these plus a new run's limit must fit
+// under hostTotalMemoryMb - memoryReserveMb, or the new run isn't claimed
+// on this host. Kept alongside activeRunIds with identical lifecycle.
+const activeRunMemoryMb = new Map<string, number>();
+// Log the memory-backpressure skip only on entering the throttled state —
+// the poll fires every second and would otherwise flood the journal.
+let memoryThrottled = false;
 
 export function stopProcessing(): void {
   shuttingDown = true;
@@ -255,26 +270,78 @@ export async function startProcessing(): Promise<void> {
  * `status = 'READY'` recheck is defense in depth, matching the
  * CTE-with-recheck pattern in the API's retention reaper.
  */
-export async function claimNextRun(dbPool: pg.Pool): Promise<RunJob | null> {
-  const result = await dbPool.query<RunJob>(`
+export async function claimNextRun(
+  dbPool: pg.Pool,
+  /**
+   * Remaining host-memory headroom in MB, or null for "no gate" (this
+   * host has zero active runs). When set, only runs whose EFFECTIVE
+   * container limit — LEAST(memory_mbytes, host usable) — fits are
+   * eligible; bigger runs are skipped (not blocked head-of-line) and
+   * left for a host with room. Null (not "usable MB") for the idle case
+   * so an oversized run (memory_mbytes > host usable) is still claimable
+   * somewhere: it runs solo with its limit clamped by executeRun rather
+   * than starving READY forever.
+   */
+  memoryHeadroomMb: number | null
+): Promise<RunJob | null> {
+  // Cost-attribution stamping (runner_id / price / provider) rides the
+  // claim statement itself — a follow-up UPDATE would reopen the two-
+  // claimants race this function exists to close. runner_id is the same
+  // identity the heartbeat reports; price/provider are NULL/'local-docker'
+  // unless the scaler injected them at provision time. See
+  // docs/superpowers/specs/2026-07-15-run-cost-analysis-design.md.
+  const usableMb = Math.max(256, config.hostTotalMemoryMb - config.memoryReserveMb);
+  // Anti-starvation drain (the NOT EXISTS): a run whose limit fits NO
+  // busy host's headroom is claimable only via the idle null-gate — and
+  // busy hosts ping-ponging smaller claims may never go idle, starving it
+  // behind younger runs indefinitely. Once such a run has waited past
+  // starvedReadyWaitSecs (clock starts at eligibility, not insert), busy
+  // hosts stop claiming ANYTHING until somewhere drains to idle and
+  // FIFO-claims it. Normal skip-ahead is untouched for the first
+  // starvedReadyWaitSecs. Idle hosts ($4 NULL) are never blocked.
+  const result = await dbPool.query<RunJob>(
+    `
     UPDATE runs
-    SET status = 'RUNNING', started_at = NOW(), modified_at = NOW()
+    SET status = 'RUNNING', started_at = NOW(), modified_at = NOW(),
+        runner_id = $1, runner_price_hourly = $2, runner_provider = $3
     WHERE id = (
       SELECT id FROM runs
       WHERE status = 'READY' AND (run_after IS NULL OR run_after <= NOW())
+        AND ($4::int IS NULL OR (
+          LEAST(COALESCE(memory_mbytes, $5), $6) <= $4
+          AND NOT EXISTS (
+            SELECT 1 FROM runs starved
+            WHERE starved.status = 'READY'
+              AND (starved.run_after IS NULL OR starved.run_after <= NOW())
+              AND LEAST(COALESCE(starved.memory_mbytes, $5), $6) > $4
+              AND GREATEST(starved.created_at, COALESCE(starved.run_after, starved.created_at))
+                    < NOW() - ($7::int * interval '1 second')
+          )
+        ))
       ORDER BY created_at ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     ) AND status = 'READY'
     RETURNING *
-  `);
+  `,
+    [
+      config.runnerId,
+      config.runnerPriceHourly,
+      config.runnerProvider,
+      memoryHeadroomMb,
+      config.defaultMemoryMb,
+      usableMb,
+      config.starvedReadyWaitSecs,
+    ]
+  );
   return result.rows[0] ?? null;
 }
 
 /**
- * Process the next pending run.
+ * Process the next pending run. Exported for unit tests (the claim-failure
+ * containment below is load-bearing for process survival).
  */
-async function processNextRun(): Promise<void> {
+export async function processNextRun(): Promise<void> {
   if (shuttingDown || isProcessing || activeRuns >= config.maxConcurrentRuns) {
     return;
   }
@@ -282,8 +349,45 @@ async function processNextRun(): Promise<void> {
   isProcessing = true;
 
   try {
-    // Claim the next pending run (FIFO, respecting delayed retries)
-    const run = await claimNextRun(pool);
+    const usableMb = Math.max(256, config.hostTotalMemoryMb - config.memoryReserveMb);
+
+    // Backpressure on ACTUAL memory, not just limits: when the host's
+    // MemAvailable is already inside the reserve, claiming anything —
+    // even a run whose limit nominally fits — feeds a wedge in progress.
+    // Skip the tick and let the pressure resolve (a container finishing
+    // or the kernel OOM-killing one). Null (non-Linux dev box) = unknown
+    // = no throttle. Deliberately UNCONDITIONAL on activeRuns: a
+    // restarted runner (crash/systemd) has activeRuns 0 but may share the
+    // host with the orphaned containers that caused the pressure — the
+    // limit-sum gate below can't see them, so this is the only defense.
+    const availableMb = getAvailableMemoryMb();
+    if (availableMb !== null && availableMb < config.memoryReserveMb) {
+      if (!memoryThrottled) {
+        memoryThrottled = true;
+        console.warn(
+          `[Runner] Host memory low (${String(availableMb)}MB available < ${String(config.memoryReserveMb)}MB reserve) — pausing claims until pressure clears`
+        );
+      }
+      return;
+    }
+    if (memoryThrottled) {
+      memoryThrottled = false;
+      console.log('[Runner] Host memory pressure cleared — resuming claims');
+    }
+
+    // Memory-aware admission: gate the claim on the sum of active
+    // container LIMITS so co-located worst cases stay under what the
+    // kernel can enforce (2 x 2048MB limits on a 3912MB host was the
+    // 2026-07-16 host-wedge). No gate when idle — see claimNextRun.
+    const activeMemMb = [...activeRunMemoryMb.values()].reduce((a, b) => a + b, 0);
+    const headroomMb = activeRuns === 0 ? null : usableMb - activeMemMb;
+    if (headroomMb !== null && headroomMb <= 0) {
+      return; // No room for even the smallest run — skip the round-trip.
+    }
+
+    // Claim the next pending run (FIFO among runs that fit, respecting
+    // delayed retries)
+    const run = await claimNextRun(pool, headroomMb);
 
     if (!run) {
       return; // No pending runs
@@ -293,13 +397,25 @@ async function processNextRun(): Promise<void> {
 
     activeRuns++;
     activeRunIds.add(run.id);
+    activeRunMemoryMb.set(run.id, Math.min(run.memory_mbytes ?? config.defaultMemoryMb, usableMb));
 
     // Process in background
     void processRun(run).finally(() => {
       activeRuns--;
       activeRunIds.delete(run.id);
       abortedRunIds.delete(run.id);
+      activeRunMemoryMb.delete(run.id);
     });
+  } catch (err) {
+    // A failed claim must cost one poll tick, not the process. Without
+    // this catch the rejection propagates through startProcessing's loop
+    // into main().catch → immediate exit with NO drain, orphaning every
+    // active container (the zombie factory the crash guards exist to
+    // close — they never fire here because main().catch makes this a
+    // HANDLED rejection). Covers transient pg errors (failover, reset,
+    // 53300 no-slots) and a not-yet-migrated schema (42703 on the new
+    // cost-attribution columns if a runner rolls out before api-migrate).
+    console.error('[Runner] Claim poll failed (will retry):', (err as Error).message);
   } finally {
     isProcessing = false;
   }
@@ -310,6 +426,15 @@ async function processNextRun(): Promise<void> {
  */
 async function processRun(run: RunJob): Promise<void> {
   const runId = run.id;
+
+  // One effective (host-clamped) memory value for everything downstream:
+  // the container limit, APIFY_MEMORY_MBYTES, and the OOM status message
+  // must agree, or the actor sizes itself for RAM the cgroup won't grant.
+  const effectiveMemoryMb = clampMemoryToHost(
+    run.memory_mbytes ?? config.defaultMemoryMb,
+    config.hostTotalMemoryMb,
+    config.memoryReserveMb
+  );
 
   try {
     // Get actor details
@@ -357,15 +482,17 @@ async function processRun(run: RunJob): Promise<void> {
     // for triage but never the value. See proxy-resolver.ts and the
     // design doc at docs/superpowers/specs/2026-06-01-apify-proxy-design.md.
     const proxy = await resolveProxy(pool, run.actor_id, run.user_id);
-    const proxyLog = JSON.stringify({
-      timestamp: new Date().toISOString(),
-      level: proxy.source === 'none' ? 'WARN' : 'INFO',
-      message:
-        proxy.source === 'none'
-          ? 'No proxy password configured (actor/user/platform). Actor inputs using useApifyProxy=true will fail at runtime.'
-          : `Proxy credentials: ${proxy.source}`,
-    });
-    await redis.rpush(`logs:${run.id}`, proxyLog);
+    // writeLifecycleLog (vs raw rpush): best-effort + sets the 24h TTL.
+    // This is the FIRST write of every run's log key — a raw rpush created
+    // the key with no TTL, leaving it immortal if the runner died before
+    // executeRun's first expire-setting write.
+    await writeLifecycleLog(
+      run.id,
+      proxy.source === 'none' ? 'WARN' : 'INFO',
+      proxy.source === 'none'
+        ? 'No proxy password configured (actor/user/platform). Actor inputs using useApifyProxy=true will fail at runtime.'
+        : `Proxy credentials: ${proxy.source}`
+    );
 
     // Build environment variables
     const baseEnv = buildActorEnv({
@@ -376,7 +503,10 @@ async function processRun(run: RunJob): Promise<void> {
       defaultDatasetId: run.default_dataset_id,
       defaultKeyValueStoreId: run.default_key_value_store_id,
       defaultRequestQueueId: run.default_request_queue_id,
-      memoryMbytes: run.memory_mbytes,
+      // Host-clamped: the actor SDK sizes its heap/autoscaling from
+      // APIFY_MEMORY_MBYTES, so it must see the limit the container will
+      // actually be enforced at, not the unsatisfiable requested value.
+      memoryMbytes: effectiveMemoryMb,
       timeoutSecs: run.timeout_secs,
       proxyPassword: proxy.password,
       proxyHostname: proxy.hostname,
@@ -392,7 +522,7 @@ async function processRun(run: RunJob): Promise<void> {
       actorId: run.actor_id,
       image,
       env,
-      memoryMb: run.memory_mbytes,
+      memoryMb: effectiveMemoryMb,
       timeoutSecs: run.timeout_secs,
       // Checked after the image pull, before container start — an abort
       // arriving mid-pull has no container for stopRun to stop.
@@ -416,7 +546,7 @@ async function processRun(run: RunJob): Promise<void> {
       status,
       exitCode: result.exitCode,
       oomKilled: result.oomKilled,
-      memoryMb: run.memory_mbytes,
+      memoryMb: effectiveMemoryMb,
       timeoutSecs: run.timeout_secs,
       lastErrorLine:
         status === 'FAILED' && !result.oomKilled ? await getLastErrorLogLine(run.id) : null,
@@ -451,6 +581,25 @@ async function processRun(run: RunJob): Promise<void> {
       [status, result.finishedAt, result.exitCode, statusMessage, runId]
     );
 
+    // Peak memory rides a SEPARATE best-effort UPDATE, deliberately NOT
+    // the load-bearing terminal one: observability must never decide a
+    // run's fate. Folded into the terminal UPDATE, a 42703 during a
+    // deploy-skew window (runner ahead of api-migrate's peak_memory_mb
+    // column) would throw the whole terminalization into the catch path —
+    // flipping an exit-0 run FAILED and re-executing it via maybeRetryRun.
+    // No status guard either: recording the peak is valid even when
+    // Actor.fail() won the terminal race.
+    if (result.peakMemoryMb !== null) {
+      try {
+        await pool.query(`UPDATE runs SET peak_memory_mb = $1 WHERE id = $2`, [
+          result.peakMemoryMb,
+          runId,
+        ]);
+      } catch (err) {
+        console.warn(`[${runId}] Failed to record peak memory: ${(err as Error).message}`);
+      }
+    }
+
     if (updateResult.rowCount === 0) {
       // Status was already terminal — re-read what's there so the rest of
       // the function (webhooks, retry) sees the authoritative status.
@@ -483,6 +632,13 @@ async function processRun(run: RunJob): Promise<void> {
     }
   } catch (err) {
     console.error(`Run ${runId} failed with error:`, err);
+
+    // Surface the failure cause in the run's own log — operators triage
+    // from the log view, where runs used to end at the last INFO line
+    // (e.g. "Image ... pulled successfully") while the real error hid in
+    // status_message. Must precede persistFailureLog below so the archived
+    // RUN_LOG.txt carries it too. Best-effort by construction.
+    await writeLifecycleLog(runId, 'ERROR', `Run failed: ${(err as Error).message}`);
 
     // Same `WHERE status = 'RUNNING'` guard as the success path: if the
     // run reached a terminal state via another path (Actor.fail() →

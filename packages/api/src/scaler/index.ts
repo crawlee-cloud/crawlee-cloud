@@ -102,9 +102,17 @@ export function getProviderExecutionDefaults(provider: string): {
  * is shell that runs on a real Linux box, so any unescaped value or
  * missing env var would only surface as a silent boot failure.
  *
- * Pure: only reads from `process.env` and the provided `runsPerRunner`.
+ * Pure: only reads from `process.env` and the provided arguments.
+ *
+ * `priceHourly` is the droplet's hourly USD price resolved at scale-up
+ * (operator override or DO /v2/sizes) — baked into the env file so
+ * claimNextRun stamps it onto every run this droplet executes. Null →
+ * line omitted → the runner's envFloatOrNull yields null ("not recorded").
  */
-export function getCloudInitScript(runsPerRunner: number): string {
+export function getCloudInitScript(
+  runsPerRunner: number,
+  priceHourly: number | null = null
+): string {
   const dbUrl = process.env.DATABASE_URL || '';
   const redisUrl = process.env.REDIS_URL || '';
   const apiBaseUrl = process.env.SCALER_API_BASE_URL || '';
@@ -175,6 +183,8 @@ MAX_CONCURRENT_RUNS=${runsPerRunner}
 DEFAULT_MEMORY_MB=${CLOUD_INIT_DEFAULT_MEMORY_MB}
 DEFAULT_TIMEOUT_SECS=${CLOUD_INIT_DEFAULT_TIMEOUT_SECS}
 LOG_LEVEL=info
+RUNNER_PROVIDER=digitalocean
+${priceHourly !== null ? `RUNNER_PRICE_HOURLY=${priceHourly}` : '# RUNNER_PRICE_HOURLY unresolved (lookup failed / no override)'}
 IMAGE_REGISTRY=${process.env.IMAGE_REGISTRY || ''}
 IMAGE_REGISTRY_USER=${process.env.IMAGE_REGISTRY_USER || ''}
 IMAGE_REGISTRY_TOKEN=${process.env.IMAGE_REGISTRY_TOKEN || ''}
@@ -182,8 +192,16 @@ PROXY_ENCRYPTION_KEY=${process.env.PROXY_ENCRYPTION_KEY || ''}
 ${tlsEnvFileLine}
 ENVEOF
 
-DO_ID=$(curl -fsSL --max-time 5 http://169.254.169.254/metadata/v1/id 2>/dev/null || echo "")
-[ -n "$DO_ID" ] && echo "RUNNER_ID=$DO_ID" >> /etc/crawlee-runner.env
+# RUNNER_ID must resolve to something the scaler can match (droplet id,
+# or droplet NAME via the heartbeat name-fallback). Retried because a
+# transient metadata-service blip at boot otherwise left RUNNER_ID unset —
+# fatal in the prebuilt-image mode, where the container's os.hostname()
+# fallback is the container id, which matches nothing: the runner gets
+# falsely dead-reaped and its runs can't be attributed. $(hostname) here
+# evaluates on the HOST (= droplet name), never inside the container.
+DO_ID=""
+for i in 1 2 3; do DO_ID=$(curl -fsSL --max-time 5 http://169.254.169.254/metadata/v1/id 2>/dev/null) && break || sleep 2; done
+echo "RUNNER_ID=\${DO_ID:-$(hostname)}" >> /etc/crawlee-runner.env
 
 chmod 600 /etc/crawlee-runner.env`;
 
@@ -215,8 +233,11 @@ ${envFileBlock}
 # No extra TLS env flag on docker run: when SCALER_INSECURE_TLS=true the
 # env-file already carries NODE_TLS_REJECT_UNAUTHORIZED into the container.
 for i in 1 2 3; do docker pull '${runnerImage}' && break || sleep 10; done
+# --oom-score-adj=-900: host OOM must sacrifice actor containers, never
+# the runner (same rationale as OOMScoreAdjust in the systemd mode).
 docker run -d --name crawlee-runner \\
   --restart=always \\
+  --oom-score-adj=-900 \\
   -v /var/run/docker.sock:/var/run/docker.sock \\
   --env-file /etc/crawlee-runner.env \\
   '${runnerImage}'
@@ -253,6 +274,12 @@ WorkingDirectory=/opt/crawlee-cloud
 ExecStart=/usr/bin/node packages/runner/dist/index.js
 Restart=always
 RestartSec=5
+# Host OOM must sacrifice actor containers (score 0), never the control
+# plane: on 2026-07-16 the kernel picked the runner process on two
+# memory-exhausted droplets — heartbeat died, droplets were dead-reaped,
+# and their runs zombified. -900 keeps the runner alive so it can report
+# the container OOM and keep supervising.
+OOMScoreAdjust=-900
 Environment=NODE_ENV=production
 ${tlsSystemdLine}
 EnvironmentFile=/etc/crawlee-runner.env
@@ -274,20 +301,71 @@ export interface QueueStats {
   ready: number;
   running: number;
   total: number;
+  /**
+   * Memory demand in DROPLET-SHARES, not MB: each run contributes
+   * 1 / floor(perVmUsable / effectiveLimit) — the fraction of one VM its
+   * limit occupies under INTEGER packing. An MB sum was the first
+   * implementation and under-provisioned single-tenant classes: 2048MB
+   * runs pack 1-per-VM on 3144MB-usable hosts (floor(3144/2048)=1), but
+   * ceil(sumMB/usable) credited 1.53 of them per VM — 13 such runs got 9
+   * droplets and 4 READY rows sat unclaimed with desired == current.
+   * Optional so pure-function callers/tests keep count-only math.
+   */
+  readyRunnerShares?: number;
+  runningRunnerShares?: number;
+  /**
+   * Age of the oldest ELIGIBLE READY run in ms (clock starts at
+   * run_after for delayed retries) — drives the starvation escalation.
+   */
+  oldestReadyAgeMs?: number;
 }
 
 async function getQueueStats(): Promise<QueueStats> {
-  const result = await query<{ status: string; count: string }>(
-    `SELECT status, COUNT(*) as count FROM runs
-     WHERE status IN ('READY', 'RUNNING')
-     GROUP BY status`
+  // Effective per-run limit is clamped at what one VM can host
+  // (runnerMemoryMb - reserve), so an oversized run (4096MB requested on
+  // a 3912MB VM) costs exactly one whole runner — floor() then gives its
+  // share as 1/1. Matches the runner-side clampMemoryToHost/claimNextRun.
+  const usableMb = Math.max(
+    256,
+    (config?.runnerMemoryMb ?? 3912) - (config?.memoryReserveMb ?? 768)
+  );
+  // READY rows gated on eligibility: a delayed retry (run_after in the
+  // future) is invisible to every claim gate, so counting it as demand
+  // provisions droplets that can do nothing with it — and its wait clock
+  // must start at eligibility, not insert.
+  const result = await query<{
+    status: string;
+    count: string;
+    runner_shares: string | null;
+    oldest_eligible: Date | null;
+  }>(
+    `SELECT status, COUNT(*) as count,
+            SUM(1.0 / GREATEST(1, FLOOR($2::numeric / LEAST(COALESCE(memory_mbytes, $1), $2)))) as runner_shares,
+            MIN(GREATEST(created_at, COALESCE(run_after, created_at))) as oldest_eligible
+     FROM runs
+     WHERE status = 'RUNNING'
+        OR (status = 'READY' AND (run_after IS NULL OR run_after <= NOW()))
+     GROUP BY status`,
+    [CLOUD_INIT_DEFAULT_MEMORY_MB, usableMb]
   );
 
   const stats: QueueStats = { ready: 0, running: 0, total: 0 };
   for (const row of result.rows) {
     const count = parseInt(row.count, 10);
-    if (row.status === 'READY') stats.ready = count;
-    if (row.status === 'RUNNING') stats.running = count;
+    // Defensive: mocks/older shapes may omit the shares column — degrade
+    // to 0 (count-only demand) rather than NaN-poisoning the desired calc.
+    const shares = row.runner_shares != null ? parseFloat(row.runner_shares) : 0;
+    if (row.status === 'READY') {
+      stats.ready = count;
+      stats.readyRunnerShares = Number.isFinite(shares) ? shares : 0;
+      if (row.oldest_eligible) {
+        stats.oldestReadyAgeMs = Math.max(0, Date.now() - new Date(row.oldest_eligible).getTime());
+      }
+    }
+    if (row.status === 'RUNNING') {
+      stats.running = count;
+      stats.runningRunnerShares = Number.isFinite(shares) ? shares : 0;
+    }
   }
   stats.total = stats.ready + stats.running;
   return stats;
@@ -311,7 +389,23 @@ export function calculateDesiredRunners(
    * keeping 10 droplets alive with 0 real work on most of them). Omit
    * to preserve the raw-DB behavior.
    */
-  liveRunningCount?: number
+  liveRunningCount?: number,
+  /**
+   * Memory demand of live RUNNING rows in droplet-SHARES (see
+   * QueueStats.readyRunnerShares). When provided, the runner count must
+   * ALSO cover ceil(total shares): headcount packing alone placed 2 x
+   * 2048MB limits (or one 4096MB limit) on 3912MB-usable droplets and
+   * host-OOM-wedged two of them on 2026-07-16. Zombie-filtered by the
+   * caller. Omit for count-only math.
+   */
+  liveRunningShares?: number,
+  /**
+   * True when some runner currently has zero active runs (idle, or still
+   * booting with no heartbeat yet). Gates the starvation escalation:
+   * while a rescue droplet boots (~5min), the starved state persists for
+   * many ticks and would otherwise add one droplet PER TICK.
+   */
+  hasIdleOrBootingRunner?: boolean
 ): number {
   // Defensive coercion. `stats.ready` / `stats.running` come from parseInt
   // of a PG COUNT(*) result; under normal operation they're finite
@@ -330,8 +424,43 @@ export function calculateDesiredRunners(
     return cfg.minRunners;
   }
 
-  const needed = Math.ceil(totalDemand / cfg.runsPerRunner);
+  // Memory dimension: ceil of the droplet-share sum — integer bin
+  // packing per size class (see QueueStats.readyRunnerShares for why an
+  // MB sum under-provisions single-tenant classes). Uses the zombie-
+  // filtered running shares when provided (a zombie's limit is not real
+  // demand, same reasoning as liveRunningCount). The 1e-6 epsilon
+  // absorbs float noise from fractional shares: 6 x 1/6 can sum to
+  // 1.0000000000000002, which must not become 2 droplets.
+  let neededByMemory = 0;
+  const readyShares = Math.max(0, stats.readyRunnerShares ?? 0);
+  const runningShares = Math.max(0, liveRunningShares ?? stats.runningRunnerShares ?? 0);
+  if (readyShares + runningShares > 0) {
+    neededByMemory = Math.ceil(readyShares + runningShares - 1e-6);
+  }
+
+  const needed = Math.max(Math.ceil(totalDemand / cfg.runsPerRunner), neededByMemory);
   const clamped = Math.max(cfg.minRunners, Math.min(needed, cfg.maxRunners));
+
+  // Starvation escalation: once the oldest ELIGIBLE READY run has waited
+  // past maxReadyWaitSecs, pressure is real regardless of batch size or
+  // what the packing estimate says. Two live incident shapes it covers:
+  //  - 2026-07-16 00:01: 3 READY runs waited 46-64 min because
+  //    ready(3) <= threshold(5) froze scale-up until the 01:00 batch.
+  //  - Packing residue: a run whose limit fits no busy droplet's
+  //    headroom is claimable only by an IDLE droplet (claimNextRun's
+  //    null gate), and share math can honestly say desired == current
+  //    while it starves behind small-run churn. Forcing one extra
+  //    droplet manufactures an idle claimant; the idle-timeout
+  //    scale-down reclaims it afterward.
+  const starving = ready > 0 && (stats.oldestReadyAgeMs ?? 0) > cfg.maxReadyWaitSecs * 1000;
+
+  // Escalate ONLY when nothing idle/booting exists: a booting rescue
+  // droplet has no heartbeat yet (activeRuns 0), which both suppresses
+  // repeat bumps during its ~5min boot and means a persistent idle-but-
+  // not-claiming droplet (wedged) is the dead reaper's job, not ours.
+  if (starving && clamped <= current && current < cfg.maxRunners && !hasIdleOrBootingRunner) {
+    return current + 1;
+  }
 
   // Hysteresis: when queue pressure is below the scale-up threshold, freeze
   // the count — but ONLY in the upward direction. A draining long-tail
@@ -341,7 +470,12 @@ export function calculateDesiredRunners(
   // hours at desired=10 with ready=0, running=2). The `current >= min`
   // clause preserves the cold-start floor: when we're below min, the
   // floor wins even if ready ≤ threshold.
-  if (ready <= cfg.scaleUpThreshold && clamped > current && current >= cfg.minRunners) {
+  if (
+    ready <= cfg.scaleUpThreshold &&
+    clamped > current &&
+    current >= cfg.minRunners &&
+    !starving
+  ) {
     return current;
   }
 
@@ -601,18 +735,48 @@ export function countLiveRunning(
 ): number {
   let count = 0;
   for (const row of runningRows) {
-    if (claimedRunIds.has(row.id)) {
-      // A live runner explicitly reports this run in its heartbeat.
-      count++;
-      continue;
-    }
-    if (row.started_at && now - new Date(row.started_at).getTime() < PICKUP_GRACE_MS) {
-      // Fresh pickup — the runner could plausibly have claimed this
-      // between heartbeats. Give one more tick before declaring zombie.
-      count++;
-    }
+    if (isLiveRunningRow(row, claimedRunIds, now)) count++;
   }
   return count;
+}
+
+/**
+ * The single liveness predicate shared by demand counting and memory
+ * demand: a RUNNING row is real work if a live heartbeat claims it, or it
+ * started within the pickup grace window (claim may not have landed in a
+ * heartbeat yet). Everything else is a zombie.
+ */
+function isLiveRunningRow(
+  row: { id: string; started_at: Date | null },
+  claimedRunIds: Set<string>,
+  now: number
+): boolean {
+  if (claimedRunIds.has(row.id)) return true;
+  return row.started_at != null && now - new Date(row.started_at).getTime() < PICKUP_GRACE_MS;
+}
+
+/**
+ * Zombie-filtered memory demand of RUNNING rows, in droplet-SHARES. Each
+ * live row contributes 1 / floor(usable / effectiveLimit) — the fraction
+ * of one VM its limit occupies under integer packing — mirroring
+ * getQueueStats' SQL so READY and RUNNING demand are in the same units.
+ * (An MB sum under-provisioned single-tenant classes: floor(3144/2048)=1
+ * means one 2048MB run costs a whole droplet, not 2048/3144 of one.)
+ * Exported for unit tests.
+ */
+export function liveRunningShares(
+  runningRows: { id: string; started_at: Date | null; memory_mbytes?: number | null }[],
+  claimedRunIds: Set<string>,
+  opts: { defaultMemoryMb: number; usableMemoryMb: number },
+  now: number = Date.now()
+): number {
+  let shares = 0;
+  for (const row of runningRows) {
+    if (!isLiveRunningRow(row, claimedRunIds, now)) continue;
+    const effMb = Math.min(row.memory_mbytes ?? opts.defaultMemoryMb, opts.usableMemoryMb);
+    shares += 1 / Math.max(1, Math.floor(opts.usableMemoryMb / Math.max(1, effMb)));
+  }
+  return shares;
 }
 
 /**
@@ -624,6 +788,8 @@ export interface RunningRow {
   id: string;
   started_at: Date | null;
   timeout_secs: number | null;
+  /** Requested container memory limit — feeds memory-aware demand. */
+  memory_mbytes?: number | null;
 }
 
 /**
@@ -674,7 +840,7 @@ export function findZombieRuns(
 async function fetchRunningRows(reportedRunning: number): Promise<RunningRow[]> {
   if (reportedRunning <= 0) return [];
   const result = await query<RunningRow>(
-    `SELECT id, started_at, timeout_secs FROM runs WHERE status = 'RUNNING'`
+    `SELECT id, started_at, timeout_secs, memory_mbytes FROM runs WHERE status = 'RUNNING'`
   );
   return result.rows;
 }
@@ -742,33 +908,7 @@ async function reapZombieRuns(client: pg.PoolClient, zombieIds: string[]): Promi
     // corner case isn't worth the drift risk. Revisit if an API-side
     // delivery worker ever exists.
     //
-    // One SELECT for the whole batch, actor/run scoping applied in
-    // memory: this transaction holds locks on the reaped `runs` rows,
-    // so per-run round-trips (N+1) would stretch the lock window for
-    // no benefit — the enabled-webhook set is small by nature.
-    const webhooks = await client.query<{
-      id: string;
-      actor_id: string | null;
-      run_id: string | null;
-    }>(
-      `SELECT id, actor_id, run_id FROM webhooks
-       WHERE is_enabled = true AND $1 = ANY(event_types)`,
-      ['ACTOR.RUN.TIMED_OUT']
-    );
-    for (const run of updated.rows) {
-      const matched = webhooks.rows.filter(
-        (w) =>
-          (w.actor_id === null || w.actor_id === run.actor_id) &&
-          (w.run_id === null || w.run_id === run.id)
-      );
-      for (const webhook of matched) {
-        await client.query(
-          `INSERT INTO webhook_deliveries (id, webhook_id, run_id, event_type, status, attempt_count, max_attempts, next_retry_at)
-           VALUES ($1, $2, $3, 'ACTOR.RUN.TIMED_OUT', 'PENDING', 0, 5, NOW())`,
-          [nanoid(), webhook.id, run.id]
-        );
-      }
-    }
+    await enqueueRunEventWebhooks(client, updated.rows, 'ACTOR.RUN.TIMED_OUT');
     await client.query('COMMIT');
     reaped = updated.rows;
   } catch (err) {
@@ -790,13 +930,63 @@ async function reapZombieRuns(client: pg.PoolClient, zombieIds: string[]): Promi
     `[Scaler] Reaped ${reaped.length} zombie run(s): ${reaped.map((r) => r.id).join(', ')}`
   );
 
-  // Salvage whatever log tail is still in Redis before its 24h TTL takes
-  // the only evidence of what the run was doing when its runner died —
-  // 4-day-old zombies in the 2026-07-13 incident were un-autopsiable.
-  // The owning runner is gone by definition, so nobody else will archive
-  // these. Best-effort and deliberately AFTER the commit: never let
-  // archival break (or roll back) the reap.
-  for (const run of reaped) {
+  await archiveOrphanedRunLogs(reaped);
+}
+
+/**
+ * Enqueue PENDING webhook deliveries for a batch of terminalized runs.
+ * Must be called INSIDE the caller's open transaction, before COMMIT —
+ * losing the delivery row after the terminal UPDATE commits means the
+ * event is never delivered (no later tick re-discovers terminal runs).
+ *
+ * One SELECT for the whole batch, actor/run scoping applied in memory:
+ * the caller's transaction holds locks on the terminalized `runs` rows,
+ * so per-run round-trips (N+1) would stretch the lock window for no
+ * benefit — the enabled-webhook set is small by nature.
+ */
+async function enqueueRunEventWebhooks(
+  client: pg.PoolClient,
+  runs: { id: string; actor_id: string }[],
+  eventType: 'ACTOR.RUN.TIMED_OUT' | 'ACTOR.RUN.FAILED'
+): Promise<void> {
+  if (runs.length === 0) return;
+  const webhooks = await client.query<{
+    id: string;
+    actor_id: string | null;
+    run_id: string | null;
+  }>(
+    `SELECT id, actor_id, run_id FROM webhooks
+     WHERE is_enabled = true AND $1 = ANY(event_types)`,
+    [eventType]
+  );
+  for (const run of runs) {
+    const matched = webhooks.rows.filter(
+      (w) =>
+        (w.actor_id === null || w.actor_id === run.actor_id) &&
+        (w.run_id === null || w.run_id === run.id)
+    );
+    for (const webhook of matched) {
+      await client.query(
+        `INSERT INTO webhook_deliveries (id, webhook_id, run_id, event_type, status, attempt_count, max_attempts, next_retry_at)
+         VALUES ($1, $2, $3, $4, 'PENDING', 0, 5, NOW())`,
+        [nanoid(), webhook.id, run.id, eventType]
+      );
+    }
+  }
+}
+
+/**
+ * Salvage whatever log tail is still in Redis before its 24h TTL takes
+ * the only evidence of what a run was doing when its runner died —
+ * 4-day-old zombies in the 2026-07-13 incident were un-autopsiable.
+ * The owning runner is gone by definition, so nobody else will archive
+ * these. Best-effort and deliberately called AFTER the terminalizing
+ * commit: never let archival break (or roll back) a reap.
+ */
+async function archiveOrphanedRunLogs(
+  runs: { id: string; default_key_value_store_id: string | null }[]
+): Promise<void> {
+  for (const run of runs) {
     if (!run.default_key_value_store_id) continue;
     try {
       const lines = await redis.lrange(`logs:${run.id}`, 0, -1);
@@ -826,8 +1016,85 @@ async function reapZombieRuns(client: pg.PoolClient, zombieIds: string[]): Promi
   }
 }
 
+/**
+ * Immediately terminalize the RUNNING runs of runners that were just
+ * dead-reaped (droplet destroyed). Before this, a dead runner's runs
+ * stayed falsely RUNNING until their own timeout deadline — 1h23m of
+ * known-false state in the 2026-07-16 incident — inflating demand and
+ * delaying downstream retries. Attribution is the claim-time `runner_id`
+ * stamp; runs claimed by pre-stamping runner builds have runner_id NULL
+ * and fall through to the deadline-based zombie reaper as before.
+ *
+ * Safe by construction: this fires only AFTER provider.destroyRunner()
+ * succeeded for that runner id, so the containers demonstrably no longer
+ * exist — unlike the deadline reaper there is no live-owner race to
+ * respect. Same transactional shape as reapZombieRuns (terminal UPDATE +
+ * webhook enqueue commit together; status guard makes it a no-op for
+ * runs whose owner terminalized them first). FAILED (not TIMED-OUT):
+ * the run did not overrun anything — its host died under it.
+ */
+async function failRunsOfDeadRunners(client: pg.PoolClient, runnerIds: string[]): Promise<void> {
+  if (runnerIds.length === 0) return;
+
+  let reaped: { id: string; actor_id: string; default_key_value_store_id: string | null }[] = [];
+  try {
+    await client.query('BEGIN');
+    const updated = await client.query<{
+      id: string;
+      actor_id: string;
+      default_key_value_store_id: string | null;
+    }>(
+      `UPDATE runs
+       SET status = 'FAILED',
+           finished_at = NOW(),
+           modified_at = NOW(),
+           status_message = 'Runner host died (heartbeat lost); run terminated when the scaler destroyed the host'
+       WHERE runner_id = ANY($1) AND status = 'RUNNING'
+       RETURNING id, actor_id, default_key_value_store_id`,
+      [runnerIds]
+    );
+    await enqueueRunEventWebhooks(client, updated.rows, 'ACTOR.RUN.FAILED');
+    await client.query('COMMIT');
+    reaped = updated.rows;
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // Connection-level failure; withAdvisoryLock's release handles it.
+    }
+    // Non-fatal: the runs stay RUNNING and the deadline-based zombie
+    // reaper terminalizes them later, as before this fast path existed.
+    console.error(`[Scaler] Dead-runner run reap failed:`, (err as Error).message);
+    return;
+  }
+  if (reaped.length === 0) return;
+
+  console.log(
+    `[Scaler] Failed ${reaped.length} run(s) of dead runner(s) ${runnerIds.join(', ')}: ${reaped.map((r) => r.id).join(', ')}`
+  );
+  await archiveOrphanedRunLogs(reaped);
+}
+
 async function scaleUp(count: number): Promise<void> {
   console.log(`[Scaler] Scaling UP: creating ${count} runner(s)`);
+
+  // Resolve the droplet's hourly price once per scale-up batch: operator
+  // override first (SCALER_PRICE_HOURLY_OVERRIDE — the pool is single-
+  // sized), then the provider's pricing API (DO /v2/sizes, cached 24h).
+  // Price is captured claim-time-only by design (droplets are destroyed at
+  // scale-down and DO reprices), so a run provisioned without a price is
+  // permanently "not recorded" — but a lookup failure must never block
+  // droplet creation, so null is the degraded mode, not an error.
+  const overrideRaw = Number.parseFloat(process.env.SCALER_PRICE_HOURLY_OVERRIDE ?? '');
+  const priceHourly =
+    Number.isFinite(overrideRaw) && overrideRaw >= 0
+      ? overrideRaw
+      : ((await provider.getHourlyPrice?.(config.runnerSize).catch(() => null)) ?? null);
+  if (priceHourly === null) {
+    console.warn(
+      `[Scaler] No hourly price for size ${config.runnerSize} — runs on the new droplet(s) will be stamped "price not recorded"`
+    );
+  }
 
   for (let i = 0; i < count; i++) {
     try {
@@ -835,7 +1102,7 @@ async function scaleUp(count: number): Promise<void> {
         region: config.runnerRegion,
         size: config.runnerSize,
         sshKeyId: config.sshKeyId,
-        userData: getCloudInitScript(config.runsPerRunner),
+        userData: getCloudInitScript(config.runsPerRunner, priceHourly),
         tags: ['crawlee-runner', 'auto-scaled'],
         runsPerRunner: config.runsPerRunner,
       });
@@ -877,9 +1144,11 @@ async function scaleDown(runners: RunnerInfo[], count: number): Promise<void> {
  * runners are garbage, not capacity, so they should be reaped regardless
  * of whether the queue is full or empty.
  */
-async function reapDeadRunners(runners: RunnerInfo[]): Promise<RunnerInfo[]> {
+async function reapDeadRunners(
+  runners: RunnerInfo[]
+): Promise<{ survivors: RunnerInfo[]; reapedIds: string[] }> {
   const dead = runners.filter((r) => r.status === 'dead');
-  if (dead.length === 0) return runners;
+  if (dead.length === 0) return { survivors: runners, reapedIds: [] };
 
   console.log(`[Scaler] Reaping ${dead.length} dead runner(s)`);
   const reaped = new Set<string>();
@@ -896,7 +1165,12 @@ async function reapDeadRunners(runners: RunnerInfo[]): Promise<RunnerInfo[]> {
       console.error(`[Scaler] Failed to reap ${runner.id}:`, (err as Error).message);
     }
   }
-  return runners.filter((r) => !reaped.has(r.id));
+  return {
+    survivors: runners.filter((r) => !reaped.has(r.id)),
+    // Only SUCCESSFULLY destroyed runners: failRunsOfDeadRunners' safety
+    // argument rests on the containers being provably gone.
+    reapedIds: [...reaped],
+  };
 }
 
 async function scalingLoop(): Promise<void> {
@@ -910,8 +1184,16 @@ async function scalingLoop(): Promise<void> {
       // `runners` is rebound after reaping; `claimedRunIds` stays as-is.
       // Split this way (rather than `let { runners, claimedRunIds } = ...`)
       // so `prefer-const` is satisfied for the immutable half.
-      const runners = await reapDeadRunners(active.runners);
+      const reap = await reapDeadRunners(active.runners);
+      const runners = reap.survivors;
       const currentCount = runners.length;
+
+      // Terminalize the destroyed runners' RUNNING rows NOW (attribution
+      // via the claim-time runner_id stamp) instead of letting them sit
+      // falsely RUNNING until their timeout deadline. Before
+      // fetchRunningRows on purpose: the freshly-failed rows must not
+      // count as running demand or zombie candidates this tick.
+      await failRunsOfDeadRunners(client, reap.reapedIds);
 
       // Zombie-filtered RUNNING count, computed BEFORE the desired calc so
       // both demand and the activity gate share one source of truth. Before
@@ -920,7 +1202,24 @@ async function scalingLoop(): Promise<void> {
       // 10-droplet pool that the idle gate could never drain.
       const runningRows = await fetchRunningRows(stats.running);
       const realRunningCount = countLiveRunning(runningRows, claimedRunIds);
-      const desired = calculateDesiredRunners(stats, currentCount, config, realRunningCount);
+      const liveShares = liveRunningShares(runningRows, claimedRunIds, {
+        defaultMemoryMb: CLOUD_INIT_DEFAULT_MEMORY_MB,
+        usableMemoryMb: Math.max(256, config.runnerMemoryMb - config.memoryReserveMb),
+      });
+      // Idle/booting detection feeds the starvation escalation: activeRuns
+      // is heartbeat-enriched in getActiveRunners; a booting droplet has
+      // no heartbeat yet and keeps the provider default of 0.
+      const hasIdleOrBootingRunner = runners.some(
+        (r) => r.activeRuns === 0 || r.status === 'creating'
+      );
+      const desired = calculateDesiredRunners(
+        stats,
+        currentCount,
+        config,
+        realRunningCount,
+        liveShares,
+        hasIdleOrBootingRunner
+      );
 
       // RUNNING rows without started_at are invisible to the zombie
       // reaper (findZombieRuns can't judge their age and skips them) and
@@ -1048,6 +1347,16 @@ export function loadScalerConfig(): ScalerConfig {
     idleTimeoutSecs: intEnv('SCALER_IDLE_TIMEOUT_SECS', 600),
     pollIntervalSecs: Math.max(1, intEnv('SCALER_POLL_INTERVAL_SECS', 30)),
     runsPerRunner: Math.max(1, intEnv('SCALER_RUNS_PER_RUNNER', 5)),
+    // Memory-aware demand: OS-VISIBLE RAM per VM (what os.totalmem()
+    // reports on the droplet — 3912 on s-2vcpu-4gb, NOT the marketing
+    // 4096) and the per-VM reserve for OS + dockerd + runner. Both must
+    // match the runner side (os.totalmem / RUNNER_MEMORY_RESERVE_MB), or
+    // the scaler sizes a pool the runners' claim gates won't fill and
+    // READY runs sit unclaimed. Re-pin SCALER_RUNNER_MEMORY_MB whenever
+    // SCALER_RUNNER_SIZE changes.
+    runnerMemoryMb: Math.max(512, intEnv('SCALER_RUNNER_MEMORY_MB', 3912)),
+    memoryReserveMb: Math.max(0, intEnv('SCALER_MEMORY_RESERVE_MB', 768)),
+    maxReadyWaitSecs: Math.max(0, intEnv('SCALER_MAX_READY_WAIT_SECS', 300)),
     runnerSize: process.env.SCALER_RUNNER_SIZE || 's-2vcpu-4gb',
     runnerRegion: process.env.SCALER_RUNNER_REGION || 'nyc1',
     sshKeyId: process.env.SCALER_SSH_KEY_ID || '',

@@ -140,6 +140,11 @@ function setupQueryMock(opts: {
       const ids = (params?.[0] as string[]) ?? [];
       return Promise.resolve({ rows: ids.map((id) => ({ id, actor_id: 'actor-1' })) });
     }
+    // Dead-runner fast reap (failRunsOfDeadRunners): no stamped RUNNING
+    // rows in these scenarios unless a test overrides explicitly.
+    if (typeof sql === 'string' && sql.includes("SET status = 'FAILED'")) {
+      return Promise.resolve({ rows: [] });
+    }
     if (typeof sql === 'string' && sql.includes('FROM webhooks')) {
       return Promise.resolve({ rows: opts.webhooks ?? [] });
     }
@@ -366,6 +371,62 @@ describe('scaler loop', () => {
       const persisted = JSON.parse(missJson as string) as Record<string, { c: number; t: number }>;
       expect(persisted['blipped-runner']).toMatchObject({ c: 1 });
       expect(persisted['blipped-runner'].t).toEqual(expect.any(Number));
+    });
+
+    it("immediately fails the RUNNING runs stamped with a dead runner's id", async () => {
+      // 2026-07-16 incident: after the scaler dead-reaped a wedged
+      // droplet at 10:56, its 2 runs stayed falsely RUNNING until their
+      // 7200s deadline at 12:18 — 1h23m of known-false state. Once
+      // destroyRunner succeeds the containers provably no longer exist,
+      // so the runs must be terminalized in the SAME tick, attributed
+      // via the claim-time runner_id stamp.
+      const failedUpdates: unknown[][] = [];
+      queryMock.mockImplementation((sql: string, params?: unknown[]) => {
+        if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') {
+          return Promise.resolve({ rows: [] });
+        }
+        if (typeof sql === 'string' && sql.includes("SET status = 'FAILED'")) {
+          failedUpdates.push(params ?? []);
+          return Promise.resolve({
+            rows: [{ id: 'orphan-1', actor_id: 'actor-1', default_key_value_store_id: null }],
+          });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+      noopList.mockResolvedValue([
+        makeRunner('dead-1', { createdAt: new Date(Date.now() - 300_000) }),
+      ]);
+      redisScan.mockResolvedValue(scanResult([]));
+      seedMisses({ 'dead-1': { c: 2, t: Date.now() - 120_000 } });
+
+      await initScaler();
+
+      expect(noopDestroy).toHaveBeenCalledWith('dead-1');
+      expect(failedUpdates).toHaveLength(1);
+      expect(failedUpdates[0][0]).toEqual(['dead-1']);
+    });
+
+    it('does not fail any runs when the destroy itself failed (containers may still exist)', async () => {
+      // The safety argument for the fast reap is "the droplet is gone".
+      // If provider.destroyRunner threw, the runner might still be alive
+      // and mid-run — terminalizing would race its terminal UPDATE.
+      const failedUpdates: unknown[][] = [];
+      queryMock.mockImplementation((sql: string, params?: unknown[]) => {
+        if (typeof sql === 'string' && sql.includes("SET status = 'FAILED'")) {
+          failedUpdates.push(params ?? []);
+        }
+        return Promise.resolve({ rows: [] });
+      });
+      noopList.mockResolvedValue([
+        makeRunner('dead-1', { createdAt: new Date(Date.now() - 300_000) }),
+      ]);
+      noopDestroy.mockRejectedValue(new Error('DO API 500'));
+      redisScan.mockResolvedValue(scanResult([]));
+      seedMisses({ 'dead-1': { c: 2, t: Date.now() - 120_000 } });
+
+      await initScaler();
+
+      expect(failedUpdates).toHaveLength(0);
     });
 
     it('does not reap runners that are still booting (<3min old, no heartbeat)', async () => {

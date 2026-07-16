@@ -16,6 +16,7 @@ import { describe, it, expect } from 'vitest';
 import {
   calculateDesiredRunners,
   countLiveRunning,
+  liveRunningShares,
   evaluateDeadCandidates,
   findZombieRuns,
   PICKUP_GRACE_MS,
@@ -33,6 +34,9 @@ function makeConfig(overrides: Partial<ScalerConfig> = {}): ScalerConfig {
     idleTimeoutSecs: 600,
     pollIntervalSecs: 30,
     runsPerRunner: 2,
+    runnerMemoryMb: 4096,
+    memoryReserveMb: 768,
+    maxReadyWaitSecs: 300,
     runnerSize: 'unused',
     runnerRegion: 'unused',
     sshKeyId: 'unused',
@@ -277,6 +281,139 @@ describe('zombie-aware demand (liveRunningCount)', () => {
     const cfg = makeConfig({ minRunners: 1 });
     expect(calculateDesiredRunners(stats(0, 5), 5, cfg, NaN)).toBe(1);
     expect(calculateDesiredRunners(stats(0, 5), 5, cfg, -2)).toBe(1);
+  });
+});
+
+describe('memory-aware demand (droplet shares)', () => {
+  // 2026-07-16 incident: headcount packing (runsPerRunner=2) placed
+  // 2x2048MB container limits — or one 4096MB limit — on droplets with
+  // 3912MB physical RAM. Host OOM wedged two droplets (dead heartbeats,
+  // 3 zombie runs) and container-OOM-killed 4 runs. Demand must cover
+  // the memory dimension in droplet-SHARES (integer bin packing): with
+  // usable = 3912-768 = 3144MB, floor(3144/2048)=1 makes a 2048MB run
+  // cost a WHOLE droplet — an MB sum (ceil(sumMB/usable)) credited 1.53
+  // of them per droplet and left READY runs unclaimed at desired==current.
+  const cfg = makeConfig({ minRunners: 0, scaleUpThreshold: 0, runnerMemoryMb: 3912 });
+  // share(2048MB) = 1/floor(3144/2048) = 1; share(512MB) = 1/6
+
+  it('provisions one droplet per single-tenant run (2048MB class)', () => {
+    // 5 x 2048MB runs -> 5 shares -> 5 VMs, though headcount says 3.
+    const s: QueueStats = { ready: 5, running: 0, total: 5, readyRunnerShares: 5 };
+    expect(calculateDesiredRunners(s, 0, cfg)).toBe(5);
+  });
+
+  it('keeps headcount demand when small runs pack densely', () => {
+    // 4 x 512MB runs -> 4/6 shares -> memory says 1 VM, headcount says 2.
+    const s: QueueStats = { ready: 4, running: 0, total: 4, readyRunnerShares: 4 / 6 };
+    expect(calculateDesiredRunners(s, 0, cfg)).toBe(2);
+  });
+
+  it('does not let float noise round a full pack up an extra droplet', () => {
+    // 6 x 1/6 shares can sum to 1.0000000000000002 in FP.
+    const s: QueueStats = {
+      ready: 6,
+      running: 0,
+      total: 6,
+      readyRunnerShares: 1 / 6 + 1 / 6 + 1 / 6 + 1 / 6 + 1 / 6 + 1 / 6,
+    };
+    expect(calculateDesiredRunners(s, 0, makeConfig({ ...cfg, runsPerRunner: 6 }))).toBe(1);
+  });
+
+  it('counts zombie-filtered running shares, not raw running shares', () => {
+    // Raw stats say 4 RUNNING x 2048MB (4 shares), but only 1 is
+    // live-claimed: zombies' limits are not real demand.
+    const s: QueueStats = { ready: 0, running: 4, total: 4, runningRunnerShares: 4 };
+    expect(calculateDesiredRunners(s, 1, cfg, 1, 1)).toBe(1);
+  });
+
+  it('falls back to count-only math when share fields are absent (back-compat)', () => {
+    expect(calculateDesiredRunners(stats(4, 0), 0, cfg)).toBe(2);
+  });
+
+  it('clamps share demand to maxRunners', () => {
+    const s: QueueStats = { ready: 40, running: 0, total: 40, readyRunnerShares: 40 };
+    expect(calculateDesiredRunners(s, 0, makeConfig({ maxRunners: 5, scaleUpThreshold: 0 }))).toBe(
+      5
+    );
+  });
+});
+
+describe('starvation escalation (oldestReadyAgeMs)', () => {
+  // 2026-07-16: 3 READY runs at 00:01 UTC sat 46-64 min behind a full
+  // pool because ready(3) <= threshold(5) froze scale-up until the 01:00
+  // batch tripped it. Once the oldest ELIGIBLE READY run has waited past
+  // maxReadyWaitSecs, pressure is real no matter how small the batch —
+  // and when desired == current (packing residue: a run no busy droplet
+  // can fit), starvation must ADD a droplet, not merely unfreeze.
+  const cfg = makeConfig({ minRunners: 1, scaleUpThreshold: 5, maxReadyWaitSecs: 300 });
+
+  it('still freezes small batches that have not waited long', () => {
+    const s: QueueStats = { ready: 3, running: 2, total: 5, oldestReadyAgeMs: 60_000 };
+    expect(calculateDesiredRunners(s, 1, cfg)).toBe(1);
+  });
+
+  it('bypasses the freeze once the oldest READY run exceeds maxReadyWaitSecs', () => {
+    const s: QueueStats = { ready: 3, running: 2, total: 5, oldestReadyAgeMs: 301_000 };
+    expect(calculateDesiredRunners(s, 1, cfg)).toBe(3); // ceil(5/2)
+  });
+
+  it('adds one droplet when starving at desired == current (unfittable-run residue)', () => {
+    // Share math honestly says capacity suffices (desired == current == 2),
+    // but the starved run fits no busy droplet's headroom and needs an
+    // IDLE claimant — force one extra droplet.
+    const s: QueueStats = { ready: 1, running: 3, total: 4, oldestReadyAgeMs: 301_000 };
+    expect(calculateDesiredRunners(s, 2, makeConfig({ ...cfg, scaleUpThreshold: 0 }))).toBe(3);
+  });
+
+  it('suppresses the escalation while an idle or booting runner exists', () => {
+    // The rescue droplet boots for ~5min with no heartbeat (activeRuns 0);
+    // without this gate, starvation would add one droplet per tick.
+    const s: QueueStats = { ready: 1, running: 3, total: 4, oldestReadyAgeMs: 301_000 };
+    expect(
+      calculateDesiredRunners(
+        s,
+        2,
+        makeConfig({ ...cfg, scaleUpThreshold: 0 }),
+        undefined,
+        undefined,
+        true
+      )
+    ).toBe(2);
+  });
+
+  it('never escalates past maxRunners', () => {
+    const s: QueueStats = { ready: 1, running: 19, total: 20, oldestReadyAgeMs: 999_000 };
+    expect(calculateDesiredRunners(s, 10, makeConfig({ ...cfg, maxRunners: 10 }))).toBe(10);
+  });
+
+  it('never escalates on running-only demand (ready=0 has nothing to starve)', () => {
+    const s: QueueStats = { ready: 0, running: 2, total: 2, oldestReadyAgeMs: 999_000 };
+    expect(calculateDesiredRunners(s, 1, cfg)).toBe(1);
+  });
+});
+
+describe('liveRunningShares', () => {
+  const opts = { defaultMemoryMb: 2048, usableMemoryMb: 3144 };
+  const old = new Date(Date.now() - PICKUP_GRACE_MS - 60_000);
+  const fresh = new Date();
+
+  it('charges claimed rows their integer-packing share (2048MB -> whole droplet)', () => {
+    const rows = [
+      { id: 'a', started_at: old, memory_mbytes: 2048 }, // floor(3144/2048)=1 -> share 1
+      { id: 'b', started_at: old, memory_mbytes: 4096 }, // clamped to 3144 -> share 1
+      { id: 'c', started_at: old, memory_mbytes: 512 }, // floor(3144/512)=6 -> share 1/6
+    ];
+    expect(liveRunningShares(rows, new Set(['a', 'b', 'c']), opts)).toBeCloseTo(2 + 1 / 6, 10);
+  });
+
+  it('excludes zombie rows (unclaimed, past pickup grace)', () => {
+    const rows = [{ id: 'z', started_at: old, memory_mbytes: 2048 }];
+    expect(liveRunningShares(rows, new Set(), opts)).toBe(0);
+  });
+
+  it('counts fresh pickups and defaults NULL memory', () => {
+    const rows = [{ id: 'f', started_at: fresh, memory_mbytes: null }];
+    expect(liveRunningShares(rows, new Set(), opts)).toBe(1); // 2048 default -> share 1
   });
 });
 

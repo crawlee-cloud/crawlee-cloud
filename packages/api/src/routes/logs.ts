@@ -46,6 +46,11 @@ export const logsRoutes: FastifyPluginAsync = async (fastify) => {
     // Store in Redis list (capped at 1000 entries)
     await redis.rpush(`logs:${runId}`, logEntry);
     await redis.ltrim(`logs:${runId}`, -1000, -1);
+    // Same invariant as the runner-side writers: EVERY write refreshes the
+    // 24h TTL, because the FIRST write of a run's log key must set it —
+    // for a never-claimed run this POST can be that first write, and
+    // without the expire the key is immortal.
+    await redis.expire(`logs:${runId}`, 86400);
 
     // Publish to subscribers
     await redis.publish(`logs:${runId}`, logEntry);
@@ -190,5 +195,6 @@ export async function broadcastLog(runId: string, message: string, level = 'INFO
 
   await redis.rpush(`logs:${runId}`, logEntry);
   await redis.ltrim(`logs:${runId}`, -1000, -1);
+  await redis.expire(`logs:${runId}`, 86400); // see POST handler: first write must set the TTL
   await redis.publish(`logs:${runId}`, logEntry);
 }

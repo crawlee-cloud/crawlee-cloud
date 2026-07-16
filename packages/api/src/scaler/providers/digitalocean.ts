@@ -95,6 +95,32 @@ export class DigitalOceanProvider implements RunnerProvider {
     };
   }
 
+  // size slug → price_hourly, refreshed at most daily. DO reprices rarely;
+  // the cache keeps scale-up bursts from hammering /v2/sizes.
+  private sizePriceCache: { fetchedAt: number; prices: Map<string, number> } | null = null;
+
+  async getHourlyPrice(size: string): Promise<number | null> {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    try {
+      if (!this.sizePriceCache || Date.now() - this.sizePriceCache.fetchedAt > DAY_MS) {
+        const data = await this.doRequest<{ sizes: { slug: string; price_hourly: number }[] }>(
+          'GET',
+          '/sizes?per_page=200'
+        );
+        this.sizePriceCache = {
+          fetchedAt: Date.now(),
+          prices: new Map(data.sizes.map((s) => [s.slug, s.price_hourly])),
+        };
+      }
+      return this.sizePriceCache.prices.get(size) ?? null;
+    } catch (err) {
+      // Never let a pricing lookup block droplet creation — runs from this
+      // droplet are stamped "price not recorded" instead.
+      console.warn(`[Scaler/DO] Price lookup for ${size} failed:`, (err as Error).message);
+      return null;
+    }
+  }
+
   async destroyRunner(id: string): Promise<void> {
     console.log(`[Scaler/DO] Destroying Droplet ${id}`);
     // Tolerate 404 — the Droplet may have been deleted out-of-band (manual

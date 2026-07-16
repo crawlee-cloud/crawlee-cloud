@@ -75,6 +75,16 @@ export interface ScalerConfig {
   pollIntervalSecs: number;
   /** Max concurrent runs per runner */
   runsPerRunner: number;
+  /** Physical RAM of one runner VM in MB (memory-aware demand sizing) */
+  runnerMemoryMb: number;
+  /** RAM reserved per VM for OS + dockerd + the runner process, in MB */
+  memoryReserveMb: number;
+  /**
+   * Bypass scale-up hysteresis once the oldest READY run has waited this
+   * long — small batches (ready <= scaleUpThreshold) must not starve
+   * behind a full pool indefinitely.
+   */
+  maxReadyWaitSecs: number;
   /** Runner machine size */
   runnerSize: string;
   /** Runner region */
@@ -101,4 +111,13 @@ export interface RunnerProvider {
 
   /** List all runner VMs managed by this provider. */
   listRunners(): Promise<RunnerInfo[]>;
+
+  /**
+   * Hourly USD price for a VM size slug, or null when unknown. Optional:
+   * only cloud providers with a pricing API implement it. Used for
+   * claim-time cost stamping (RUNNER_PRICE_HOURLY in cloud-init) — must
+   * never throw; a lookup failure degrades to null ("price not recorded"),
+   * never blocks provisioning.
+   */
+  getHourlyPrice?(size: string): Promise<number | null>;
 }
