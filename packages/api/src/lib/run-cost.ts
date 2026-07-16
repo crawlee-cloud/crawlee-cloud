@@ -43,8 +43,10 @@ export function computeOverlapCost(
 
   let cost = 0;
   for (let i = 0; i < sorted.length - 1; i++) {
-    const sliceStart = sorted[i];
-    const sliceEnd = sorted[i + 1];
+    // The ?? 0 fallbacks are unreachable (i is bounded by length - 1) but
+    // satisfy noUncheckedIndexedAccess without a non-null assertion.
+    const sliceStart = sorted[i] ?? 0;
+    const sliceEnd = sorted[i + 1] ?? 0;
     // Concurrency is constant within a slice by construction — sample the
     // midpoint. Half-open [start, end) semantics: a sibling that ends
     // exactly at the midpoint boundary is handled by strict comparison.
