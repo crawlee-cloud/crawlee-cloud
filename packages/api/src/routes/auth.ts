@@ -15,6 +15,7 @@ import { nanoid } from 'nanoid';
 import { pool } from '../db/index.js';
 import { verifyPassword, createToken, generateApiKey, hashApiKey } from '../auth/index.js';
 import { authenticate } from '../auth/middleware.js';
+import { invalidateApiKey } from '../auth/api-key-cache.js';
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -181,6 +182,10 @@ export async function authRoutes(app: FastifyInstance) {
       if (result.rows.length === 0) {
         return reply.status(404).send({ error: { message: 'API key not found' } });
       }
+
+      // Evict from this replica's auth cache immediately; other replicas
+      // converge within API_KEY_CACHE_TTL_SECS (see api-key-cache.ts).
+      invalidateApiKey(keyId);
 
       return reply.send({ data: { message: 'API key revoked' } });
     });

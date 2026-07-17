@@ -5,6 +5,7 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { pool } from '../db/index.js';
 import { extractToken, verifyToken, verifyApiKey } from './index.js';
+import { getCachedApiKey, cacheApiKey, shouldTouchLastUsed } from './api-key-cache.js';
 
 export interface AuthenticatedUser {
   id: string;
@@ -61,8 +62,12 @@ export async function authenticate(request: FastifyRequest, reply: FastifyReply)
         role: 'user',
       };
 
-      // Update last used timestamp
-      await pool.query('UPDATE api_keys SET last_used_at = NOW() WHERE id = $1', [apiKey.id]);
+      // last_used_at is bookkeeping, not security — write it on every
+      // fresh verification but at most once per cache-TTL window on the
+      // warm path, so ingest traffic doesn't pay a DB write per request.
+      if (!apiKey.cached || shouldTouchLastUsed(token)) {
+        await pool.query('UPDATE api_keys SET last_used_at = NOW() WHERE id = $1', [apiKey.id]);
+      }
       return;
     }
   }
@@ -115,8 +120,22 @@ export async function requireAdmin(request: FastifyRequest, reply: FastifyReply)
 
 /**
  * Validate an API key against the database.
+ *
+ * The bcrypt sweep below costs ~69ms of main-thread CPU per active key
+ * row (bcryptjs cost 10), which uncached capped the api at ~7 ingest
+ * req/s per instance and caused the 2026-07-17 scrape-wave CPU
+ * saturation. The cache (see api-key-cache.ts) makes the warm path
+ * bcrypt-free; `cached` tells the caller whether this was a fresh
+ * verification (which should also stamp last_used_at).
  */
-async function validateApiKey(key: string): Promise<{ id: string; user_id: string } | null> {
+async function validateApiKey(
+  key: string
+): Promise<{ id: string; user_id: string; cached: boolean } | null> {
+  const cached = getCachedApiKey(key);
+  if (cached) {
+    return { id: cached.id, user_id: cached.user_id, cached: true };
+  }
+
   // Get all API keys and check against hash
   const result = await pool.query<{ id: string; key_hash: string; user_id: string }>(
     'SELECT id, key_hash, user_id FROM api_keys WHERE is_active = true'
@@ -125,7 +144,8 @@ async function validateApiKey(key: string): Promise<{ id: string; user_id: strin
   for (const row of result.rows) {
     const isValid = await verifyApiKey(key, row.key_hash);
     if (isValid) {
-      return { id: row.id, user_id: row.user_id };
+      cacheApiKey(key, row.id, row.user_id);
+      return { id: row.id, user_id: row.user_id, cached: false };
     }
   }
 
