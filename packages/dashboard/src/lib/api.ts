@@ -466,8 +466,12 @@ export async function getKVRecordPresignedUrl(
 async function fetchApi<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const token = getToken();
 
+  // Only claim a JSON body when we actually send one — Fastify rejects
+  // Content-Type: application/json with an empty body
+  // (FST_ERR_CTP_EMPTY_JSON_BODY), which broke every body-less DELETE
+  // (e.g. revoking an API key) with "Body cannot be empty".
   const headers: HeadersInit = {
-    'Content-Type': 'application/json',
+    ...(options.body != null ? { 'Content-Type': 'application/json' } : {}),
     ...options.headers,
   };
 

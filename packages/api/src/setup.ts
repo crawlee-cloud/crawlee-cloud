@@ -5,7 +5,13 @@
 
 import { nanoid } from 'nanoid';
 import { pool } from './db/index.js';
-import { hashPassword, generateApiKey, hashApiKey, sha256ApiKey } from './auth/index.js';
+import {
+  hashPassword,
+  generateApiKey,
+  hashApiKey,
+  sha256ApiKey,
+  verifyApiKey,
+} from './auth/index.js';
 import { config } from './config.js';
 import { redis } from './storage/redis.js';
 
@@ -63,12 +69,18 @@ export async function setupAdminUser(): Promise<void> {
 /**
  * Create a dedicated API key for the runner service.
  * The raw key is stored in Redis so the runner can fetch it on startup.
+ * Exported for tests — production callers go through setupAdminUser().
  */
-async function setupRunnerApiKey(adminUserId: string): Promise<void> {
+export async function setupRunnerApiKey(adminUserId: string): Promise<void> {
   try {
     // Check if runner key already exists
-    const existing = await pool.query<{ id: string; user_id: string }>(
-      'SELECT id, user_id FROM api_keys WHERE name = $1 AND is_active = true',
+    const existing = await pool.query<{
+      id: string;
+      user_id: string;
+      key_hash: string;
+      key_sha256: string | null;
+    }>(
+      'SELECT id, user_id, key_hash, key_sha256 FROM api_keys WHERE name = $1 AND is_active = true',
       [RUNNER_API_KEY_NAME]
     );
 
@@ -76,13 +88,28 @@ async function setupRunnerApiKey(adminUserId: string): Promise<void> {
     const existingKey = await redis.get(RUNNER_API_KEY_REDIS_KEY);
 
     // Reuse only when the key exists in BOTH stores AND is bound to the
-    // current admin. If the admin user changed since last setup, the key
-    // would still authenticate, but every storage route scopes by user_id —
-    // so actor runs would 404 on their own datasets/KV/queues.
+    // current admin AND the Redis raw key actually verifies against the
+    // DB row. The last check is load-bearing: Redis and Postgres can
+    // diverge (2026-07-17 prod outage — Redis held a raw key whose hash
+    // was not in the DB, so every actor container 401'd until manual
+    // intervention; presence-only reuse kept "healing" the wrong state
+    // on every boot). Prefer the cheap sha256 comparison when the column
+    // is populated; fall back to one bcrypt compare for legacy rows.
+    // If the admin user changed since last setup, the key would still
+    // authenticate, but every storage route scopes by user_id — so actor
+    // runs would 404 on their own datasets/KV/queues.
     const existingRow = existing.rows[0];
     if (existingRow && existingKey && existingRow.user_id === adminUserId) {
-      console.log('[Setup] Runner API key already exists');
-      return;
+      const rawMatchesRow = existingRow.key_sha256
+        ? sha256ApiKey(existingKey) === existingRow.key_sha256
+        : await verifyApiKey(existingKey, existingRow.key_hash);
+      if (rawMatchesRow) {
+        console.log('[Setup] Runner API key already exists');
+        return;
+      }
+      console.warn(
+        '[Setup] Runner API key mismatch: Redis raw key does not verify against the DB row — regenerating'
+      );
     }
 
     // Deactivate any old runner keys (any user, including stale bindings)
