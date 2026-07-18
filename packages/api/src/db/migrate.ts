@@ -399,6 +399,17 @@ CREATE INDEX IF NOT EXISTS idx_runs_status_active
 
 ALTER TABLE users  ADD COLUMN IF NOT EXISTS proxy_password_encrypted TEXT;
 ALTER TABLE actors ADD COLUMN IF NOT EXISTS proxy_password_encrypted TEXT;
+
+-- SHA-256 of the raw API key, for O(1) hot-path lookup. API keys are
+-- 256-bit random tokens (not passwords), so an indexed strong hash is a
+-- safe primary lookup; the bcrypt key_hash stays as the source of truth
+-- and for rows created before this column existed (backfilled lazily on
+-- their next successful bcrypt verification). Without this, every
+-- request with an unknown key forces an O(active-keys) bcrypt sweep —
+-- a CPU-exhaustion vector (PR #59 review).
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS key_sha256 TEXT;
+CREATE INDEX IF NOT EXISTS idx_api_keys_sha256
+  ON api_keys(key_sha256) WHERE is_active = TRUE;
 `;
 
 export async function migrate(): Promise<void> {

@@ -1,6 +1,6 @@
 /**
  * Authentication module for Crawlee Platform API.
- * 
+ *
  * Provides:
  * - API key generation and validation
  * - JWT token creation and verification
@@ -9,6 +9,7 @@
 
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import { createHash } from 'node:crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config.js';
 
@@ -54,6 +55,17 @@ export async function verifyApiKey(key: string, hash: string): Promise<boolean> 
 }
 
 /**
+ * SHA-256 of a raw API key, stored alongside the bcrypt hash for O(1)
+ * indexed lookup on the hot path. Safe as a lookup key because API keys
+ * are high-entropy random tokens (128 random bits), not user-chosen
+ * passwords — offline preimage search is infeasible, which is the only
+ * threat bcrypt's work factor defends against.
+ */
+export function sha256ApiKey(key: string): string {
+  return createHash('sha256').update(key).digest('hex');
+}
+
+/**
  * Hash a password.
  */
 export async function hashPassword(password: string): Promise<string> {
@@ -90,12 +102,12 @@ export function verifyToken(token: string): JWTPayload | null {
  */
 export function extractToken(authHeader: string | undefined): string | null {
   if (!authHeader) return null;
-  
+
   // Support "Bearer <token>" format
   if (authHeader.startsWith('Bearer ')) {
     return authHeader.slice(7);
   }
-  
+
   // Support raw token
   return authHeader;
 }

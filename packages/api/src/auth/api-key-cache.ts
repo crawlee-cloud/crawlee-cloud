@@ -85,13 +85,16 @@ export function getCachedApiKey(token: string): { id: string; user_id: string } 
 export function cacheApiKey(token: string, apiKeyId: string, userId: string): void {
   if (ttlMs === 0) return;
 
-  if (entries.size >= MAX_ENTRIES) {
+  const key = fingerprint(token);
+  // Refreshing an existing entry doesn't grow the map — only evict when
+  // a genuinely new entry would push past the cap.
+  if (entries.size >= MAX_ENTRIES && !entries.has(key)) {
     const oldest = entries.keys().next().value;
     if (oldest !== undefined) entries.delete(oldest);
   }
 
   const now = Date.now();
-  entries.set(fingerprint(token), {
+  entries.set(key, {
     apiKeyId,
     userId,
     verifiedAt: now,

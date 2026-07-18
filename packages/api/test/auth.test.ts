@@ -20,6 +20,7 @@ vi.mock('../src/auth/index.js', () => ({
   createToken: vi.fn().mockReturnValue('mock_jwt_token'),
   generateApiKey: vi.fn().mockReturnValue('apify_api_key_1234567890'),
   hashApiKey: vi.fn().mockResolvedValue('hashed_api_key'),
+  sha256ApiKey: vi.fn().mockReturnValue('f'.repeat(64)),
 }));
 
 vi.mock('../src/auth/middleware.js', () => ({

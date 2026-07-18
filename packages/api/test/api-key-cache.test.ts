@@ -126,11 +126,16 @@ describe('api-key auth cache', () => {
   });
 
   it('re-verifies after the TTL expires', async () => {
-    configureApiKeyCache({ ttlSecs: 0.05 });
+    // Real sleep, deliberately NOT vi.useFakeTimers(): the cold path awaits
+    // a real bcryptjs compare, which slices its async work through
+    // setImmediate/setTimeout — faking those timers deadlocks the await.
+    // The 10x margin (20ms TTL vs 200ms sleep) keeps this stable on slow
+    // CI runners instead.
+    configureApiKeyCache({ ttlSecs: 0.02 });
     await authenticate(makeRequest(VALID_KEY), makeReply());
     vi.mocked(verifyApiKey).mockClear();
 
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 200));
 
     const request = makeRequest(VALID_KEY);
     await authenticate(request, makeReply());
@@ -176,6 +181,42 @@ describe('api-key auth cache', () => {
 
     expect(selectCalls()).toHaveLength(2);
     expect(touchCalls()).toHaveLength(2);
+  });
+
+  it('sha256-indexed lookup authenticates with zero bcrypt compares', async () => {
+    mockPoolQuery.mockImplementation(async (sql: string) => {
+      if (sql.startsWith('SELECT id, user_id FROM api_keys WHERE key_sha256')) {
+        return { rows: [{ id: 'key-1', user_id: 'user-1' }] };
+      }
+      return { rows: [] };
+    });
+
+    const request = makeRequest(VALID_KEY);
+    await authenticate(request, makeReply());
+
+    expect(request.user).toEqual({ id: 'user-1', email: '', role: 'user' });
+    expect(vi.mocked(verifyApiKey)).not.toHaveBeenCalled();
+    expect(selectCalls()).toHaveLength(0); // legacy sweep never reached
+  });
+
+  it('unknown keys are rejected with zero bcrypt compares once no legacy rows remain', async () => {
+    mockPoolQuery.mockImplementation(async () => ({ rows: [] }));
+
+    const reply = makeReply();
+    await authenticate(makeRequest(WRONG_KEY), reply);
+
+    expect(reply.statusCode).toBe(401);
+    expect(vi.mocked(verifyApiKey)).not.toHaveBeenCalled();
+  });
+
+  it('legacy rows without key_sha256 are backfilled on successful bcrypt verify', async () => {
+    await authenticate(makeRequest(VALID_KEY), makeReply());
+
+    const backfills = mockPoolQuery.mock.calls.filter(
+      (c) => typeof c[0] === 'string' && c[0].startsWith('UPDATE api_keys SET key_sha256')
+    );
+    expect(backfills).toHaveLength(1);
+    expect(backfills[0][1]).toEqual([expect.stringMatching(/^[0-9a-f]{64}$/), 'key-1']);
   });
 
   it('JWT authentication path is unaffected by the cache', async () => {

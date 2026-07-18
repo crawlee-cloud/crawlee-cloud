@@ -5,7 +5,7 @@
 
 import { nanoid } from 'nanoid';
 import { pool } from './db/index.js';
-import { hashPassword, generateApiKey, hashApiKey } from './auth/index.js';
+import { hashPassword, generateApiKey, hashApiKey, sha256ApiKey } from './auth/index.js';
 import { config } from './config.js';
 import { redis } from './storage/redis.js';
 
@@ -103,9 +103,16 @@ async function setupRunnerApiKey(adminUserId: string): Promise<void> {
     const keyHash = await hashApiKey(rawKey);
 
     await pool.query(
-      `INSERT INTO api_keys (id, user_id, name, key_hash, key_preview, created_at, is_active)
-       VALUES ($1, $2, $3, $4, $5, NOW(), true)`,
-      [keyId, adminUserId, RUNNER_API_KEY_NAME, keyHash, rawKey.slice(0, 12) + '...']
+      `INSERT INTO api_keys (id, user_id, name, key_hash, key_sha256, key_preview, created_at, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW(), true)`,
+      [
+        keyId,
+        adminUserId,
+        RUNNER_API_KEY_NAME,
+        keyHash,
+        sha256ApiKey(rawKey),
+        rawKey.slice(0, 12) + '...',
+      ]
     );
 
     // Store raw key in Redis (no expiry - persists until regenerated)

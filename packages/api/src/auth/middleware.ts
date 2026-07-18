@@ -4,7 +4,7 @@
 
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { pool } from '../db/index.js';
-import { extractToken, verifyToken, verifyApiKey } from './index.js';
+import { extractToken, verifyToken, verifyApiKey, sha256ApiKey } from './index.js';
 import { getCachedApiKey, cacheApiKey, shouldTouchLastUsed } from './api-key-cache.js';
 
 export interface AuthenticatedUser {
@@ -65,8 +65,13 @@ export async function authenticate(request: FastifyRequest, reply: FastifyReply)
       // last_used_at is bookkeeping, not security — write it on every
       // fresh verification but at most once per cache-TTL window on the
       // warm path, so ingest traffic doesn't pay a DB write per request.
+      // A failed write must not fail an already-authenticated request.
       if (!apiKey.cached || shouldTouchLastUsed(token)) {
-        await pool.query('UPDATE api_keys SET last_used_at = NOW() WHERE id = $1', [apiKey.id]);
+        try {
+          await pool.query('UPDATE api_keys SET last_used_at = NOW() WHERE id = $1', [apiKey.id]);
+        } catch (err) {
+          request.log?.error({ err, apiKeyId: apiKey.id }, 'Failed to update last_used_at');
+        }
       }
       return;
     }
@@ -136,14 +141,33 @@ async function validateApiKey(
     return { id: cached.id, user_id: cached.user_id, cached: true };
   }
 
-  // Get all API keys and check against hash
+  // O(1) indexed lookup by SHA-256 fingerprint — the normal cold path.
+  // A sha match is proof of key knowledge (see sha256ApiKey), so no
+  // bcrypt work is needed, and unknown/attacker keys are rejected in
+  // one index probe instead of an O(active-keys) bcrypt sweep.
+  const sha = sha256ApiKey(key);
+  const bySha = await pool.query<{ id: string; user_id: string }>(
+    'SELECT id, user_id FROM api_keys WHERE key_sha256 = $1 AND is_active = true',
+    [sha]
+  );
+  const shaRow = bySha.rows[0];
+  if (shaRow) {
+    cacheApiKey(key, shaRow.id, shaRow.user_id);
+    return { id: shaRow.id, user_id: shaRow.user_id, cached: false };
+  }
+
+  // Legacy rows created before key_sha256 existed: bcrypt sweep, then
+  // backfill the fingerprint so each legacy key pays this exactly once.
+  // Once every active row is backfilled this query returns nothing and
+  // invalid keys cost zero bcrypt compares.
   const result = await pool.query<{ id: string; key_hash: string; user_id: string }>(
-    'SELECT id, key_hash, user_id FROM api_keys WHERE is_active = true'
+    'SELECT id, key_hash, user_id FROM api_keys WHERE is_active = true AND key_sha256 IS NULL'
   );
 
   for (const row of result.rows) {
     const isValid = await verifyApiKey(key, row.key_hash);
     if (isValid) {
+      await pool.query('UPDATE api_keys SET key_sha256 = $1 WHERE id = $2', [sha, row.id]);
       cacheApiKey(key, row.id, row.user_id);
       return { id: row.id, user_id: row.user_id, cached: false };
     }

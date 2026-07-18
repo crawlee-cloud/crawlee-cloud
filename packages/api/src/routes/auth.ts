@@ -13,7 +13,13 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { nanoid } from 'nanoid';
 import { pool } from '../db/index.js';
-import { verifyPassword, createToken, generateApiKey, hashApiKey } from '../auth/index.js';
+import {
+  verifyPassword,
+  createToken,
+  generateApiKey,
+  hashApiKey,
+  sha256ApiKey,
+} from '../auth/index.js';
 import { authenticate } from '../auth/middleware.js';
 import { invalidateApiKey } from '../auth/api-key-cache.js';
 
@@ -112,9 +118,9 @@ export async function authRoutes(app: FastifyInstance) {
       const keyHash = await hashApiKey(rawKey);
 
       await pool.query(
-        `INSERT INTO api_keys (id, user_id, name, key_hash, key_preview, created_at, is_active)
-         VALUES ($1, $2, $3, $4, $5, NOW(), true)`,
-        [keyId, user.id, body.name, keyHash, rawKey.slice(0, 12) + '...']
+        `INSERT INTO api_keys (id, user_id, name, key_hash, key_sha256, key_preview, created_at, is_active)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), true)`,
+        [keyId, user.id, body.name, keyHash, sha256ApiKey(rawKey), rawKey.slice(0, 12) + '...']
       );
 
       // Return the raw key only once - it can't be retrieved again
