@@ -442,7 +442,15 @@ export default function RunsPage() {
                       )}
                     </td>
                     <td className="px-5 py-3 font-mono text-[11px] text-muted-foreground tnum text-right">
-                      {timeAgo(run.createdAt)}
+                      {/* startedAt is stamped at claim (queue wait excluded);
+                          a READY run has no start yet — show queued-since
+                          off createdAt instead of mislabeling creation as
+                          the start. */}
+                      {run.startedAt && run.status !== 'READY' ? (
+                        timeAgo(run.startedAt)
+                      ) : (
+                        <span title={`created ${timeAgo(run.createdAt)}`}>queued</span>
+                      )}
                     </td>
                   </tr>
                 );

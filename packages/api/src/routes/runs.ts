@@ -538,8 +538,11 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
         `
       WITH updated AS (
         UPDATE runs
-        SET status = 'READY', finished_at = NULL, exit_code = NULL,
-            status_message = NULL, modified_at = NOW()
+        -- started_at is cleared too: it belongs to the PREVIOUS attempt.
+        -- Leaving it made re-queued runs display a stale "started" while
+        -- READY; the claim re-stamps it when a runner picks the run up.
+        SET status = 'READY', started_at = NULL, finished_at = NULL,
+            exit_code = NULL, status_message = NULL, modified_at = NOW()
         WHERE id = $1 AND status IN ('FAILED', 'ABORTED', 'TIMED-OUT') AND user_id = $2
         RETURNING *
       )

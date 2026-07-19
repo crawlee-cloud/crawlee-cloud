@@ -418,6 +418,10 @@ describe('Actor Runs Routes', () => {
       // error message while it waits to run.
       expect(sql).toContain('exit_code = NULL');
       expect(sql).toContain('status_message = NULL');
+      // ...nor the failed attempt's start time: leaving started_at made
+      // re-queued runs display a stale "started" while READY. The claim
+      // re-stamps it (queue.ts SET started_at = NOW()).
+      expect(sql).toContain('started_at = NULL');
     });
 
     it('publishes run:new so runners pick the resurrected run up immediately', async () => {
