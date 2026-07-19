@@ -37,8 +37,8 @@ A purpose-built operator console — monitor runs in real time, debug webhook de
 <p align="center"><em>Webhooks — fire test events per subscription, inline delivery log with HTTP code + body, last-seen status</em></p>
 </td>
 <td width="50%">
-<img src="./docs/screenshots/06-run-detail.png" width="100%" alt="Run detail — logs, runtime, storage IDs" />
-<p align="center"><em>Run detail — live logs, container runtime, dataset / KV / queue IDs, status timeline</em></p>
+<img src="./docs/screenshots/06-run-detail.png" width="100%" alt="Run detail — cost analysis, logs, runtime, storage IDs" />
+<p align="center"><em>Run detail — cost analysis vs Apify, live logs, container runtime, dataset / KV / queue IDs</em></p>
 </td>
 </tr>
 <tr>
@@ -53,8 +53,8 @@ A purpose-built operator console — monitor runs in real time, debug webhook de
 </tr>
 <tr>
 <td width="50%">
-<img src="./docs/screenshots/03-runs.png" width="100%" alt="Runs — execution history" />
-<p align="center"><em>Runs — full execution history with status filters, durations, dataset links</em></p>
+<img src="./docs/screenshots/03-runs.png" width="100%" alt="Runs — execution history with per-run cost" />
+<p align="center"><em>Runs — full execution history with status filters, durations, dataset links, per-run cost</em></p>
 </td>
 <td width="50%">
 <img src="./docs/screenshots/07-actors.png" width="100%" alt="Actors — deploy and manage" />
@@ -76,6 +76,7 @@ Love the Crawlee/Apify ecosystem but want the freedom to run things your way? Cr
 - **⚡ SDK compatible** — Works seamlessly with the Apify SDK you already know
 - **🐳 Container-based** — Each Actor runs in an isolated Docker container
 - **📊 Beautiful dashboard** — Monitor runs, explore datasets, manage everything visually
+- **💰 Cost transparency** — See what each run actually cost you vs what Apify would have charged, per run and at a glance across the runs list
 
 ---
 

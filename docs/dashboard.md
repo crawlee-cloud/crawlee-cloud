@@ -29,6 +29,8 @@ http://localhost:3001
 - Live log streaming via WebSocket
 - View output and errors
 - Abort running Actors
+- **Cost column** (since 1.4.0): per-run cost at a glance — `$0` for self-hosted runs, a dollar figure for droplet-attributed runs, `—` while running or when attribution was never recorded
+- **Cost Analysis card** on run details (since 1.3.0): items scraped, your cost, what the same run would cost on Apify, and savings % — shown once a run reaches a terminal status
 
 ### Datasets
 
