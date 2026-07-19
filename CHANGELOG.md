@@ -2,6 +2,52 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-07-19
+
+Run cost analysis: see what each run actually cost you vs what Apify would have charged. Read-only and additive — no runner, scaler, or placement code changes in this release.
+
+### API
+
+- **`GET /v2/actor-runs/:runId/cost`** — per-run cost breakdown using **actual-overlap attribution**: a droplet bills a flat $/hr no matter how many containers it hosts, so a run's cost is its time-sliced share of the droplet-hours it consumed, split among the runs that actually overlapped on the same droplet (via the `runner_id` / `runner_price_hourly` stamps introduced in 1.2.0). Computed on read — never persisted — so still-running siblings and reaper-backdated zombies self-correct on the next request. Returns your cost, an Apify compute-unit estimate (1 CU = 1 GB × 1 h), both normalized to $/1,000 dataset items, and an `inputs` object (droplet price, overlap count, CU rate) so the UI explains the number instead of asserting it. Degrades honestly: `yourCostUsd: 0` for local-docker runs, `null` ("not recorded") for pre-1.2.0 runs or price-lookup failures. Not part of the Apify v2 surface.
+- Guards: `COALESCE(memory_mbytes, 1024)` against the nullable column; negative durations from runner-vs-DB clock skew clamp to zero; the sibling lookup crosses users by design but exposes only window timestamps.
+
+### Dashboard
+
+- **Cost Analysis card on run details** (terminal runs only): items scraped, your cost, same-run-on-Apify, and savings %, each with $/1k-items sub-lines. Variants: "$0.00 (self-hosted)" for local runs, "Not recorded" when attribution is missing, per-1k lines omitted for zero-item runs. Fetch errors render nothing — a cost hiccup never breaks the page. Keyed by run id so navigating between runs can't show a stale card.
+
+### New environment variables
+
+- `APIFY_CU_PRICE` (default `0.40`) — $/compute-unit for the Apify estimate (Starter plan; Scale: 0.30, Business: 0.25).
+
+## [1.2.2] - 2026-07-18
+
+Backfilled entry (see PR #60): self-heal runner-key split-brain on boot; dashboard body-less DELETE fix.
+
+## [1.2.1] - 2026-07-18
+
+Backfilled entry (see PR #59): remove bcrypt from the ingest hot path — verified-key cache + sha256-indexed API-key lookup.
+
+## [1.2.0] - 2026-07-16
+
+Memory-aware placement & incident hardening (entry backfilled — see PR #57 and the v1.2.0 GitHub release for the full inventory).
+
+### Scaler / Runner / API
+
+- **Memory-aware run placement**: claim-time admission by host memory headroom, container limits clamped to host capacity, scaler demand computed in droplet-shares (integer bin packing). Starvation protection on both sides (scaler escalation + claim-side drain) keyed to eligibility age.
+- **Fast dead-runner reap**: a destroyed runner's RUNNING rows are FAILED immediately via the claim-time `runner_id` stamp.
+- Control-plane OOM protection (`OOMScoreAdjust=-900`), `MemAvailable` claim backpressure.
+- Serialized + pipelined log writer with bounded flush; `followPull` surfaces swallowed image-pull errors; pull retries. Parallel-safe droplet naming.
+- **Cost-attribution groundwork**: `runner_id` / `runner_price_hourly` / `runner_provider` stamped at claim time; droplet $/hr resolved from DO `/v2/sizes` (daily cache, `SCALER_PRICE_HOURLY_OVERRIDE` escape hatch) and injected via cloud-init; `runs.peak_memory_mb` working-set sampling for per-actor right-sizing.
+
+### New environment variables
+
+- `SCALER_SCALE_UP_THRESHOLD` (default `0`), `SCALER_RUNNER_MEMORY_MB` (e.g. `3912` for s-2vcpu-4gb) — placement tuning.
+- `SCALER_PRICE_HOURLY_OVERRIDE` (unset by default) — force the droplet $/hr used for cost attribution instead of the DO API lookup.
+
+### Deploy notes
+
+- Deploy api first (PRE_DEPLOY migration), then runners via `RUNNER_CLONE_REF=v1.2.0`. Expect more droplets for 2048 MB-heavy bursts — that RAM demand is real; bigger droplets are the lever for high-memory throughput.
+
 ## [1.1.1] - 2026-07-15
 
 Patch: reaped-run timestamps.

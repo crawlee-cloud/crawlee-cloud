@@ -1,6 +1,6 @@
 {
   "name": "@crawlee-cloud/runner",
-  "version": "1.2.2",
+  "version": "1.3.0",
   "description": "Docker container runner for executing Actors",
   "type": "module",
   "main": "./dist/index.js",
