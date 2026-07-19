@@ -425,50 +425,56 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
    * "costs" wins over the :runId param route in find-my-way, so this
    * coexists with GET /actor-runs/:runId like /stats and /histogram do.
    */
-  fastify.get<{ Querystring: { ids?: string } }>('/actor-runs/costs', async (request, reply) => {
-    const ids = [
-      ...new Set(
-        (request.query.ids ?? '')
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean)
-      ),
-    ];
-    if (ids.length === 0) return { data: { costs: {} } };
-    if (ids.length > 50) {
-      reply.status(400);
-      return { error: { type: 'invalid-request', message: 'At most 50 run ids per request' } };
-    }
+  fastify.get<{ Querystring: { ids?: string | string[] } }>(
+    '/actor-runs/costs',
+    async (request, reply) => {
+      // Repeated params (?ids=a&ids=b) parse as an array — normalize instead
+      // of letting .split() throw a 500 on a malformed-but-harmless request.
+      const idsParam = request.query.ids;
+      const idsStr = Array.isArray(idsParam) ? idsParam.join(',') : (idsParam ?? '');
+      const ids = [
+        ...new Set(
+          idsStr
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        ),
+      ];
+      if (ids.length === 0) return { data: { costs: {} } };
+      if (ids.length > 50) {
+        reply.status(400);
+        return { error: { type: 'invalid-request', message: 'At most 50 run ids per request' } };
+      }
 
-    const runsRes = await query<{
-      id: string;
-      started_at: Date;
-      finished_at: Date;
-      runner_id: string | null;
-      runner_price_hourly: string | null; // pg NUMERIC → string
-      runner_provider: string | null;
-    }>(
-      `SELECT id, started_at, finished_at, runner_id, runner_price_hourly, runner_provider
+      const runsRes = await query<{
+        id: string;
+        started_at: Date;
+        finished_at: Date;
+        runner_id: string | null;
+        runner_price_hourly: string | null; // pg NUMERIC → string
+        runner_provider: string | null;
+      }>(
+        `SELECT id, started_at, finished_at, runner_id, runner_price_hourly, runner_provider
          FROM runs
          WHERE id = ANY($1) AND user_id = $2
            AND status IN ('SUCCEEDED', 'FAILED', 'TIMED-OUT', 'ABORTED')
            AND started_at IS NOT NULL AND finished_at IS NOT NULL`,
-      [ids, request.user!.id]
-    );
+        [ids, request.user!.id]
+      );
 
-    // One set-based sibling query for every droplet-attributed run in the
-    // batch — same overlap-window predicate as the single-run endpoint,
-    // keyed back to its target run. Self-hosted / unrecorded runs skip it.
-    const attributed = runsRes.rows.filter(
-      (r) =>
-        r.runner_provider !== 'local-docker' &&
-        r.runner_id !== null &&
-        r.runner_price_hourly !== null
-    );
-    const siblingsByRun = new Map<string, CostWindow[]>();
-    if (attributed.length > 0) {
-      const sibRes = await query<{ targetId: string } & CostWindow & Record<string, unknown>>(
-        `SELECT t.id AS "targetId",
+      // One set-based sibling query for every droplet-attributed run in the
+      // batch — same overlap-window predicate as the single-run endpoint,
+      // keyed back to its target run. Self-hosted / unrecorded runs skip it.
+      const attributed = runsRes.rows.filter(
+        (r) =>
+          r.runner_provider !== 'local-docker' &&
+          r.runner_id !== null &&
+          r.runner_price_hourly !== null
+      );
+      const siblingsByRun = new Map<string, CostWindow[]>();
+      if (attributed.length > 0) {
+        const sibRes = await query<{ targetId: string } & CostWindow & Record<string, unknown>>(
+          `SELECT t.id AS "targetId",
                 s.started_at AS "startedAt", s.finished_at AS "finishedAt"
            FROM runs t
            JOIN runs s
@@ -477,37 +483,38 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
             AND s.started_at < t.finished_at
             AND COALESCE(s.finished_at, NOW()) > t.started_at
           WHERE t.id = ANY($1)`,
-        [attributed.map((r) => r.id)]
-      );
-      for (const row of sibRes.rows) {
-        const list = siblingsByRun.get(row.targetId) ?? [];
-        list.push({ startedAt: row.startedAt, finishedAt: row.finishedAt });
-        siblingsByRun.set(row.targetId, list);
+          [attributed.map((r) => r.id)]
+        );
+        for (const row of sibRes.rows) {
+          const list = siblingsByRun.get(row.targetId) ?? [];
+          list.push({ startedAt: row.startedAt, finishedAt: row.finishedAt });
+          siblingsByRun.set(row.targetId, list);
+        }
       }
-    }
 
-    const now = new Date();
-    const costs: Record<string, { yourCostUsd: number | null }> = {};
-    for (const run of runsRes.rows) {
-      const priceHourly =
-        run.runner_price_hourly === null ? null : parseFloat(run.runner_price_hourly);
-      const yourCostUsd = computeYourCostUsd(
-        {
-          runnerProvider: run.runner_provider,
-          runnerId: run.runner_id,
-          priceHourly,
-          startedAt: run.started_at,
-          finishedAt: run.finished_at,
-        },
-        siblingsByRun.get(run.id) ?? [],
-        now
-      );
-      costs[run.id] = {
-        yourCostUsd: yourCostUsd === null ? null : Math.round(yourCostUsd * 1e6) / 1e6,
-      };
+      const now = new Date();
+      const costs: Record<string, { yourCostUsd: number | null }> = {};
+      for (const run of runsRes.rows) {
+        const priceHourly =
+          run.runner_price_hourly === null ? null : parseFloat(run.runner_price_hourly);
+        const yourCostUsd = computeYourCostUsd(
+          {
+            runnerProvider: run.runner_provider,
+            runnerId: run.runner_id,
+            priceHourly,
+            startedAt: run.started_at,
+            finishedAt: run.finished_at,
+          },
+          siblingsByRun.get(run.id) ?? [],
+          now
+        );
+        costs[run.id] = {
+          yourCostUsd: yourCostUsd === null ? null : Math.round(yourCostUsd * 1e6) / 1e6,
+        };
+      }
+      return { data: { costs } };
     }
-    return { data: { costs } };
-  });
+  );
 
   /**
    * PUT /v2/actor-runs/:runId - Update run status

@@ -670,16 +670,25 @@ export async function getRunCost(id: string): Promise<RunCost> {
 /**
  * Batch your-cost for the runs table — one request per page instead of one
  * per row. Runs that are unknown, foreign, or not yet terminal are absent
- * from the returned map. Server caps `ids` at 50 (one PAGE_SIZE page).
+ * from the returned map. The server rejects >50 ids per request (its cap
+ * mirrors PAGE_SIZE only by convention), so larger inputs are chunked here
+ * rather than trusting every caller to stay under it.
  */
 export async function getRunCosts(
   ids: string[]
 ): Promise<Record<string, { yourCostUsd: number | null }>> {
   if (ids.length === 0) return {};
-  const res = await fetchApi<{ data: { costs: Record<string, { yourCostUsd: number | null }> } }>(
-    `/v2/actor-runs/costs?ids=${ids.map(encodeURIComponent).join(',')}`
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += 50) chunks.push(ids.slice(i, i + 50));
+  const pages = await Promise.all(
+    chunks.map(async (chunk) => {
+      const res = await fetchApi<{
+        data: { costs: Record<string, { yourCostUsd: number | null }> };
+      }>(`/v2/actor-runs/costs?ids=${chunk.map(encodeURIComponent).join(',')}`);
+      return res.data.costs;
+    })
   );
-  return res.data.costs;
+  return Object.assign({}, ...pages);
 }
 
 export async function startRun(

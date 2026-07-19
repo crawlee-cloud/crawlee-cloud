@@ -815,6 +815,25 @@ describe('Actor Runs Routes', () => {
       expect(mockQuery).not.toHaveBeenCalled();
     });
 
+    it('handles repeated ids params (?ids=a&ids=b) instead of 500ing', async () => {
+      // Fastify's default query parser turns repeated params into an array.
+      // local-docker row → no sibling query, so a single mock suffices.
+      mockQuery.mockResolvedValueOnce({
+        rows: [
+          batchRow({ runner_provider: 'local-docker', runner_id: null, runner_price_hourly: null }),
+        ],
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/actor-runs/costs?ids=run-1&ids=run-2',
+      });
+
+      expect(response.statusCode).toBe(200);
+      // Both ids reached the SQL as one deduped list.
+      expect(mockQuery.mock.calls[0]?.[1]?.[0]).toEqual(['run-1', 'run-2']);
+    });
+
     it('rejects more than 50 ids with 400', async () => {
       const ids = Array.from({ length: 51 }, (_, i) => `run-${i}`).join(',');
 
