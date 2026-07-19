@@ -7,6 +7,8 @@ import { query } from '../db/index.js';
 import { redis } from '../storage/redis.js';
 import { authenticate } from '../auth/middleware.js';
 import { UpdateRunSchema, ListRunsQuerySchema, RunsHistogramQuerySchema } from '../schemas/runs.js';
+import { config } from '../config.js';
+import { computeOverlapCost, type CostWindow } from '../lib/run-cost.js';
 
 interface RunRow {
   id: string;
@@ -285,6 +287,125 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     return { data: formatRun(result.rows[0]) };
+  });
+
+  /**
+   * GET /v2/actor-runs/:runId/cost - Run cost analysis (user-scoped).
+   *
+   * Actual-overlap attribution: this run's share of the droplet-hours it
+   * consumed, split among the runs that actually shared the droplet.
+   * Computed on read — never persisted — so still-running siblings (their
+   * provisional end is NOW()) and scaler-reaped zombies (finished_at gets
+   * backdated) self-correct on the next read. Not part of the Apify v2
+   * surface; the dashboard treats it as best-effort decoration.
+   */
+  fastify.get<{ Params: { runId: string } }>('/actor-runs/:runId/cost', async (request, reply) => {
+    const { runId } = request.params;
+
+    const result = await query<{
+      id: string;
+      status: string;
+      started_at: Date | null;
+      finished_at: Date | null;
+      memory_mbytes: number;
+      runner_id: string | null;
+      runner_price_hourly: string | null; // pg NUMERIC → string
+      runner_provider: string | null;
+      default_dataset_item_count: number | null;
+    }>(
+      `SELECT r.id, r.status, r.started_at, r.finished_at,
+                COALESCE(r.memory_mbytes, 1024) AS memory_mbytes,
+                r.runner_id, r.runner_price_hourly, r.runner_provider,
+                d.item_count AS default_dataset_item_count
+         FROM runs r
+         LEFT JOIN datasets d ON d.id = r.default_dataset_id
+         WHERE r.id = $1 AND r.user_id = $2`,
+      [runId, request.user!.id]
+    );
+
+    const run = result.rows[0];
+    if (!run) {
+      reply.status(404);
+      return { error: { type: 'record-not-found', message: 'Run not found' } };
+    }
+
+    const TERMINAL = ['SUCCEEDED', 'FAILED', 'TIMED-OUT', 'ABORTED'];
+    if (!TERMINAL.includes(run.status) || !run.started_at || !run.finished_at) {
+      reply.status(400);
+      return {
+        error: {
+          type: 'run-not-finished',
+          message: 'Cost analysis is only available for finished runs',
+        },
+      };
+    }
+
+    // Clamp: started_at is stamped by the Postgres clock at claim while
+    // finished_at comes from the runner's clock at completion (queue.ts) —
+    // skew can make a short run "finish before it starts", which would
+    // otherwise yield a negative Apify estimate. computeOverlapCost
+    // already self-guards (end <= start → 0).
+    const durationHours = Math.max(
+      0,
+      (run.finished_at.getTime() - run.started_at.getTime()) / 3_600_000
+    );
+    const computeUnits = (run.memory_mbytes / 1024) * durationHours;
+    const apifyCostUsd = computeUnits * config.apifyCuPrice;
+    const itemCount = run.default_dataset_item_count ?? 0;
+    const priceHourly =
+      run.runner_price_hourly === null ? null : parseFloat(run.runner_price_hourly);
+
+    let yourCostUsd: number | null = null;
+    let overlappingRuns = 0;
+    if (run.runner_provider === 'local-docker') {
+      // Self-hosted machine — no marginal droplet cost.
+      yourCostUsd = 0;
+    } else if (run.runner_id && priceHourly !== null && Number.isFinite(priceHourly)) {
+      // Siblings across ALL users — droplets are platform-wide. Only
+      // window timestamps leave the query; no cross-user data exposure.
+      const siblings = await query<CostWindow & Record<string, unknown>>(
+        `SELECT started_at AS "startedAt", finished_at AS "finishedAt"
+           FROM runs
+           WHERE runner_id = $1 AND id != $2 AND started_at IS NOT NULL
+             AND started_at < $3 AND COALESCE(finished_at, NOW()) > $4`,
+        [run.runner_id, run.id, run.finished_at, run.started_at]
+      );
+      overlappingRuns = siblings.rows.length;
+      yourCostUsd = computeOverlapCost(
+        { startedAt: run.started_at, finishedAt: run.finished_at },
+        siblings.rows,
+        priceHourly,
+        new Date()
+      );
+    }
+
+    const round6 = (v: number | null): number | null =>
+      v === null ? null : Math.round(v * 1e6) / 1e6;
+    const per1k = (cost: number | null): number | null =>
+      cost === null || itemCount === 0 ? null : (cost / itemCount) * 1000;
+    const savingsPct =
+      yourCostUsd !== null && apifyCostUsd > 0
+        ? Math.round(((apifyCostUsd - yourCostUsd) / apifyCostUsd) * 1000) / 10
+        : null;
+
+    return {
+      data: {
+        yourCostUsd: round6(yourCostUsd),
+        apifyCostUsd: round6(apifyCostUsd),
+        savingsPct,
+        itemCount,
+        yourCostPer1kItems: round6(per1k(yourCostUsd)),
+        apifyCostPer1kItems: round6(per1k(apifyCostUsd)),
+        inputs: {
+          runnerProvider: run.runner_provider,
+          runnerPriceHourly: priceHourly,
+          overlappingRuns,
+          apifyCuPrice: config.apifyCuPrice,
+          computeUnits: round6(computeUnits),
+          durationHours: round6(durationHours),
+        },
+      },
+    };
   });
 
   /**

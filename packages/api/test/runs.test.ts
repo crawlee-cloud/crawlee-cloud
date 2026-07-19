@@ -30,6 +30,10 @@ vi.mock('../src/storage/redis.js', () => ({
   redis: { publish: (...args: unknown[]) => mockPublish(...args) },
 }));
 
+vi.mock('../src/config.js', () => ({
+  config: { apifyCuPrice: 0.4 },
+}));
+
 const createRunRow = (overrides = {}) => ({
   id: 'run-1',
   actor_id: 'actor-1',
@@ -586,6 +590,127 @@ describe('Actor Runs Routes', () => {
         url: '/v2/actor-runs/foreign/ingest-crawler-stats',
         payload: {},
       });
+
+      expect(response.statusCode).toBe(404);
+    });
+  });
+
+  describe('GET /v2/actor-runs/:runId/cost', () => {
+    const T0 = new Date('2026-07-15T10:00:00Z');
+    const hoursAfter = (h: number) => new Date(T0.getTime() + h * 3_600_000);
+
+    const costRow = (overrides = {}) => ({
+      id: 'run-1',
+      status: 'SUCCEEDED',
+      started_at: T0,
+      finished_at: hoursAfter(2),
+      memory_mbytes: 1024,
+      runner_id: 'droplet-123',
+      // pg returns NUMERIC as a string — the route must parseFloat
+      runner_price_hourly: '0.10',
+      runner_provider: 'digitalocean',
+      default_dataset_item_count: 1000,
+      ...overrides,
+    });
+
+    it('computes overlap cost, apify estimate, and per-1k rates', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [costRow()] })
+        // one sibling sharing the whole 2h window → cost splits in half.
+        // Keys are camelCase because the sibling query aliases the columns
+        // (`started_at AS "startedAt"`) — the mock mirrors the SQL contract.
+        .mockResolvedValueOnce({ rows: [{ startedAt: T0, finishedAt: hoursAfter(2) }] });
+
+      const response = await app.inject({ method: 'GET', url: '/v2/actor-runs/run-1/cost' });
+
+      expect(response.statusCode).toBe(200);
+      const { data } = JSON.parse(response.body);
+      // 2h × $0.10/hr ÷ 2 runs = $0.10
+      expect(data.yourCostUsd).toBeCloseTo(0.1, 6);
+      // 1 GB × 2 h × $0.40 = $0.80
+      expect(data.apifyCostUsd).toBeCloseTo(0.8, 6);
+      expect(data.savingsPct).toBeCloseTo(87.5, 1);
+      expect(data.itemCount).toBe(1000);
+      expect(data.yourCostPer1kItems).toBeCloseTo(0.1, 6);
+      expect(data.apifyCostPer1kItems).toBeCloseTo(0.8, 6);
+      expect(data.inputs.overlappingRuns).toBe(1);
+      expect(data.inputs.runnerPriceHourly).toBeCloseTo(0.1, 6);
+    });
+
+    it('returns yourCostUsd 0 for local-docker runs without querying siblings', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [costRow({ runner_provider: 'local-docker', runner_price_hourly: null })],
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/v2/actor-runs/run-1/cost' });
+
+      expect(response.statusCode).toBe(200);
+      const { data } = JSON.parse(response.body);
+      expect(data.yourCostUsd).toBe(0);
+      expect(data.apifyCostUsd).toBeCloseTo(0.8, 6);
+      // no second (sibling) query for local runs
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns yourCostUsd null when attribution was never recorded', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [costRow({ runner_id: null, runner_price_hourly: null, runner_provider: null })],
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/v2/actor-runs/run-1/cost' });
+
+      expect(response.statusCode).toBe(200);
+      const { data } = JSON.parse(response.body);
+      expect(data.yourCostUsd).toBeNull();
+      expect(data.savingsPct).toBeNull();
+      expect(data.yourCostPer1kItems).toBeNull();
+      expect(data.apifyCostUsd).toBeCloseTo(0.8, 6);
+    });
+
+    it('omits per-1k rates when the run produced no items', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [costRow({ default_dataset_item_count: 0 })] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({ method: 'GET', url: '/v2/actor-runs/run-1/cost' });
+
+      const { data } = JSON.parse(response.body);
+      expect(data.yourCostPer1kItems).toBeNull();
+      expect(data.apifyCostPer1kItems).toBeNull();
+    });
+
+    it('clamps negative durations (clock skew) to zero cost instead of negative', async () => {
+      // finished_at precedes started_at: runner-clock finish vs DB-clock start
+      mockQuery
+        .mockResolvedValueOnce({
+          rows: [costRow({ started_at: hoursAfter(1), finished_at: T0 })],
+        })
+        .mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({ method: 'GET', url: '/v2/actor-runs/run-1/cost' });
+
+      expect(response.statusCode).toBe(200);
+      const { data } = JSON.parse(response.body);
+      expect(data.apifyCostUsd).toBe(0);
+      expect(data.inputs.durationHours).toBe(0);
+      expect(data.inputs.computeUnits).toBe(0);
+    });
+
+    it('rejects non-terminal runs with 400 run-not-finished', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [costRow({ status: 'RUNNING', finished_at: null })],
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/v2/actor-runs/run-1/cost' });
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body).error.type).toBe('run-not-finished');
+    });
+
+    it('returns 404 for an unknown run', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({ method: 'GET', url: '/v2/actor-runs/run-nope/cost' });
 
       expect(response.statusCode).toBe(404);
     });

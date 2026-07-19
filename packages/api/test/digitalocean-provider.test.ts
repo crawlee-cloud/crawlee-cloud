@@ -275,6 +275,32 @@ describe('DigitalOceanProvider', () => {
     });
   });
 
+  describe('getHourlyPrice', () => {
+    it('resolves price_hourly from /v2/sizes and caches the response', async () => {
+      const provider = new DigitalOceanProvider({ DO_TOKEN: 'test-token' });
+      fetchMock.mockResolvedValueOnce(
+        makeJsonResponse({
+          sizes: [
+            { slug: 's-2vcpu-4gb', price_hourly: 0.03571 },
+            { slug: 's-4vcpu-8gb', price_hourly: 0.07143 },
+          ],
+        })
+      );
+
+      expect(await provider.getHourlyPrice('s-4vcpu-8gb')).toBeCloseTo(0.07143, 6);
+      // Second lookup hits the cache — no extra fetch
+      expect(await provider.getHourlyPrice('s-2vcpu-4gb')).toBeCloseTo(0.03571, 6);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns null for an unknown slug and on API failure', async () => {
+      const provider = new DigitalOceanProvider({ DO_TOKEN: 'test-token' });
+      fetchMock.mockResolvedValueOnce(makeTextResponse('boom', 500));
+
+      expect(await provider.getHourlyPrice('s-4vcpu-8gb')).toBeNull();
+    });
+  });
+
   describe('doRequest error surfacing', () => {
     it('includes the status code and body in the thrown message', async () => {
       fetchMock.mockResolvedValueOnce(makeTextResponse('rate limited', 429));

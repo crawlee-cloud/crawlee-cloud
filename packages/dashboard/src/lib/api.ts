@@ -644,6 +644,29 @@ export async function getRun(id: string): Promise<Run> {
   return res.data;
 }
 
+export interface RunCost {
+  /** Actual-overlap share of droplet cost. 0 = self-hosted; null = not recorded. */
+  yourCostUsd: number | null;
+  apifyCostUsd: number;
+  savingsPct: number | null;
+  itemCount: number;
+  yourCostPer1kItems: number | null;
+  apifyCostPer1kItems: number | null;
+  inputs: {
+    runnerProvider: string | null;
+    runnerPriceHourly: number | null;
+    overlappingRuns: number;
+    apifyCuPrice: number;
+    computeUnits: number;
+    durationHours: number;
+  };
+}
+
+export async function getRunCost(id: string): Promise<RunCost> {
+  const res = await fetchApi<{ data: RunCost }>(`/v2/actor-runs/${id}/cost`);
+  return res.data;
+}
+
 export async function startRun(
   actorId: string,
   options?: { input?: unknown; timeout?: number; memory?: number }

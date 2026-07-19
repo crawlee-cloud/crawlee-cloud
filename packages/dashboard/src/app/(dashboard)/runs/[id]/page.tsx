@@ -16,6 +16,7 @@ import {
   Webhook as WebhookIcon,
 } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
+import { CostAnalysisCard } from '@/components/cost-analysis-card';
 import { StatusChip } from '@/components/ui/badge';
 import { CopyButton } from '@/components/ui/copy-button';
 import {
@@ -588,6 +589,9 @@ function RunDetail() {
           )}
         </section>
       </div>
+
+      {/* key: remount per run so stale cost from a previous run never renders */}
+      <CostAnalysisCard key={id} runId={id} status={run.status} />
     </div>
   );
 }

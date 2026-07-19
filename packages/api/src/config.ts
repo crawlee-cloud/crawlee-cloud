@@ -50,6 +50,9 @@ export interface Config {
   // replaces the per-schedule cron.schedule() registrations. See
   // docs/superpowers/specs/2026-06-03-api-multi-replica-design.md §2.
   schedulerTickSecs: number;
+
+  /** $/compute-unit for the "same run on Apify" estimate (1 CU = 1 GB × 1 h). */
+  apifyCuPrice: number;
 }
 
 const isDevelopment = process.env.NODE_ENV !== 'production';
@@ -75,6 +78,16 @@ function envOptional(key: string): string | undefined {
 function envInt(key: string, defaultValue: number): number {
   const value = process.env[key];
   return value ? parseInt(value, 10) : defaultValue;
+}
+
+function envFloat(key: string, defaultValue: number): number {
+  const value = process.env[key];
+  if (value === undefined || value === '') return defaultValue;
+  const n = parseFloat(value);
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(`Invalid ${key}=${value} — must be a non-negative number`);
+  }
+  return n;
 }
 
 /**
@@ -153,4 +166,7 @@ export const config: Config = {
   retentionCron: envCron('RETENTION_CRON', '0 3 * * *'),
 
   schedulerTickSecs: envIntPositive('SCHEDULER_TICK_SECS', 30),
+
+  // Run cost analysis — Apify Starter-plan CU rate by default.
+  apifyCuPrice: envFloat('APIFY_CU_PRICE', 0.4),
 };
