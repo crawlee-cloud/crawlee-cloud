@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0] - 2026-07-19
+
+Per-run cost lands in the runs list: the cost analysis introduced in 1.3.0 is now visible at a glance for every finished run, not just on the detail page. Read-only and additive — no runner, scaler, or placement changes.
+
+### API
+
+- **`GET /v2/actor-runs/costs?ids=a,b,c`** — batch your-cost for up to 50 runs per request, answered in two set-based queries (one for the runs, one sibling-overlap join covering every droplet-attributed run in the batch). Returns `{ costs: { [runId]: { yourCostUsd } } }`; unknown, other-user, and non-terminal ids are silently omitted — cost stays best-effort decoration, never an error. Repeated `?ids=` params are normalized instead of 500ing; >50 ids rejects with 400. Not part of the Apify v2 surface.
+- The three cost regimes (self-hosted → `$0`, droplet → actual-overlap share, unrecorded → `null`) moved into a shared `computeYourCostUsd()` helper used by both this endpoint and `GET /v2/actor-runs/:runId/cost`, so the two cannot drift.
+
+### Dashboard
+
+- **Cost column on the runs table** (between Items and Started): compact your-cost per finished run — `$0.0042`-style (4 decimals under a cent), `$0` for self-hosted, muted `—` for running/unrecorded/still-loading. Fed by one batch request per page; already-fetched runs are cached so the 5s poll only asks about newly-finished ones, and fetch failures retry next tick while cells stay `—`. The client chunks requests at 50 ids so it can never trip the server cap.
+- Run details now renders the Cost Analysis card above the fold, before the meta/console grid.
+
+## [1.3.1] - 2026-07-19
+
+Backfilled entry (see PR #61): dashboard Started column showed `createdAt` instead of `startedAt` (READY runs now show "queued"); resurrect clears `started_at` so a resurrected run doesn't report its previous life's start.
+
 ## [1.3.0] - 2026-07-19
 
 Run cost analysis: see what each run actually cost you vs what Apify would have charged. Read-only and additive — no runner, scaler, or placement code changes in this release.
