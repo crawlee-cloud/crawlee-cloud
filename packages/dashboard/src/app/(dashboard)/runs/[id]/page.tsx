@@ -333,6 +333,9 @@ function RunDetail() {
         )}
       </div>
 
+      {/* key: remount per run so stale cost from a previous run never renders */}
+      <CostAnalysisCard key={id} runId={id} status={run.status} />
+
       {/* Two-column: meta + console */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         <aside className="panel p-5 md:col-span-1 space-y-4 h-fit">
@@ -589,9 +592,6 @@ function RunDetail() {
           )}
         </section>
       </div>
-
-      {/* key: remount per run so stale cost from a previous run never renders */}
-      <CostAnalysisCard key={id} runId={id} status={run.status} />
     </div>
   );
 }

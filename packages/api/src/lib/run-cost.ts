@@ -17,6 +17,38 @@ export interface CostWindow {
   finishedAt: Date | null;
 }
 
+/** Attribution columns as recorded on the run row at claim time. */
+export interface RunCostAttribution {
+  runnerProvider: string | null;
+  runnerId: string | null;
+  /** Already parseFloat'ed from pg NUMERIC; null when never recorded. */
+  priceHourly: number | null;
+  startedAt: Date;
+  finishedAt: Date;
+}
+
+/**
+ * The three cost regimes, decided in one place so the single-run and batch
+ * cost endpoints cannot drift: self-hosted → 0, droplet-attributed →
+ * actual-overlap share, never-recorded → null.
+ */
+export function computeYourCostUsd(
+  run: RunCostAttribution,
+  siblings: CostWindow[],
+  now: Date
+): number | null {
+  if (run.runnerProvider === 'local-docker') return 0;
+  if (run.runnerId && run.priceHourly !== null && Number.isFinite(run.priceHourly)) {
+    return computeOverlapCost(
+      { startedAt: run.startedAt, finishedAt: run.finishedAt },
+      siblings,
+      run.priceHourly,
+      now
+    );
+  }
+  return null;
+}
+
 export function computeOverlapCost(
   run: { startedAt: Date; finishedAt: Date },
   siblings: CostWindow[],

@@ -14,7 +14,7 @@ import { AppLink } from '@/components/app-link';
 import { StatusChip } from '@/components/ui/badge';
 import { CopyButton } from '@/components/ui/copy-button';
 import type { Actor, Run } from '@/lib/api';
-import { getActors, listRuns } from '@/lib/api';
+import { getActors, getRunCosts, listRuns } from '@/lib/api';
 import { FETCH_ALL_LIMIT, PAGE_SIZE } from '@/lib/constants';
 import { cn } from '@/lib/utils';
 
@@ -54,6 +54,20 @@ const STATUS_GROUPS: Record<Exclude<StatusGroup, 'all'>, Run['status'][]> = {
  */
 const POLL_RUNS_MS = 5_000;
 
+/** Statuses whose cost is computable — mirrors the /costs endpoint filter. */
+const COST_TERMINAL = new Set<Run['status']>(['SUCCEEDED', 'FAILED', 'TIMED-OUT', 'ABORTED']);
+
+/**
+ * Compact per-row cost. undefined = not loaded (or not applicable),
+ * null = not recorded — both render as a muted "—"; the detail page
+ * carries the full breakdown and the "not recorded" explanation.
+ */
+function fmtCost(v: number | null | undefined): string | null {
+  if (v === undefined || v === null) return null;
+  if (v === 0) return '$0';
+  return v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`;
+}
+
 export default function RunsPage() {
   const [items, setItems] = useState<Run[]>([]);
   const [total, setTotal] = useState(0);
@@ -69,6 +83,12 @@ export default function RunsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusGroup>('all');
+  const [costs, setCosts] = useState<Record<string, number | null>>({});
+  // Ids we've already asked the /costs endpoint about, so the 5s poll only
+  // fetches newly-finished runs. A terminal run's cost is a one-shot fetch:
+  // it can drift slightly while droplet siblings are still running, but the
+  // table is triage — the detail page recomputes fresh on every view.
+  const costAskedRef = useRef<Set<string>>(new Set());
 
   /**
    * Status groups span multiple raw statuses (e.g. "running" = RUNNING|READY).
@@ -207,6 +227,29 @@ export default function RunsPage() {
     }, POLL_RUNS_MS);
     return () => clearInterval(id);
   }, []);
+
+  // Cost decoration: after every page load / poll tick, batch-fetch costs
+  // for visible terminal runs we haven't asked about yet — one request per
+  // new batch, nothing when the page is quiet. Failures un-mark the ids so
+  // the next tick retries; cells just stay "—" meanwhile.
+  useEffect(() => {
+    const wanted = items
+      .filter((r) => COST_TERMINAL.has(r.status) && !costAskedRef.current.has(r.id))
+      .map((r) => r.id);
+    if (wanted.length === 0) return;
+    wanted.forEach((id) => costAskedRef.current.add(id));
+    getRunCosts(wanted)
+      .then((map) => {
+        setCosts((prev) => {
+          const next = { ...prev };
+          for (const id of wanted) next[id] = map[id]?.yourCostUsd ?? null;
+          return next;
+        });
+      })
+      .catch(() => {
+        wanted.forEach((id) => costAskedRef.current.delete(id));
+      });
+  }, [items]);
 
   const q = search.trim().toLowerCase();
   // In-page search only — labelled as such so the operator knows it doesn't
@@ -379,6 +422,7 @@ export default function RunsPage() {
                 <th className="px-5 py-2 font-normal">Status</th>
                 <th className="px-5 py-2 font-normal">Duration</th>
                 <th className="px-5 py-2 font-normal text-right">Items</th>
+                <th className="px-5 py-2 font-normal text-right">Cost</th>
                 <th className="px-5 py-2 font-normal text-right">Started</th>
               </tr>
             </thead>
@@ -438,6 +482,14 @@ export default function RunsPage() {
                             : '?'}
                         </AppLink>
                       ) : (
+                        <span className="text-muted-foreground/40">—</span>
+                      )}
+                    </td>
+                    <td className="px-5 py-3 font-mono text-[11px] tnum text-right">
+                      {/* Your-cost only; "—" covers running (no cost yet),
+                          not-yet-loaded, and never-recorded alike — the
+                          detail page's cost card explains which. */}
+                      {fmtCost(costs[run.id]) ?? (
                         <span className="text-muted-foreground/40">—</span>
                       )}
                     </td>

@@ -719,4 +719,110 @@ describe('Actor Runs Routes', () => {
       expect(response.statusCode).toBe(404);
     });
   });
+
+  describe('GET /v2/actor-runs/costs (batch)', () => {
+    const T0 = new Date('2026-07-15T10:00:00Z');
+    const hoursAfter = (h: number) => new Date(T0.getTime() + h * 3_600_000);
+
+    // Shape of the batch endpoint's run query — narrower than the single
+    // endpoint's costRow (no memory/items: the batch returns yourCostUsd only).
+    const batchRow = (overrides = {}) => ({
+      id: 'run-1',
+      started_at: T0,
+      finished_at: hoursAfter(2),
+      runner_id: 'droplet-123',
+      runner_price_hourly: '0.10',
+      runner_provider: 'digitalocean',
+      ...overrides,
+    });
+
+    it('computes costs for a mixed batch in two queries, omitting unknown ids', async () => {
+      mockQuery
+        .mockResolvedValueOnce({
+          rows: [
+            batchRow(),
+            batchRow({
+              id: 'run-2',
+              runner_provider: 'local-docker',
+              runner_id: null,
+              runner_price_hourly: null,
+            }),
+            batchRow({
+              id: 'run-3',
+              runner_id: null,
+              runner_price_hourly: null,
+              runner_provider: null,
+            }),
+          ],
+        })
+        // Sibling query covers only run-1 (the sole droplet-attributed run):
+        // one sibling spanning the whole 2h window → cost splits in half.
+        .mockResolvedValueOnce({
+          rows: [{ targetId: 'run-1', startedAt: T0, finishedAt: hoursAfter(2) }],
+        });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/actor-runs/costs?ids=run-1,run-2,run-3,run-nope',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const { costs } = JSON.parse(response.body).data;
+      // 2h × $0.10/hr ÷ 2 runs = $0.10 — must match the single-run endpoint.
+      expect(costs['run-1'].yourCostUsd).toBeCloseTo(0.1, 6);
+      expect(costs['run-2'].yourCostUsd).toBe(0); // self-hosted
+      expect(costs['run-3'].yourCostUsd).toBeNull(); // never recorded
+      expect(costs['run-nope']).toBeUndefined(); // silently omitted
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+    });
+
+    it('skips the sibling query when no run in the batch is droplet-attributed', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [
+          batchRow({
+            runner_provider: 'local-docker',
+            runner_id: null,
+            runner_price_hourly: null,
+          }),
+        ],
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/v2/actor-runs/costs?ids=run-1' });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).data.costs['run-1'].yourCostUsd).toBe(0);
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it('omits non-terminal runs (the SQL filter) — mirrored here as an empty result', async () => {
+      // The status filter lives in SQL; a RUNNING id simply comes back rowless.
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/actor-runs/costs?ids=run-running',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).data.costs).toEqual({});
+    });
+
+    it('returns an empty map without querying when ids is empty', async () => {
+      const response = await app.inject({ method: 'GET', url: '/v2/actor-runs/costs' });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).data.costs).toEqual({});
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('rejects more than 50 ids with 400', async () => {
+      const ids = Array.from({ length: 51 }, (_, i) => `run-${i}`).join(',');
+
+      const response = await app.inject({ method: 'GET', url: `/v2/actor-runs/costs?ids=${ids}` });
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body).error.type).toBe('invalid-request');
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+  });
 });
