@@ -71,7 +71,7 @@ Love the Crawlee/Apify ecosystem but want the freedom to run things your way? Cr
 
 ### Key Benefits
 
-- **� Your infrastructure** — Deploy on your own servers, cloud, or anywhere you like
+- **🏠 Your infrastructure** — Deploy on your own servers, cloud, or anywhere you like
 - **🔒 Complete privacy** — Your data stays exactly where you want it
 - **⚡ SDK compatible** — Works seamlessly with the Apify SDK you already know
 - **🐳 Container-based** — Each Actor runs in an isolated Docker container
