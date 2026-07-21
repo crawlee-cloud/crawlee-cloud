@@ -12,7 +12,8 @@
     "clean": "rm -rf dist coverage",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "db:migrate": "tsx src/db/migrate.ts"
   },
