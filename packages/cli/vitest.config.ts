@@ -15,5 +15,11 @@ export default defineConfig({
     // a workspace-level `vitest run` exits 1 here ("no test files found")
     // and fails CI. Once a unit test lands, this can come out.
     passWithNoTests: true,
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.ts'],
+      // No thresholds yet: there are no unit tests in this package. The
+      // first unit-test PR sets the initial floor.
+    },
   },
 });
