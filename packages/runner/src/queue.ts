@@ -49,7 +49,7 @@ const REQUEST_BODY_STORAGE_CAP = 4096;
 const SECRET_KEY_PATTERN = /auth|token|password|secret|cookie|signature|hmac|key$/i;
 const MIN_REDACTED_VALUE_LEN = 8;
 
-function redactSecretsForStorage(jsonString: string): string {
+export function redactSecretsForStorage(jsonString: string): string {
   // If the rendered body isn't JSON (shouldn't happen — we JSON.stringify
   // ourselves — but a defensive fallback for future template engines),
   // just cap-and-store the raw form. No keys to walk = nothing to redact.
@@ -62,7 +62,7 @@ function redactSecretsForStorage(jsonString: string): string {
   return JSON.stringify(walkAndRedact(parsed)).slice(0, REQUEST_BODY_STORAGE_CAP);
 }
 
-function walkAndRedact(node: unknown): unknown {
+export function walkAndRedact(node: unknown): unknown {
   if (Array.isArray(node)) return node.map(walkAndRedact);
   if (node && typeof node === 'object') {
     const out: Record<string, unknown> = {};
@@ -687,7 +687,7 @@ async function processRun(run: RunJob): Promise<void> {
  * `localhost`. Linux deploys typically have the API reachable at the same
  * URL from runner and actor, so this is a no-op there.
  */
-function selfApiBaseUrl(): string {
+export function selfApiBaseUrl(): string {
   return config.apiBaseUrl.replace(/(^https?:\/\/)host\.docker\.internal(:|\/|$)/, '$1localhost$2');
 }
 
@@ -951,7 +951,7 @@ async function maybeRetryRun(run: RunJob, runId: string): Promise<void> {
  * Check if a URL targets a private/internal network address.
  * Blocks RFC 1918, link-local, loopback, and metadata endpoints.
  */
-function isPrivateUrl(urlString: string): boolean {
+export function isPrivateUrl(urlString: string): boolean {
   let parsed: URL;
   try {
     parsed = new URL(urlString);
@@ -962,7 +962,14 @@ function isPrivateUrl(urlString: string): boolean {
   const hostname = parsed.hostname;
 
   // Block loopback
-  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+  // URL.hostname keeps the brackets around IPv6 literals ('[::1]'), so
+  // both forms must be matched or IPv6-loopback URLs bypass the guard.
+  if (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '::1' ||
+    hostname === '[::1]'
+  ) {
     return true;
   }
 
