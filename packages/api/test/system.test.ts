@@ -17,13 +17,19 @@ vi.mock('../src/auth/middleware.js', () => ({
 }));
 
 const mockQuery = vi.fn();
+const mockRouteQuery = vi.fn();
 vi.mock('../src/db/index.js', () => ({
   pool: { query: (...args: unknown[]) => mockQuery(...args) as unknown },
+  query: (...args: unknown[]) => mockRouteQuery(...args) as unknown,
 }));
 
 const mockPing = vi.fn();
+const mockHgetall = vi.fn();
 vi.mock('../src/storage/redis.js', () => ({
-  redis: { ping: () => mockPing() as unknown },
+  redis: {
+    ping: () => mockPing() as unknown,
+    hgetall: (...args: unknown[]) => mockHgetall(...args) as unknown,
+  },
 }));
 
 const mockSend = vi.fn();
@@ -32,7 +38,7 @@ vi.mock('../src/storage/s3.js', () => ({
 }));
 
 vi.mock('../src/config.js', () => ({
-  config: { s3Bucket: 'test-bucket' },
+  config: { s3Bucket: 'test-bucket', retentionEnabled: true },
 }));
 
 vi.mock('../src/scheduler.js', () => ({
@@ -224,5 +230,75 @@ describe('GET /v2/system/info', () => {
     };
     expect(body.data.storage.redis.status).toBe('error');
     expect(body.data.storage.redis.error).toContain('connection refused');
+  });
+});
+
+describe('GET /v2/system/retention/status', () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify();
+    await app.register(systemRoutes, { prefix: '/v2' });
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    TEST_USER.role = 'admin';
+    mockHgetall.mockResolvedValue({});
+    mockRouteQuery.mockResolvedValue({ rows: [] });
+  });
+
+  it('is admin-only', async () => {
+    TEST_USER.role = 'user';
+
+    const response = await app.inject({ method: 'GET', url: '/v2/system/retention/status' });
+
+    expect(response.statusCode).toBe(403);
+    expect(mockHgetall).not.toHaveBeenCalled();
+  });
+
+  it('aggregates last-tick info and 24h reap counts', async () => {
+    mockHgetall.mockResolvedValue({ at: '2026-07-21T00:00:00.000Z', elapsed_ms: '123' });
+    mockRouteQuery.mockResolvedValue({
+      rows: [
+        {
+          dataset: '3',
+          key_value_store: '2',
+          request_queue: '1',
+          run: '9',
+          total_tombstones: '150',
+        },
+      ],
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/v2/system/retention/status' });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as { data: Record<string, unknown> };
+    expect(body.data).toEqual({
+      enabled: true,
+      lastTickAt: '2026-07-21T00:00:00.000Z',
+      lastTickElapsedMs: 123,
+      reapedLast24h: { dataset: 3, key_value_store: 2, request_queue: 1, run: 9 },
+      tombstoneRowCount: 150,
+    });
+    expect(mockHgetall).toHaveBeenCalledWith('retention:last-tick');
+  });
+
+  it('defaults cleanly when the reaper has never ticked', async () => {
+    const response = await app.inject({ method: 'GET', url: '/v2/system/retention/status' });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as {
+      data: { lastTickAt: null; lastTickElapsedMs: null; tombstoneRowCount: number };
+    };
+    expect(body.data.lastTickAt).toBeNull();
+    expect(body.data.lastTickElapsedMs).toBeNull();
+    expect(body.data.tombstoneRowCount).toBe(0);
   });
 });
