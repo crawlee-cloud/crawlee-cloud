@@ -43,7 +43,7 @@ interface ActorJson {
   };
 }
 
-function validateActorJson(actorJson: ActorJson): string[] {
+export function validateActorJson(actorJson: ActorJson): string[] {
   const errors: string[] = [];
 
   if (!actorJson.name) {
@@ -456,7 +456,7 @@ async function buildAndPushGhcr(
  * Throws on malformed input rather than silently dropping it — bad args
  * during CI deploys would otherwise look like "no env vars set" later.
  */
-function collectEnv(arg: string, prev: Record<string, string>): Record<string, string> {
+export function collectEnv(arg: string, prev: Record<string, string>): Record<string, string> {
   const eq = arg.indexOf('=');
   if (eq <= 0) {
     throw new Error(`Invalid --env value "${arg}". Expected KEY=VALUE.`);
@@ -471,7 +471,7 @@ function collectEnv(arg: string, prev: Record<string, string>): Record<string, s
  * lines, and quoted values. Does NOT do shell interpolation (no `$VAR`
  * expansion) — that's the caller's job if they want it.
  */
-async function loadEnvFile(filePath: string): Promise<Record<string, string>> {
+export async function loadEnvFile(filePath: string): Promise<Record<string, string>> {
   const content = await fs.readFile(filePath, 'utf8');
   const out: Record<string, string> = {};
   for (const rawLine of content.split('\n')) {
@@ -492,7 +492,7 @@ async function loadEnvFile(filePath: string): Promise<Record<string, string>> {
   return out;
 }
 
-function dropEmpty(map: Record<string, string | undefined>): Record<string, string> {
+export function dropEmpty(map: Record<string, string | undefined>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(map)) {
     if (v !== undefined && v !== '') out[k] = v;

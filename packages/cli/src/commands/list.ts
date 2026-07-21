@@ -25,7 +25,7 @@ interface Run {
   createdAt: string;
 }
 
-function timeAgo(dateStr: string): string {
+export function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return 'just now';
@@ -36,7 +36,7 @@ function timeAgo(dateStr: string): string {
   return `${String(days)}d ago`;
 }
 
-function statusColor(status: string): string {
+export function statusColor(status: string): string {
   switch (status) {
     case 'SUCCEEDED':
       return chalk.green(status);

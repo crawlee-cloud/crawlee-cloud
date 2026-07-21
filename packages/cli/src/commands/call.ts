@@ -13,7 +13,10 @@ import { getConfig } from '../utils/config.js';
 /**
  * Collector for -e KEY=VALUE options (can be used multiple times)
  */
-function collectEnvVars(value: string, previous: Record<string, string>): Record<string, string> {
+export function collectEnvVars(
+  value: string,
+  previous: Record<string, string>
+): Record<string, string> {
   const [key, ...valueParts] = value.split('=');
   if (!key || valueParts.length === 0) {
     console.error(chalk.red(`Invalid env var format: ${value}. Use KEY=VALUE`));

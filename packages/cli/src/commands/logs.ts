@@ -150,7 +150,7 @@ export const logsCommand = new Command('logs')
     }
   });
 
-function formatLevel(level: string): string {
+export function formatLevel(level: string): string {
   switch (level.toUpperCase()) {
     case 'ERROR':
       return chalk.red('ERR');
@@ -166,7 +166,7 @@ function formatLevel(level: string): string {
   }
 }
 
-function formatStatus(status: string): string {
+export function formatStatus(status: string): string {
   switch (status) {
     case 'SUCCEEDED':
       return chalk.green('✓ SUCCEEDED');
