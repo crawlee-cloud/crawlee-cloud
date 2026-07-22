@@ -86,7 +86,7 @@ export function walkAndRedact(node: unknown): unknown {
   return node;
 }
 
-interface RunJob {
+export interface RunJob {
   id: string;
   actor_id: string;
   user_id: string;
@@ -341,7 +341,20 @@ export async function claimNextRun(
  * Process the next pending run. Exported for unit tests (the claim-failure
  * containment below is load-bearing for process survival).
  */
-export async function processNextRun(): Promise<void> {
+export async function processNextRun(
+  // Injectable seams for unit tests; production callers use the defaults
+  // (module singletons wired by initJobQueue, the real memory probe, and
+  // the real run executor).
+  deps: {
+    db?: pg.Pool;
+    getAvailableMemory?: () => number | null;
+    runProcessor?: (run: RunJob) => Promise<void>;
+  } = {}
+): Promise<void> {
+  const db = deps.db ?? pool;
+  const getAvailableMemory = deps.getAvailableMemory ?? getAvailableMemoryMb;
+  const runProcessor = deps.runProcessor ?? processRun;
+
   if (shuttingDown || isProcessing || activeRuns >= config.maxConcurrentRuns) {
     return;
   }
@@ -360,7 +373,7 @@ export async function processNextRun(): Promise<void> {
     // restarted runner (crash/systemd) has activeRuns 0 but may share the
     // host with the orphaned containers that caused the pressure — the
     // limit-sum gate below can't see them, so this is the only defense.
-    const availableMb = getAvailableMemoryMb();
+    const availableMb = getAvailableMemory();
     if (availableMb !== null && availableMb < config.memoryReserveMb) {
       if (!memoryThrottled) {
         memoryThrottled = true;
@@ -387,7 +400,7 @@ export async function processNextRun(): Promise<void> {
 
     // Claim the next pending run (FIFO among runs that fit, respecting
     // delayed retries)
-    const run = await claimNextRun(pool, headroomMb);
+    const run = await claimNextRun(db, headroomMb);
 
     if (!run) {
       return; // No pending runs
@@ -400,7 +413,7 @@ export async function processNextRun(): Promise<void> {
     activeRunMemoryMb.set(run.id, Math.min(run.memory_mbytes ?? config.defaultMemoryMb, usableMb));
 
     // Process in background
-    void processRun(run).finally(() => {
+    void runProcessor(run).finally(() => {
       activeRuns--;
       activeRunIds.delete(run.id);
       abortedRunIds.delete(run.id);
@@ -846,7 +859,11 @@ async function persistFailureLog(run: RunJob, status: string): Promise<void> {
  * Trigger webhooks for run events.
  * Creates delivery records and attempts immediate delivery.
  */
-async function triggerWebhooks(runId: string, status: string): Promise<void> {
+export async function triggerWebhooks(
+  runId: string,
+  status: string,
+  db: pg.Pool = pool
+): Promise<void> {
   // Apify convention: status string uses HYPHEN ('TIMED-OUT') but event
   // type uses UNDERSCORE ('ACTOR.RUN.TIMED_OUT'). Translate at this seam
   // so the rest of the codebase carries Apify-canonical status strings
@@ -855,12 +872,12 @@ async function triggerWebhooks(runId: string, status: string): Promise<void> {
   const eventType = `ACTOR.RUN.${status.replace(/-/g, '_')}`;
 
   // Get run details for payload
-  const runResult = await pool.query<RunJob>('SELECT * FROM runs WHERE id = $1', [runId]);
+  const runResult = await db.query<RunJob>('SELECT * FROM runs WHERE id = $1', [runId]);
   const run = runResult.rows[0];
   if (!run) return;
 
   // Get applicable webhooks (global OR scoped to this actor)
-  const webhooks = await pool.query<{
+  const webhooks = await db.query<{
     id: string;
     request_url: string;
     payload_template: string | null;
@@ -887,23 +904,28 @@ async function triggerWebhooks(runId: string, status: string): Promise<void> {
     // UPDATE. Net effect was 2-3 webhook.site receives per run, only one
     // delivery row in the DB (UPDATEs raced and overwrote attempt_count).
     // scheduleRetry sets next_retry_at forward only on actual failures.
-    await pool.query(
+    await db.query(
       `INSERT INTO webhook_deliveries (id, webhook_id, run_id, event_type, status, attempt_count, max_attempts, next_retry_at)
        VALUES ($1, $2, $3, $4, 'PENDING', 0, 5, NULL)`,
       [deliveryId, webhook.id, runId, eventType]
     );
 
     // Attempt immediate delivery
-    await attemptWebhookDelivery(deliveryId, webhook, run, eventType);
+    await attemptWebhookDelivery(deliveryId, webhook, run, eventType, db);
   }
 }
 
 /**
  * Schedule a retry run if the actor's retry policy allows it.
  */
-async function maybeRetryRun(run: RunJob, runId: string): Promise<void> {
+export async function maybeRetryRun(
+  run: RunJob,
+  runId: string,
+  db: pg.Pool = pool,
+  redisClient: Redis = redis
+): Promise<void> {
   try {
-    const actorResult = await pool.query<{
+    const actorResult = await db.query<{
       max_retries: number;
       retry_delay_secs: number;
     }>('SELECT max_retries, retry_delay_secs FROM actors WHERE id = $1', [run.actor_id]);
@@ -920,7 +942,7 @@ async function maybeRetryRun(run: RunJob, runId: string): Promise<void> {
       `Scheduling retry ${newRetryCount}/${actor.max_retries} for run ${runId} as ${newRunId}`
     );
 
-    await pool.query(
+    await db.query(
       `INSERT INTO runs (id, actor_id, user_id, status, default_dataset_id, default_key_value_store_id,
         default_request_queue_id, timeout_secs, memory_mbytes, retry_count, origin_run_id, run_after)
        VALUES ($1, $2, (SELECT user_id FROM runs WHERE id = $3), 'READY',
@@ -941,7 +963,7 @@ async function maybeRetryRun(run: RunJob, runId: string): Promise<void> {
       ]
     );
 
-    await redis.publish('run:new', newRunId);
+    await redisClient.publish('run:new', newRunId);
   } catch (err) {
     console.error(`Failed to schedule retry for run ${runId}:`, err);
   }
@@ -1002,7 +1024,7 @@ export function isPrivateUrl(urlString: string): boolean {
 /**
  * Attempt a single webhook delivery.
  */
-async function attemptWebhookDelivery(
+export async function attemptWebhookDelivery(
   deliveryId: string,
   webhook: {
     id: string;
@@ -1011,7 +1033,8 @@ async function attemptWebhookDelivery(
     headers: Record<string, string> | null;
   },
   run: RunJob,
-  eventType: string
+  eventType: string,
+  db: pg.Pool = pool
 ): Promise<void> {
   const RETRY_DELAYS = [10, 30, 60, 300, 900]; // seconds
   // Declared outside try so the catch path can still record what we tried
@@ -1088,7 +1111,7 @@ async function attemptWebhookDelivery(
     console.log(`Delivering webhook ${webhook.id} to ${webhook.request_url}`);
 
     if (isPrivateUrl(webhook.request_url)) {
-      await pool.query(
+      await db.query(
         `UPDATE webhook_deliveries
          SET status = 'FAILED', attempt_count = attempt_count + 1,
              request_body = $1,
@@ -1111,7 +1134,7 @@ async function attemptWebhookDelivery(
 
     if (response.ok) {
       // Success
-      await pool.query(
+      await db.query(
         `UPDATE webhook_deliveries
          SET status = 'DELIVERED', attempt_count = attempt_count + 1,
              request_body = $1,
@@ -1127,7 +1150,8 @@ async function attemptWebhookDelivery(
         response.status,
         responseBody.slice(0, 1024),
         requestBodyForStorage,
-        RETRY_DELAYS
+        RETRY_DELAYS,
+        db
       );
     }
   } catch (err) {
@@ -1147,7 +1171,8 @@ async function attemptWebhookDelivery(
       null,
       String(err instanceof Error ? err.message : err).slice(0, 1024),
       requestBodyForStorage,
-      RETRY_DELAYS
+      RETRY_DELAYS,
+      db
     );
   }
 }
@@ -1160,15 +1185,16 @@ async function attemptWebhookDelivery(
  * Stored on every UPDATE path so the dashboard always shows what was last
  * tried, not a stale body from a previous attempt.
  */
-async function scheduleRetry(
+export async function scheduleRetry(
   deliveryId: string,
   responseStatus: number | null,
   responseBody: string,
   requestBody: string | null,
-  retryDelays: number[]
+  retryDelays: number[],
+  db: pg.Pool = pool
 ): Promise<void> {
   // Get current attempt count
-  const delivery = await pool.query<{ attempt_count: number; max_attempts: number }>(
+  const delivery = await db.query<{ attempt_count: number; max_attempts: number }>(
     'SELECT attempt_count, max_attempts FROM webhook_deliveries WHERE id = $1',
     [deliveryId]
   );
@@ -1179,7 +1205,7 @@ async function scheduleRetry(
 
   if (newAttempt >= delivery.rows[0].max_attempts) {
     // Max retries exhausted
-    await pool.query(
+    await db.query(
       `UPDATE webhook_deliveries
        SET status = 'FAILED', attempt_count = $1,
            request_body = $2,
@@ -1191,7 +1217,7 @@ async function scheduleRetry(
   } else {
     // Schedule next retry
     const delaySecs = retryDelays[newAttempt - 1] ?? retryDelays[retryDelays.length - 1]!;
-    await pool.query(
+    await db.query(
       `UPDATE webhook_deliveries
        SET attempt_count = $1,
            request_body = $2,
@@ -1251,12 +1277,12 @@ export async function claimWebhookRetries(dbPool: pg.Pool): Promise<
  * Process pending webhook delivery retries.
  * Runs on a 10-second interval.
  */
-async function processWebhookRetries(): Promise<void> {
+export async function processWebhookRetries(db: pg.Pool = pool): Promise<void> {
   try {
-    const pending = await claimWebhookRetries(pool);
+    const pending = await claimWebhookRetries(db);
 
     for (const delivery of pending) {
-      const webhook = await pool.query<{
+      const webhook = await db.query<{
         id: string;
         request_url: string;
         payload_template: string | null;
@@ -1265,17 +1291,30 @@ async function processWebhookRetries(): Promise<void> {
 
       if (!webhook.rows[0]) {
         // Webhook deleted — mark delivery as failed
-        await pool.query(
+        await db.query(
           `UPDATE webhook_deliveries SET status = 'FAILED', finished_at = NOW(), next_retry_at = NULL WHERE id = $1`,
           [delivery.id]
         );
         continue;
       }
 
-      const run = await pool.query<RunJob>('SELECT * FROM runs WHERE id = $1', [delivery.run_id]);
-      if (!run.rows[0]) continue;
+      const run = await db.query<RunJob>('SELECT * FROM runs WHERE id = $1', [delivery.run_id]);
+      if (!run.rows[0]) {
+        // Run deleted — mark delivery as failed
+        await db.query(
+          `UPDATE webhook_deliveries SET status = 'FAILED', finished_at = NOW(), next_retry_at = NULL WHERE id = $1`,
+          [delivery.id]
+        );
+        continue;
+      }
 
-      await attemptWebhookDelivery(delivery.id, webhook.rows[0], run.rows[0], delivery.event_type);
+      await attemptWebhookDelivery(
+        delivery.id,
+        webhook.rows[0],
+        run.rows[0],
+        delivery.event_type,
+        db
+      );
     }
   } catch (err) {
     console.error('Webhook retry processor error:', err);
@@ -1285,8 +1324,8 @@ async function processWebhookRetries(): Promise<void> {
 /**
  * Notify about new run.
  */
-export async function notifyNewRun(runId: string): Promise<void> {
-  await redis.publish('run:new', runId);
+export async function notifyNewRun(runId: string, redisClient: Redis = redis): Promise<void> {
+  await redisClient.publish('run:new', runId);
 }
 
 function sleep(ms: number): Promise<void> {
