@@ -11,7 +11,7 @@ import { formatLevel, formatStatus as formatLogStatus } from '../src/commands/lo
 import { collectEnvVars } from '../src/commands/call.js';
 
 // eslint-disable-next-line no-control-regex
-const stripAnsi = (s: string) => s.replace(/\[[0-9;]*m/g, '');
+const stripAnsi = (s: string) => s.replace(/\x1B\[[0-9;]*m/g, '');
 
 afterEach(() => {
   vi.restoreAllMocks();
