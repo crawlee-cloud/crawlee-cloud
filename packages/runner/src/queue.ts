@@ -1288,7 +1288,14 @@ export async function processWebhookRetries(db: pg.Pool = pool): Promise<void> {
       }
 
       const run = await db.query<RunJob>('SELECT * FROM runs WHERE id = $1', [delivery.run_id]);
-      if (!run.rows[0]) continue;
+      if (!run.rows[0]) {
+        // Run deleted — mark delivery as failed
+        await db.query(
+          `UPDATE webhook_deliveries SET status = 'FAILED', finished_at = NOW(), next_retry_at = NULL WHERE id = $1`,
+          [delivery.id]
+        );
+        continue;
+      }
 
       await attemptWebhookDelivery(
         delivery.id,

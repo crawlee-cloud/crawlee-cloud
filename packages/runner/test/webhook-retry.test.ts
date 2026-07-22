@@ -190,15 +190,24 @@ describe('processWebhookRetries', () => {
     expect(db.query).toHaveBeenCalledTimes(3);
   });
 
-  it('skips the delivery when its run row is gone', async () => {
+  it('fails the delivery when its run row is gone', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
-    const db = mockPool({ rows: [CLAIMED] }, { rows: [WEBHOOK_ROW] }, { rows: [] });
+    const db = mockPool(
+      { rows: [CLAIMED] },
+      { rows: [WEBHOOK_ROW] },
+      { rows: [] }, // run gone
+      { rows: [] } // FAILED update
+    );
 
     await processWebhookRetries(db);
 
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(db.query).toHaveBeenCalledTimes(3);
+    const [failSql, failParams] = db.query.mock.calls[3] as [string, unknown[]];
+    expect(failSql).toContain("status = 'FAILED'");
+    expect(failSql).toContain('next_retry_at = NULL');
+    expect(failParams).toEqual(['dlv-1']);
+    expect(db.query).toHaveBeenCalledTimes(4);
   });
 
   it('contains claim errors instead of crashing the interval loop', async () => {
