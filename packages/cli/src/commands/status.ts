@@ -32,7 +32,7 @@ interface StatusOptions {
   interval?: string;
 }
 
-function formatDuration(ms: number): string {
+export function formatDuration(ms: number): string {
   if (ms < 1000) return `${String(ms)}ms`;
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
   const mins = Math.floor(ms / 60000);
@@ -40,7 +40,7 @@ function formatDuration(ms: number): string {
   return `${String(mins)}m ${String(secs)}s`;
 }
 
-function formatStatus(status: string): string {
+export function formatStatus(status: string): string {
   const statusMap: Record<string, string> = {
     READY: chalk.dim('READY'),
     RUNNING: chalk.cyan('⟳ RUNNING'),
