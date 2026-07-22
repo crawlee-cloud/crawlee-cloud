@@ -5,7 +5,7 @@
  * integration suite in test/integration/retention.integration.test.ts.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type pg from 'pg';
 
 const mockConfig = vi.hoisted(() => ({
@@ -181,6 +181,12 @@ describe('runReaperTick', () => {
 });
 
 describe('initRetention', () => {
+  afterEach(() => {
+    // Reset here (not inline in test bodies) so it runs even when an
+    // assertion fails mid-test.
+    mockConfig.retentionEnabled = false;
+  });
+
   it('does not register the cron when retention is disabled', () => {
     mockConfig.retentionEnabled = false;
     initRetention();
@@ -196,6 +202,5 @@ describe('initRetention', () => {
     expect(mockCronSchedule).toHaveBeenCalledWith('*/30 * * * *', expect.any(Function), {
       timezone: 'UTC',
     });
-    mockConfig.retentionEnabled = false;
   });
 });

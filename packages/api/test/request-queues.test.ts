@@ -2,7 +2,7 @@
  * Request Queue Routes Tests
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import Fastify from 'fastify';
 
@@ -93,6 +93,13 @@ describe('Request Queue Routes', () => {
     redisMocks.isLocked.mockResolvedValue(false);
   });
 
+  afterEach(() => {
+    // Restore spies (e.g. the console.error spy in the batch test below) so
+    // route-level console.error stays visible for subsequent tests. The
+    // hoisted vi.fn mocks are re-primed in beforeEach, so this is safe.
+    vi.restoreAllMocks();
+  });
+
   describe('GET /v2/request-queues', () => {
     it('should list queues with real total from COUNT(*)', async () => {
       mockQuery.mockResolvedValueOnce({ rows: [{ total: '2' }] }).mockResolvedValueOnce({
@@ -136,6 +143,7 @@ describe('Request Queue Routes', () => {
       });
 
       expect(response.statusCode).toBe(404);
+      expect(response.json().error.type).toBe('record-not-found');
     });
   });
 
@@ -289,6 +297,7 @@ describe('Request Queue Routes', () => {
       });
 
       expect(response.statusCode).toBe(404);
+      expect(response.json().error.type).toBe('record-not-found');
       expect(redisMocks.releaseLock).not.toHaveBeenCalled();
     });
   });
@@ -370,6 +379,7 @@ describe('Request Queue Routes', () => {
       });
 
       expect(response.statusCode).toBe(404);
+      expect(response.json().error.type).toBe('record-not-found');
     });
   });
 
@@ -581,6 +591,7 @@ describe('Request Queue Routes', () => {
       });
 
       expect(response.statusCode).toBe(404);
+      expect(response.json().error.type).toBe('record-not-found');
     });
 
     it('rejects an update from a client that does not hold the lock', async () => {
@@ -695,6 +706,7 @@ describe('Request Queue Routes', () => {
       });
 
       expect(response.statusCode).toBe(404);
+      expect(response.json().error.type).toBe('record-not-found');
     });
 
     it('returns 404 when the request is missing', async () => {
@@ -708,6 +720,7 @@ describe('Request Queue Routes', () => {
       });
 
       expect(response.statusCode).toBe(404);
+      expect(response.json().error.type).toBe('record-not-found');
       expect(redisMocks.lockRequest).not.toHaveBeenCalled();
     });
   });
@@ -722,6 +735,7 @@ describe('Request Queue Routes', () => {
       });
 
       expect(response.statusCode).toBe(404);
+      expect(response.json().error.type).toBe('record-not-found');
     });
   });
 });
