@@ -28,11 +28,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      # The workspace (vitest.workspace.ts) already restricts the run to
-      # packages/cli, packages/api, packages/runner. The previous --project
-      # filters matched on test.name, which none of the package configs set
-      # — so vitest exited with "No test files found".
-      - run: npx vitest run
+      # Runs each package's `test:coverage` (vitest run --coverage), which
+      # executes the same unit suites the previous plain `npx vitest run`
+      # step did, plus enforces the per-package coverage thresholds
+      # declared in each vitest.config.ts. Thresholds are ratcheted up as
+      # coverage improves; a regression below the floor fails this job.
+      - run: npx turbo run test:coverage
 
   integration-tests:
     runs-on: ubuntu-latest

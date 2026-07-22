@@ -12,8 +12,11 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/bin.ts",
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist coverage",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "prepack": "npm run clean && npm run build"
   },
