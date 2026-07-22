@@ -6,6 +6,15 @@
  * 204 handling, and list-endpoint querystring construction.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// api.ts captures NEXT_PUBLIC_API_URL at module load. Pin it before the
+// import below is evaluated (vi.hoisted runs first) so the hardcoded
+// http://localhost:3000 assertions hold even when a developer has the
+// variable exported in their shell.
+vi.hoisted(() => {
+  process.env.NEXT_PUBLIC_API_URL = '';
+});
+
 import { getCurrentUser, listRuns, getRun, deleteActor } from '@/lib/api';
 
 const fetchMock = vi.fn();
