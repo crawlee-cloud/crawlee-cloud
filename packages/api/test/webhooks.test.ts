@@ -13,7 +13,7 @@ vi.mock('../src/auth/middleware.js', () => ({
   },
 }));
 
-import { webhooksRoutes } from '../src/routes/webhooks.js';
+import { webhooksRoutes, isPrivateUrl } from '../src/routes/webhooks.js';
 
 const mockQuery = vi.fn();
 vi.mock('../src/db/index.js', () => ({
@@ -779,5 +779,40 @@ describe('Webhook Routes', () => {
       expect(body.error.message).toContain('ACTOR.RUN.SUCCEEDED');
       expect(fetchMock).not.toHaveBeenCalled();
     });
+  });
+});
+
+// Pure-helper tests for the SSRF guard used by the test-delivery endpoint.
+// KEEP IN SYNC with packages/runner/test/private-url.test.ts (the runner's
+// isPrivateUrl in queue.ts is the twin of this one).
+describe('isPrivateUrl', () => {
+  it('blocks loopback addresses, including bracketed IPv6', () => {
+    expect(isPrivateUrl('http://localhost:3000/hook')).toBe(true);
+    expect(isPrivateUrl('http://127.0.0.1/hook')).toBe(true);
+    // URL.hostname keeps brackets on IPv6 literals — '[::1]' must match.
+    expect(isPrivateUrl('http://[::1]:8080/hook')).toBe(true);
+  });
+
+  it('blocks the whole 127.0.0.0/8 loopback range, not just 127.0.0.1', () => {
+    expect(isPrivateUrl('http://127.0.0.2/hook')).toBe(true);
+    expect(isPrivateUrl('http://127.1.2.3/hook')).toBe(true);
+  });
+
+  it('blocks link-local / cloud metadata and RFC 1918 ranges', () => {
+    expect(isPrivateUrl('http://169.254.169.254/latest/meta-data')).toBe(true);
+    expect(isPrivateUrl('http://10.0.0.5/')).toBe(true);
+    expect(isPrivateUrl('http://172.16.0.1/')).toBe(true);
+    expect(isPrivateUrl('http://192.168.1.1/')).toBe(true);
+    expect(isPrivateUrl('http://0.0.0.0/')).toBe(true);
+  });
+
+  it('allows public IPs and hostnames', () => {
+    expect(isPrivateUrl('https://example.com/webhook')).toBe(false);
+    expect(isPrivateUrl('http://8.8.8.8/')).toBe(false);
+    expect(isPrivateUrl('http://128.0.0.1/')).toBe(false);
+  });
+
+  it('blocks unparseable URLs', () => {
+    expect(isPrivateUrl('not a url')).toBe(true);
   });
 });

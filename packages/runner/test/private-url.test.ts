@@ -12,6 +12,11 @@ describe('isPrivateUrl', () => {
     expect(isPrivateUrl('http://[::1]:8080/hook')).toBe(true);
   });
 
+  it('blocks the whole 127.0.0.0/8 loopback range, not just 127.0.0.1', () => {
+    expect(isPrivateUrl('http://127.0.0.2/hook')).toBe(true);
+    expect(isPrivateUrl('http://127.1.2.3/hook')).toBe(true);
+  });
+
   it('blocks link-local / cloud metadata addresses', () => {
     expect(isPrivateUrl('http://169.254.169.254/latest/meta-data')).toBe(true);
     expect(isPrivateUrl('http://169.254.0.1/')).toBe(true);

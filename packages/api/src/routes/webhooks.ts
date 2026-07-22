@@ -578,8 +578,10 @@ export function buildWebhookPayload(
  * Same private-URL guard the runner uses for production deliveries — kept
  * inline because it's small and tied to the test endpoint's threat model.
  * Blocks loopback, link-local / cloud metadata, and RFC 1918 ranges.
+ * KEEP IN SYNC with `isPrivateUrl` in `packages/runner/src/queue.ts`.
+ * Exported for tests only.
  */
-function isPrivateUrl(urlString: string): boolean {
+export function isPrivateUrl(urlString: string): boolean {
   let parsed: URL;
   try {
     parsed = new URL(urlString);
@@ -587,11 +589,22 @@ function isPrivateUrl(urlString: string): boolean {
     return true;
   }
   const hostname = parsed.hostname;
-  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
+  // URL.hostname keeps the brackets around IPv6 literals ('[::1]'), so
+  // both forms must be matched or IPv6-loopback URLs bypass the guard.
+  if (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '::1' ||
+    hostname === '[::1]'
+  ) {
+    return true;
+  }
   if (hostname.startsWith('169.254.')) return true;
   const parts = hostname.split('.').map(Number);
   if (parts.length === 4 && parts.every((p) => !isNaN(p))) {
     const [a, b] = parts as [number, number, number, number];
+    // 127.0.0.0/8 loopback
+    if (a === 127) return true;
     if (a === 10) return true;
     if (a === 172 && b >= 16 && b <= 31) return true;
     if (a === 192 && b === 168) return true;

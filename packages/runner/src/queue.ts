@@ -950,6 +950,8 @@ async function maybeRetryRun(run: RunJob, runId: string): Promise<void> {
 /**
  * Check if a URL targets a private/internal network address.
  * Blocks RFC 1918, link-local, loopback, and metadata endpoints.
+ * KEEP IN SYNC with `isPrivateUrl` in `packages/api/src/routes/webhooks.ts`
+ * (the webhook test endpoint uses a twin of this guard).
  */
 export function isPrivateUrl(urlString: string): boolean {
   let parsed: URL;
@@ -982,6 +984,8 @@ export function isPrivateUrl(urlString: string): boolean {
   const parts = hostname.split('.').map(Number);
   if (parts.length === 4 && parts.every((p) => !isNaN(p))) {
     const [a, b] = parts as [number, number, number, number];
+    // 127.0.0.0/8 loopback
+    if (a === 127) return true;
     // 10.0.0.0/8
     if (a === 10) return true;
     // 172.16.0.0/12
