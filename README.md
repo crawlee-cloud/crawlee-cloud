@@ -12,8 +12,6 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green)](https://nodejs.org/)
 
-<a href="https://www.producthunt.com/products/crawlee-cloud?utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-crawlee-cloud" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1054817&theme=light" alt="Crawlee Cloud - Self-hosted platform for running web scrapers | Product Hunt" width="250" height="54" /></a>
-
 [Dashboard](#dashboard) · [Quick Start](#quick-start) · [Documentation](#documentation) · [Contributing](#contributing)
 
 </div>
