@@ -123,7 +123,6 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
       title: `Delete actor "${actor.name}"?`,
       description: (
         <DeleteActorConfirmContent
-          showUndoneWarning
           onForceChange={(val) => {
             force = val;
           }}

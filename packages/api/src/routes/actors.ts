@@ -477,19 +477,21 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
             },
           };
         }
-        await client.query(
-          `DELETE FROM webhook_deliveries
-           WHERE run_id IN (
-             SELECT id FROM runs
-             WHERE user_id = $2 AND actor_id = $1 AND status NOT IN ('READY', 'RUNNING', 'ABORTING')
-           )`,
-          [targetActorId, request.user!.id]
-        );
-        await client.query(
+        // Delete runs first and capture the ids so the delivery cleanup targets
+        // exactly the deleted rows — a subquery evaluated in a separate
+        // statement could miss runs that turn terminal in between, orphaning
+        // their deliveries (webhook_deliveries.run_id has no FK to runs).
+        const deletedRuns = await client.query<{ id: string }>(
           `DELETE FROM runs
-           WHERE user_id = $2 AND actor_id = $1 AND status NOT IN ('READY', 'RUNNING', 'ABORTING')`,
+           WHERE user_id = $2 AND actor_id = $1 AND status NOT IN ('READY', 'RUNNING', 'ABORTING')
+           RETURNING id`,
           [targetActorId, request.user!.id]
         );
+        if (deletedRuns.rows.length > 0) {
+          await client.query(`DELETE FROM webhook_deliveries WHERE run_id = ANY($1)`, [
+            deletedRuns.rows.map((r) => r.id),
+          ]);
+        }
         const remainingRuns = await client.query<{ count: string }>(
           `SELECT COUNT(*)::text AS count FROM runs WHERE user_id = $2 AND actor_id = $1`,
           [targetActorId, request.user!.id]
@@ -524,7 +526,9 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
         return {
           error: {
             type: 'actor-has-runs',
-            message: 'Actor has runs. Set force=true to delete the actor and its runs.',
+            message: force
+              ? 'A run was created while the actor was being deleted. Retry the force deletion.'
+              : 'Actor has runs. Set force=true to delete the actor and its runs.',
           },
         };
       }
