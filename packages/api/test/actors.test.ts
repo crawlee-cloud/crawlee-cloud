@@ -450,8 +450,7 @@ describe('Actor Routes', () => {
     it('force deletes an actor and cascades its runs', async () => {
       mockQuery.mockResolvedValueOnce({ rows: [{ id: 'actor-1' }] });
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
-      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
-      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 2 });
       mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
       mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
       const response = await app.inject({
@@ -459,11 +458,15 @@ describe('Actor Routes', () => {
         url: '/v2/acts/actor-1?force=true',
       });
       expect(response.statusCode).toBe(204);
-      expect(mockQuery).toHaveBeenCalledTimes(6);
-      expect(mockQuery.mock.calls[2]?.[0]).toContain('DELETE FROM webhook_deliveries');
-      expect(mockQuery.mock.calls[3]?.[0]).toContain('DELETE FROM runs');
-      expect(mockQuery.mock.calls[4]?.[0]).toContain('SELECT COUNT(*)::text AS count FROM runs');
-      expect(mockQuery.mock.calls[5]?.[0]).toContain('DELETE FROM actors');
+      expect(mockQuery).toHaveBeenCalledTimes(5);
+      // Runs and their webhook deliveries are removed in a single CTE
+      // statement so the delivery cleanup targets exactly the deleted runs.
+      const cascade = mockQuery.mock.calls[2]?.[0] as string;
+      expect(cascade).toContain('DELETE FROM runs');
+      expect(cascade).toContain('RETURNING id');
+      expect(cascade).toContain('DELETE FROM webhook_deliveries');
+      expect(mockQuery.mock.calls[3]?.[0]).toContain('SELECT COUNT(*)::text AS count FROM runs');
+      expect(mockQuery.mock.calls[4]?.[0]).toContain('DELETE FROM actors');
       for (const call of mockQuery.mock.calls) {
         expect(call[1]).toContain('test-user-id');
       }
@@ -513,6 +516,27 @@ describe('Actor Routes', () => {
 
       expect(response.statusCode).toBe(409);
       expect(response.json().error.type).toBe('actor-has-runs');
+      expect(response.json().error.message).toContain('Set force=true');
+    });
+
+    it('does not suggest force=true when the FK violation happens during a force delete', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 'actor-1' }] });
+      mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      const fkError = new Error('foreign key constraint violation') as Error & { code?: string };
+      fkError.code = '23503';
+      mockQuery.mockRejectedValueOnce(fkError);
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/v2/acts/actor-1?force=true',
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error.type).toBe('actor-has-runs');
+      expect(response.json().error.message).not.toContain('Set force=true');
+      expect(response.json().error.message).toContain('Retry');
     });
   });
 

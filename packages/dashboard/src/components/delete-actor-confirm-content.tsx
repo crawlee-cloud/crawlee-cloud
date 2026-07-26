@@ -4,13 +4,9 @@ import React from 'react';
 
 interface DeleteActorConfirmContentProps {
   onForceChange: (force: boolean) => void;
-  showUndoneWarning?: boolean;
 }
 
-export function DeleteActorConfirmContent({
-  onForceChange,
-  showUndoneWarning = false,
-}: DeleteActorConfirmContentProps) {
+export function DeleteActorConfirmContent({ onForceChange }: DeleteActorConfirmContentProps) {
   return (
     <>
       <p>
@@ -34,9 +30,9 @@ export function DeleteActorConfirmContent({
           Active runs must be aborted and fully terminated first.
         </span>
       </label>
-      {showUndoneWarning && (
+      <p className="mt-3">
         <span className="text-foreground font-mono">This cannot be undone.</span>
-      )}
+      </p>
     </>
   );
 }
