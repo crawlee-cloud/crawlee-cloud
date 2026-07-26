@@ -22,6 +22,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
+import { DeleteActorConfirmContent } from '@/components/delete-actor-confirm-content';
 import { CopyButton } from '@/components/ui/copy-button';
 import { prefixPath } from '@/lib/path-prefix';
 import { Badge, StatusChip } from '@/components/ui/badge';
@@ -116,22 +117,23 @@ export default function ActorDetailPage({ params }: { params: Promise<{ name: st
 
   async function handleDelete() {
     if (!actor) return;
+    let force = false;
     const ok = await confirm({
       tone: 'danger',
       title: `Delete actor "${actor.name}"?`,
       description: (
-        <>
-          Removes the actor record, default storage, and all build history. Run logs and datasets
-          are kept.
-          <br />
-          <span className="text-foreground font-mono">This cannot be undone.</span>
-        </>
+        <DeleteActorConfirmContent
+          showUndoneWarning
+          onForceChange={(val) => {
+            force = val;
+          }}
+        />
       ),
       confirmLabel: 'delete actor',
     });
     if (!ok) return;
     try {
-      await deleteActor(actor.id);
+      await deleteActor(actor.id, { force });
       toast.success(`Actor "${actor.name}" deleted`);
       router.push(prefixPath('/actors'));
     } catch (err) {

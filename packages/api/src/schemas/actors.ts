@@ -63,3 +63,12 @@ export const ActorRunSchema = z.object({
   envVars: z.record(z.string()).optional(),
   webhooks: z.array(RunWebhookSchema).max(20).optional(),
 });
+
+export const DeleteActorQuerySchema = z.object({
+  force: z
+    .union([z.literal('true'), z.literal('false'), z.literal('1'), z.literal('0'), z.boolean()])
+    .optional()
+    .transform((v) => v === true || v === 'true' || v === '1'),
+});
+
+export type DeleteActorQuery = z.infer<typeof DeleteActorQuerySchema>;

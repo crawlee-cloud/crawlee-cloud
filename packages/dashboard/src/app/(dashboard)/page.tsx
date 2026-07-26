@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpRight, Hammer, Plus, Webhook, Zap } from 'lucide-react';
 import { AppLink } from '@/components/app-link';
 import { StatusChip } from '@/components/ui/badge';
@@ -8,10 +8,15 @@ import type { Actor, Run, RunsHistogramBucket } from '@/lib/api';
 import { getActors, getDashboardStats, getRuns, getRunsHistogram } from '@/lib/api';
 import { FETCH_ALL_LIMIT } from '@/lib/constants';
 import { cn } from '@/lib/utils';
+import { useToast } from '@/components/ui/toast';
 
 type Stats = Awaited<ReturnType<typeof getDashboardStats>>;
 
 export default function ConsolePage() {
+  const toast = useToast();
+  const lastRefreshError = useRef<string | null>(null);
+  const lastActorsError = useRef<string | null>(null);
+  const lastHistogramError = useRef<string | null>(null);
   const [stats, setStats] = useState<Stats>({
     totalRuns: 0,
     activeActors: 0,
@@ -52,18 +57,44 @@ export default function ConsolePage() {
         const [s, r, a, h] = await Promise.all([
           getDashboardStats(),
           getRuns(),
-          getActors({ limit: FETCH_ALL_LIMIT }).catch(() => null),
-          getRunsHistogram(24).catch(() => null),
+          getActors({ limit: FETCH_ALL_LIMIT }).catch((err: unknown) => {
+            const message = err instanceof Error ? err.message : 'Actor query failed';
+            if (lastActorsError.current !== message) {
+              lastActorsError.current = message;
+              toast.error('Could not load actors', { description: message });
+            }
+            return null;
+          }),
+          getRunsHistogram(24).catch((err: unknown) => {
+            const message = err instanceof Error ? err.message : 'Histogram query failed';
+            if (lastHistogramError.current !== message) {
+              lastHistogramError.current = message;
+              toast.error('Could not load run chart', { description: message });
+            }
+            return null;
+          }),
         ]);
         if (!alive) return;
         setStats(s);
         setRuns(r);
-        if (h) setHistogramBuckets(h.buckets);
-        const map: Record<string, Actor> = {};
-        if (a) a.items.forEach((x) => (map[x.id] = x));
-        setActorsById(map);
+        lastRefreshError.current = null;
+        if (a) lastActorsError.current = null;
+        if (h) {
+          lastHistogramError.current = null;
+          setHistogramBuckets(h.buckets);
+        }
+        if (a) {
+          const map: Record<string, Actor> = {};
+          a.items.forEach((x) => (map[x.id] = x));
+          setActorsById(map);
+        }
       } catch (err) {
         console.error('dashboard refresh failed', err);
+        const message = err instanceof Error ? err.message : 'Could not load dashboard data';
+        if (lastRefreshError.current !== message) {
+          lastRefreshError.current = message;
+          toast.error('Dashboard refresh failed', { description: message });
+        }
       } finally {
         if (alive) setLoading(false);
       }
@@ -74,7 +105,7 @@ export default function ConsolePage() {
       alive = false;
       clearInterval(id);
     };
-  }, []);
+  }, [toast]);
 
   /*
     Hourly histogram comes pre-bucketed from the server, so the client only

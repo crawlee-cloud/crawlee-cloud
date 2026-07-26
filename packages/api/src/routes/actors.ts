@@ -4,8 +4,13 @@
 
 import type { FastifyPluginAsync } from 'fastify';
 import { nanoid } from 'nanoid';
-import { CreateActorSchema, UpdateActorSchema, ActorRunSchema } from '../schemas/actors.js';
-import { query } from '../db/index.js';
+import {
+  CreateActorSchema,
+  UpdateActorSchema,
+  ActorRunSchema,
+  DeleteActorQuerySchema,
+} from '../schemas/actors.js';
+import { query, getClient } from '../db/index.js';
 import { encryptProxyPassword } from '../lib/proxy-crypto.js';
 import { appendSearchCondition } from '../db/search.js';
 import { redis } from '../storage/redis.js';
@@ -411,17 +416,122 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
   /**
    * DELETE /v2/acts/:actorId - Delete actor (user-scoped)
    */
-  fastify.delete<{ Params: { actorId: string } }>('/acts/:actorId', async (request, reply) => {
+  fastify.delete<{
+    Params: { actorId: string };
+  }>('/acts/:actorId', async (request, reply) => {
     const { actorId } = request.params;
-    const result = await query(
-      `DELETE FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2 RETURNING id`,
-      [actorId, request.user!.id]
-    );
-    if (result.rowCount === 0) {
-      reply.status(404);
-      return { error: { type: 'record-not-found', message: 'Actor not found' } };
+    const { force } = DeleteActorQuerySchema.parse(request.query);
+
+    const client = await getClient();
+    try {
+      await client.query('BEGIN');
+
+      // Resolve actor to concrete ID once at the top so sub-queries stay clean,
+      // unknown actors 404 early, and operations have a stable key.
+      const actorRes = await client.query<{ id: string }>(
+        `SELECT id FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2`,
+        [actorId, request.user!.id]
+      );
+      if (actorRes.rows.length === 0) {
+        await client.query('ROLLBACK');
+        reply.status(404);
+        return { error: { type: 'record-not-found', message: 'Actor not found' } };
+      }
+      const targetActorId = actorRes.rows[0]!.id;
+
+      // Keep the default delete safe: callers must explicitly opt in before
+      // removing the actor's execution history. The count is scoped by user so
+      // a guessed actor id/name cannot reveal another tenant's runs.
+      if (!force) {
+        const runs = await client.query<{ count: string }>(
+          `SELECT COUNT(*)::text AS count FROM runs WHERE user_id = $2 AND actor_id = $1`,
+          [targetActorId, request.user!.id]
+        );
+        if (Number(runs.rows[0]?.count ?? 0) > 0) {
+          await client.query('ROLLBACK');
+          reply.status(409);
+          return {
+            error: {
+              type: 'actor-has-runs',
+              message: 'Actor has runs. Set force=true to delete the actor and its runs.',
+            },
+          };
+        }
+      } else {
+        // The schema deliberately keeps the default FK behaviour. Force delete
+        // performs the cascade explicitly in the route, scoped to the actor and
+        // tenant, so existing installations do not need a destructive migration.
+        const activeRuns = await client.query<{ count: string }>(
+          `SELECT COUNT(*)::text AS count FROM runs
+           WHERE user_id = $2 AND actor_id = $1 AND status IN ('READY', 'RUNNING', 'ABORTING')`,
+          [targetActorId, request.user!.id]
+        );
+        if (Number(activeRuns.rows[0]?.count ?? 0) > 0) {
+          await client.query('ROLLBACK');
+          reply.status(409);
+          return {
+            error: {
+              type: 'actor-has-active-runs',
+              message:
+                'Actor has active runs. Abort them and wait for termination before force deleting.',
+            },
+          };
+        }
+        await client.query(
+          `DELETE FROM webhook_deliveries
+           WHERE run_id IN (
+             SELECT id FROM runs
+             WHERE user_id = $2 AND actor_id = $1 AND status NOT IN ('READY', 'RUNNING', 'ABORTING')
+           )`,
+          [targetActorId, request.user!.id]
+        );
+        await client.query(
+          `DELETE FROM runs
+           WHERE user_id = $2 AND actor_id = $1 AND status NOT IN ('READY', 'RUNNING', 'ABORTING')`,
+          [targetActorId, request.user!.id]
+        );
+        const remainingRuns = await client.query<{ count: string }>(
+          `SELECT COUNT(*)::text AS count FROM runs WHERE user_id = $2 AND actor_id = $1`,
+          [targetActorId, request.user!.id]
+        );
+        if (Number(remainingRuns.rows[0]?.count ?? 0) > 0) {
+          await client.query('ROLLBACK');
+          reply.status(409);
+          return {
+            error: {
+              type: 'actor-has-active-runs',
+              message:
+                'Actor has active runs. Abort them and wait for termination before force deleting.',
+            },
+          };
+        }
+      }
+
+      await client.query(`DELETE FROM actors WHERE id = $1 AND user_id = $2`, [
+        targetActorId,
+        request.user!.id,
+      ]);
+      await client.query('COMMIT');
+      reply.status(204);
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Ignore rollback errors if transaction was already aborted or connection closed
+      }
+      if ((err as { code?: string }).code === '23503') {
+        reply.status(409);
+        return {
+          error: {
+            type: 'actor-has-runs',
+            message: 'Actor has runs. Set force=true to delete the actor and its runs.',
+          },
+        };
+      }
+      throw err;
+    } finally {
+      client.release();
     }
-    reply.status(204);
   });
 
   /**

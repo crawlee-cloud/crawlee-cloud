@@ -743,8 +743,9 @@ export async function createActor(data: {
   return res.data;
 }
 
-export async function deleteActor(id: string): Promise<void> {
-  await fetchApi(`/v2/acts/${id}`, { method: 'DELETE' });
+export async function deleteActor(id: string, options?: { force?: boolean }): Promise<void> {
+  const query = options?.force ? '?force=true' : '';
+  await fetchApi(`/v2/acts/${id}${query}`, { method: 'DELETE' });
 }
 
 // Datasets

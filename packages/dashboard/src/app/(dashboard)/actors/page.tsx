@@ -13,6 +13,8 @@ import { PAGE_SIZE } from '@/lib/constants';
 import { useDebouncedSearch } from '@/lib/use-debounced-search';
 import { usePageParam } from '@/lib/use-page-param';
 
+import { DeleteActorConfirmContent } from '@/components/delete-actor-confirm-content';
+
 export default function ActorsPage() {
   const { offset, setOffset, query, setQuery } = usePageParam();
   const [search, setSearch] = useDebouncedSearch(query, setQuery);
@@ -34,16 +36,22 @@ export default function ActorsPage() {
    * the component).
    */
   async function handleDelete(actor: Actor) {
+    let force = false;
     const ok = await confirm({
       tone: 'danger',
       title: `Delete actor "${actor.title || actor.name}"?`,
-      description:
-        'Actor definition, builds, schedules, webhooks, and runs are removed permanently. Datasets and key-value stores produced by past runs stay. Cannot be undone.',
+      description: (
+        <DeleteActorConfirmContent
+          onForceChange={(val) => {
+            force = val;
+          }}
+        />
+      ),
       confirmLabel: 'delete actor',
     });
     if (!ok) return;
     try {
-      await deleteActor(actor.id);
+      await deleteActor(actor.id, { force });
       setActors((prev) => prev.filter((a) => a.id !== actor.id));
       setTotal((t) => Math.max(0, t - 1));
       toast.success('Actor deleted');

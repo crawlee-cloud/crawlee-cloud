@@ -34,6 +34,15 @@ import { runsRoutes } from '../src/routes/runs.js';
 const mockQuery = vi.fn();
 vi.mock('../src/db/index.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
+  getClient: vi.fn().mockImplementation(async () => ({
+    query: async (text: string, params?: unknown[]) => {
+      if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') {
+        return { rows: [], rowCount: 0 };
+      }
+      return mockQuery(text, params);
+    },
+    release: vi.fn(),
+  })),
 }));
 
 // Mock Redis

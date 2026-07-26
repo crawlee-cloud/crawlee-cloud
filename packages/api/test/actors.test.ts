@@ -19,6 +19,15 @@ import { actorsRoutes } from '../src/routes/actors.js';
 const mockQuery = vi.fn();
 vi.mock('../src/db/index.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
+  getClient: vi.fn().mockImplementation(async () => ({
+    query: async (text: string, params?: unknown[]) => {
+      if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') {
+        return { rows: [], rowCount: 0 };
+      }
+      return mockQuery(text, params);
+    },
+    release: vi.fn(),
+  })),
 }));
 
 const mockRedisPublish = vi.fn();
@@ -415,8 +424,20 @@ describe('Actor Routes', () => {
   });
 
   describe('DELETE /v2/acts/:actorId', () => {
-    it('should delete actor', async () => {
+    it('returns 404 early if actor does not exist', async () => {
       mockQuery.mockResolvedValueOnce({ rows: [] });
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/v2/acts/non-existent-actor',
+      });
+      expect(response.statusCode).toBe(404);
+      expect(response.json().error.type).toBe('record-not-found');
+    });
+
+    it('should delete actor', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 'actor-1' }] });
+      mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
       const response = await app.inject({
         method: 'DELETE',
@@ -424,6 +445,74 @@ describe('Actor Routes', () => {
       });
 
       expect(response.statusCode).toBe(204);
+    });
+
+    it('force deletes an actor and cascades its runs', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 'actor-1' }] });
+      mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+      mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/v2/acts/actor-1?force=true',
+      });
+      expect(response.statusCode).toBe(204);
+      expect(mockQuery).toHaveBeenCalledTimes(6);
+      expect(mockQuery.mock.calls[2]?.[0]).toContain('DELETE FROM webhook_deliveries');
+      expect(mockQuery.mock.calls[3]?.[0]).toContain('DELETE FROM runs');
+      expect(mockQuery.mock.calls[4]?.[0]).toContain('SELECT COUNT(*)::text AS count FROM runs');
+      expect(mockQuery.mock.calls[5]?.[0]).toContain('DELETE FROM actors');
+      for (const call of mockQuery.mock.calls) {
+        expect(call[1]).toContain('test-user-id');
+      }
+    });
+
+    it('returns 404 when force deleting a non-existent actor', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/v2/acts/non-existent-actor?force=true',
+      });
+      expect(response.statusCode).toBe(404);
+      expect(response.json().error.type).toBe('record-not-found');
+    });
+
+    it('rejects a non-force delete when runs exist', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 'actor-1' }] });
+      mockQuery.mockResolvedValueOnce({ rows: [{ count: '2' }] });
+      const response = await app.inject({ method: 'DELETE', url: '/v2/acts/actor-1' });
+      expect(response.statusCode).toBe(409);
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+    });
+
+    it('rejects force delete while runs are active', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 'actor-1' }] });
+      mockQuery.mockResolvedValueOnce({ rows: [{ count: '1' }] });
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/v2/acts/actor-1?force=true',
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error.type).toBe('actor-has-active-runs');
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+    });
+
+    it('maps concurrent run insertion FK violation (code 23503) to 409 actor-has-runs', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 'actor-1' }] });
+      mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      const fkError = new Error('foreign key constraint violation') as Error & { code?: string };
+      fkError.code = '23503';
+      mockQuery.mockRejectedValueOnce(fkError);
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/v2/acts/actor-1',
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error.type).toBe('actor-has-runs');
     });
   });
 
@@ -697,6 +786,24 @@ describe('Actor Routes', () => {
       });
 
       expect(response.statusCode).toBe(400);
+    });
+  });
+
+  describe('DELETE /v2/acts/:actorId force=1 query parameter', () => {
+    it('accepts force=1, force=true, or boolean force in querystring via Zod schema', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 'actor-1' }] });
+      mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+      mockQuery.mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/v2/acts/actor-1?force=1',
+      });
+
+      expect(response.statusCode).toBe(204);
     });
   });
 });

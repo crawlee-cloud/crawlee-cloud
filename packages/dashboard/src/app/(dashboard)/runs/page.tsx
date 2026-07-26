@@ -17,6 +17,7 @@ import type { Actor, Run } from '@/lib/api';
 import { getActors, getRunCosts, listRuns } from '@/lib/api';
 import { FETCH_ALL_LIMIT, PAGE_SIZE } from '@/lib/constants';
 import { cn } from '@/lib/utils';
+import { useToast } from '@/components/ui/toast';
 
 /*
   Server-paginated runs triage.
@@ -69,6 +70,7 @@ function fmtCost(v: number | null | undefined): string | null {
 }
 
 export default function RunsPage() {
+  const toast = useToast();
   const [items, setItems] = useState<Run[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -130,6 +132,12 @@ export default function RunsPage() {
         setTotal(pages.reduce((acc, p) => acc + p.total, 0));
         setOffset(off);
       }
+    } catch (err) {
+      if (!silent) {
+        toast.error('Failed to load runs', {
+          description: err instanceof Error ? err.message : 'Could not query run history',
+        });
+      }
     } finally {
       if (!silent) setLoading(false);
     }
@@ -175,7 +183,13 @@ export default function RunsPage() {
    * suppress the LOADING placeholder render.
    */
   async function refresh(silent = false) {
-    await Promise.all([loadPage(statusFilter, offset, silent), loadCounts(), loadActors()]);
+    try {
+      await Promise.all([loadPage(statusFilter, offset, silent), loadCounts(), loadActors()]);
+    } catch (err) {
+      toast.error('Failed to refresh runs', {
+        description: err instanceof Error ? err.message : 'Could not query run data',
+      });
+    }
   }
 
   /**
@@ -201,8 +215,12 @@ export default function RunsPage() {
   // First mount: kick off counts + actors. Page load happens via the
   // status-filter effect, which fires on mount with the default 'all' filter.
   useEffect(() => {
-    void Promise.all([loadCounts(), loadActors()]);
-  }, []);
+    void Promise.all([loadCounts(), loadActors()]).catch((err: unknown) => {
+      toast.error('Failed to load run filters', {
+        description: err instanceof Error ? err.message : 'Could not query run metadata',
+      });
+    });
+  }, [toast]);
 
   // Status filter changed (or initial mount): jump to page 0 and refetch.
   useEffect(() => {
