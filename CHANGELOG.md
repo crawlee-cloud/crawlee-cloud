@@ -2,6 +2,36 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-07-26
+
+Safe actor deletion plus a hardening-and-testing release: force-delete with explicit dependency warnings, webhook SSRF loopback fixes, and the first enforced test-coverage floors across the monorepo.
+
+### API
+
+- **Safe actor deletion with `force`** — `DELETE /v2/acts/:actorId` now refuses to delete an actor that still has runs (409 `actor-has-runs`) instead of surfacing a raw FK 500. Passing `?force=true` (validated/coerced by a new Zod query schema) deletes the actor together with its **terminated** runs — active runs (READY / RUNNING / ABORTING) always block deletion, force or not. The whole operation runs in one transaction with tenant-scoped filters, and run deletion + webhook-delivery cleanup are folded into a single data-modifying CTE (`webhook_deliveries.run_id` has no FK to `runs`, so this closes an orphaned-deliveries race). The FK-violation 409 message branches on the force flag, so a force delete asks the caller to retry instead of telling them to set `force=true` again.
+
+### Security
+
+- **Webhook SSRF guard: loopback bypasses closed** — the guard blocked `127.0.0.1` but not the rest of `127.0.0.0/8`, and `http://[::1]/` slipped through because `URL.hostname` keeps the brackets on IPv6 literals so the `'::1'` comparison never matched. Both holes are closed.
+
+### Dashboard
+
+- Actor delete confirmation (list + detail pages, now one shared component) spells out what force deletion removes — runs, versions, builds, schedules, webhooks, storages — and always warns "This cannot be undone."
+- Ancillary query failures (actor labels, histogram) surface as deduplicated toast notifications instead of silently blanking data; transient API errors no longer wipe dashboard state.
+
+### Testing & CI
+
+- Coverage tooling: `test:coverage` scripts across the workspace with per-package enforced floors in CI (api lines ≥ 70 / branches ≥ 74; runner lines ≥ 30 / branches ≥ 78), to be ratcheted as coverage grows.
+- New suites: runner webhook delivery/retries, queue backpressure, heartbeat, config guard, and pure helpers (30% → 43% lines); api registry routes, request-queue branches, and retention; cli config, push helpers, and formatters; dashboard vitest bootstrap with its first tests (lib layer).
+
+### Dependencies
+
+- `next` 16.1.0 → 16.2.11 (dashboard), `find-my-way` 9.3.0 → 9.7.0, `fast-uri` 3.1.0 → 3.1.4.
+
+### Docs
+
+- Contributor Covenant v2.1 code of conduct; README caught up through the v1.4.0 cost features.
+
 ## [1.4.0] - 2026-07-19
 
 Per-run cost lands in the runs list: the cost analysis introduced in 1.3.0 is now visible at a glance for every finished run, not just on the detail page. Read-only and additive — no runner, scaler, or placement changes.
