@@ -101,13 +101,13 @@ function envFloatOrNull(key: string): number | null {
 }
 
 export const config: Config = {
-  apiBaseUrl: env('API_BASE_URL', 'http://localhost:3001'),
+  apiBaseUrl: env('API_BASE_URL', 'http://localhost:3000'),
   apiToken: env('API_TOKEN', 'runner-token'),
 
   databaseUrl: env('DATABASE_URL', 'postgresql://postgres:postgres@localhost:5432/crawlee_cloud'),
   redisUrl: env('REDIS_URL', 'redis://localhost:6379'),
 
-  dockerSocketPath: env('DOCKER_SOCKET', '\\\\.\\pipe\\docker_engine'),
+  dockerSocketPath: env('DOCKER_SOCKET', '/var/run/docker.sock'),
   dockerNetwork: env('DOCKER_NETWORK', 'crawlee-cloud_default'),
 
   imageRegistry: env('IMAGE_REGISTRY', ''),
