@@ -477,21 +477,23 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
             },
           };
         }
-        // Delete runs first and capture the ids so the delivery cleanup targets
-        // exactly the deleted rows — a subquery evaluated in a separate
-        // statement could miss runs that turn terminal in between, orphaning
-        // their deliveries (webhook_deliveries.run_id has no FK to runs).
-        const deletedRuns = await client.query<{ id: string }>(
-          `DELETE FROM runs
-           WHERE user_id = $2 AND actor_id = $1 AND status NOT IN ('READY', 'RUNNING', 'ABORTING')
-           RETURNING id`,
+        // Delete runs and their deliveries in one statement so the cleanup
+        // targets exactly the deleted rows — a subquery evaluated in a
+        // separate statement could miss runs that turn terminal in between,
+        // orphaning their deliveries (webhook_deliveries.run_id has no FK to
+        // runs). The CTE keeps the id set server-side regardless of how large
+        // the run history is.
+        await client.query(
+          `WITH deleted_runs AS (
+             DELETE FROM runs
+             WHERE user_id = $2 AND actor_id = $1 AND status NOT IN ('READY', 'RUNNING', 'ABORTING')
+             RETURNING id
+           )
+           DELETE FROM webhook_deliveries wd
+           USING deleted_runs d
+           WHERE wd.run_id = d.id`,
           [targetActorId, request.user!.id]
         );
-        if (deletedRuns.rows.length > 0) {
-          await client.query(`DELETE FROM webhook_deliveries WHERE run_id = ANY($1)`, [
-            deletedRuns.rows.map((r) => r.id),
-          ]);
-        }
         const remainingRuns = await client.query<{ count: string }>(
           `SELECT COUNT(*)::text AS count FROM runs WHERE user_id = $2 AND actor_id = $1`,
           [targetActorId, request.user!.id]
