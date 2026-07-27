@@ -15,19 +15,25 @@
 
 import fs from 'fs-extra';
 import path from 'path';
-import os from 'os';
 import chalk from 'chalk';
+import { CONFIG_DIR } from './config.js';
 
-const MARKER_FILE = path.join(os.homedir(), '.crawlee-cloud', 'feedback-note-shown');
+const MARKER_FILE = path.join(CONFIG_DIR, 'feedback-note-shown');
 
 export async function maybeShowFeedbackNote(): Promise<void> {
   try {
     if (!process.stdout.isTTY) return;
     if (process.env.CRAWLEE_CLOUD_NO_FEEDBACK_NOTE) return;
-    if (await fs.pathExists(MARKER_FILE)) return;
 
-    await fs.ensureDir(path.dirname(MARKER_FILE));
-    await fs.writeFile(MARKER_FILE, new Date().toISOString() + '\n');
+    await fs.ensureDir(CONFIG_DIR);
+    // Exclusive create: EEXIST means the note was already shown (and also
+    // closes the check-then-write TOCTOU a pathExists() pre-check would
+    // have). EEXIST lands in the catch below and exits silently, which is
+    // exactly the wanted behavior.
+    await fs.writeFile(MARKER_FILE, new Date().toISOString() + '\n', {
+      flag: 'wx',
+      mode: 0o600,
+    });
 
     console.log(chalk.dim('────────────────────────────────────────────────────────'));
     console.log(chalk.bold('🎉 First push! Two quick asks (this message shows once):'));
@@ -41,6 +47,7 @@ export async function maybeShowFeedbackNote(): Promise<void> {
     console.log(chalk.dim('────────────────────────────────────────────────────────'));
     console.log();
   } catch {
-    // A feedback nudge must never break a deploy — swallow everything.
+    // Already shown (EEXIST) or anything else — a feedback nudge must
+    // never break a deploy, so every failure mode is silent.
   }
 }
