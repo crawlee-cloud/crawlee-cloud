@@ -1,0 +1,51 @@
+name: 🚀 Deployment report
+description: You deployed Crawlee Cloud? Tell us how it went — good, bad, or confusing. Nothing needs to be broken to file this.
+title: '[Deploy report]: '
+labels: ['deployment-report']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This isn't a bug report — it's the single most useful thing you can send us as an early user.
+        Five minutes of honest notes about your deploy experience directly shapes what gets fixed next.
+        Short answers are perfectly fine.
+  - type: dropdown
+    id: deploy-method
+    attributes:
+      label: Where did you deploy?
+      options:
+        - DigitalOcean App Platform (deploy button)
+        - VPS deploy script (Caddy)
+        - Docker Compose
+        - Somewhere else (tell us below!)
+    validations:
+      required: true
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: Did you get it running?
+      options:
+        - Yes, first try
+        - Yes, after some fiddling
+        - Partially — some things work
+        - No, I gave up (please tell us where!)
+    validations:
+      required: true
+  - type: textarea
+    id: friction
+    attributes:
+      label: What was confusing, surprising, or almost made you give up?
+      description: The honest version. "The docs said X but reality was Y", "I had no idea what value to put in Z" — this is exactly what we need.
+    validations:
+      required: true
+  - type: textarea
+    id: use-case
+    attributes:
+      label: What are you planning to run on it? (optional)
+      description: Helps us understand real use cases. Feel free to be vague if the project is private.
+  - type: checkboxes
+    id: follow-up
+    attributes:
+      label: Follow-up
+      options:
+        - label: I'm open to a follow-up question or two about my setup

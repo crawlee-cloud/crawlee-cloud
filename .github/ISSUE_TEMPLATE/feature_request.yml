@@ -1,0 +1,28 @@
+name: 💡 Feature request
+description: Suggest an improvement or new capability.
+title: '[Feature]: '
+labels: ['enhancement']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before writing, a quick look at the [roadmap](https://github.com/crawlee-cloud/crawlee-cloud/blob/main/ROADMAP.md) helps — it lists what's planned and, just as importantly, the non-goals.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: The problem matters more than the solution — describe what you're actually trying to do.
+      placeholder: "I run 50+ actors and can't tell which ones are burning money without clicking into each run..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to see?
+      description: Your ideal solution, even if rough.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds or alternatives you've considered

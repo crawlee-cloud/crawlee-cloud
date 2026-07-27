@@ -19,6 +19,7 @@ import path from 'path';
 import fs from 'fs-extra';
 import { spawn } from 'child_process';
 import { getConfig } from '../utils/config.js';
+import { maybeShowFeedbackNote } from '../utils/feedback.js';
 
 interface ActorJson {
   actorSpecification?: number;
@@ -326,6 +327,8 @@ export const pushCommand = new Command('push')
       console.log(chalk.dim(`Run with: crawlee-cloud call ${actorName}`));
       console.log(chalk.dim(`List:     crawlee-cloud ls`));
       console.log();
+
+      await maybeShowFeedbackNote();
     } catch (err) {
       registerSpinner.fail('Registration failed');
       console.error(err);

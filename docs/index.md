@@ -31,3 +31,5 @@ Crawlee Cloud lets you run your Crawlee and Apify Actors on your own infrastruct
 
 - [GitHub Issues](https://github.com/crawlee-cloud/crawlee-cloud/issues) — Bug reports and feature requests
 - [Discussions](https://github.com/crawlee-cloud/crawlee-cloud/discussions) — Questions and community support
+- [Deployment report](https://github.com/crawlee-cloud/crawlee-cloud/issues/new?template=deployment_report.yml) — Deployed it? Tell us how it went — good, bad, or confusing
+- Free 15-minute setup help — stuck deploying? [Email the maintainer](mailto:aminembarki@gmail.com?subject=crawlee-cloud%20setup%20help) for personal help getting running, in exchange for your candid feedback

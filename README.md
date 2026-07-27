@@ -12,7 +12,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-green)](https://nodejs.org/)
 
-[Dashboard](#dashboard) · [Quick Start](#quick-start) · [Documentation](#documentation) · [Contributing](#contributing)
+[Dashboard](#dashboard) · [Quick Start](#quick-start) · [Documentation](#documentation) · [Community](#community--support) · [Contributing](#contributing)
 
 </div>
 
@@ -226,6 +226,17 @@ See [deploy/](deploy/) for detailed instructions.
 The 1.1–1.4 line that led here covered: the zombie-run reliability overhaul from a live production incident — Redis-blip-proof dead-runner detection, a zombie-run reaper, OOM kills made visible, failed-run logs archived to KV, prebuilt runner images cutting ~4.5 min off scale-up (v1.1.x); memory-aware placement, fast dead-runner reap, and the claim-time cost-attribution stamps (v1.2.0); ingest hot-path performance and runner-key self-healing (v1.2.1/1.2.2); the run-details cost analysis card (v1.3.0); and per-run cost across the runs list, backed by the batch cost endpoint `GET /v2/actor-runs/costs` (v1.4.0).
 
 > **Upgrading from v1.4.x to v1.5.0** is a drop-in: no schema migration, no env-var changes, API + dashboard redeploy only. From v1.2.x, also note the optional `APIFY_CU_PRICE` (default `0.40`) added in 1.3.0. From v1.0.x or earlier, walk the [CHANGELOG](CHANGELOG.md) forward — deploy notes are flagged inline at each release.
+
+---
+
+## Community & Support
+
+Crawlee Cloud is young, and feedback from real deployments shapes what gets built next.
+
+- **💬 [GitHub Discussions](https://github.com/crawlee-cloud/crawlee-cloud/discussions)** — ask questions, share what you're running, weigh in on the roadmap
+- **🚀 [Deployed it? Tell us how it went](https://github.com/crawlee-cloud/crawlee-cloud/issues/new?template=deployment_report.yml)** — 5 minutes of honest notes about your deploy experience is the most useful thing an early user can send
+- **🤝 Free 15-minute setup help** — stuck deploying? [Email me](mailto:aminembarki@gmail.com?subject=crawlee-cloud%20setup%20help) and I'll personally help you get running, free, in exchange for your candid feedback
+- **☕ Support the project** — [Open Collective](https://opencollective.com/crawlee-cloud) · [GitHub Sponsors](https://github.com/sponsors/aminembarki) · [Ko-fi](https://ko-fi.com/crawleecloud)
 
 ---
 

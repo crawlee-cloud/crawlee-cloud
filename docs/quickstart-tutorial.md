@@ -331,3 +331,12 @@ See the [Deployment Guide](./deployment.md) for all options including Railway, R
 - **[Dashboard Guide](./dashboard.md)** — Get the most out of the web UI
 
 If you run into issues, check [GitHub Issues](https://github.com/crawlee-cloud/crawlee-cloud/issues) or start a [Discussion](https://github.com/crawlee-cloud/crawlee-cloud/discussions).
+
+---
+
+## Tell Us How It Went
+
+You just deployed (or tried to deploy) Crawlee Cloud — that makes you exactly the person whose feedback matters most right now.
+
+- **[File a deployment report](https://github.com/crawlee-cloud/crawlee-cloud/issues/new?template=deployment_report.yml)** — 5 minutes of honest notes: what was confusing, what almost made you give up. Nothing needs to be broken to file one.
+- **Stuck?** [Email the maintainer](mailto:aminembarki@gmail.com?subject=crawlee-cloud%20setup%20help) for free 15-minute setup help — the only price is your candid feedback.
