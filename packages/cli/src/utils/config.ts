@@ -44,7 +44,7 @@ interface ProfileFile {
   profiles?: Record<string, CLIConfig>;
 }
 
-const CONFIG_DIR = path.join(os.homedir(), '.crawlee-cloud');
+export const CONFIG_DIR = path.join(os.homedir(), '.crawlee-cloud');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const DEFAULT_PROFILE = 'default';
 
