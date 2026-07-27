@@ -21,24 +21,33 @@ git clone https://github.com/crawlee-cloud/crawlee-cloud.git
 cd crawlee-cloud
 ```
 
-Create a `.env` file with your admin credentials (required for login):
-
-```bash
-ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=your-secure-password
-```
-
 Start everything:
 
 ```bash
 docker compose up -d
 ```
 
-This brings up the API, Runner, Dashboard, PostgreSQL, Redis, and MinIO. Wait a moment for services to initialize, then verify:
+Then run the database migrations (they do not run automatically on container startup):
+
+```bash
+docker compose exec api node packages/api/dist/db/migrate.js
+```
+
+This brings up the API, Runner, Dashboard, Scheduler, PostgreSQL, Redis, and MinIO, plus a one-shot `minio-init` job that creates the storage bucket and exits.
+
+::: warning Dev admin credentials
+The stock `docker-compose.yml` hard-codes the admin login `admin@crawlee.cloud` / `crawlee.cloud` and does **not** read a `.env` file. `ADMIN_EMAIL` / `ADMIN_PASSWORD` in `.env` only apply to the non-Docker flow and to the production Compose file (`deploy/vps/docker-compose.prod.yml`). Note that `.env.example` does not include these keys — add them if you use those flows.
+:::
+
+::: warning Docker network name
+The stock compose file sets `DOCKER_NETWORK=crawlee-platfrom_crawlee-network` for the Runner, which only matches if your checkout directory is named `crawlee-platfrom`. If you cloned into a differently named directory, adjust that value to `<your-directory>_crawlee-network`.
+:::
+
+Wait a moment for services to initialize, then verify:
 
 ```bash
 curl http://localhost:3000/health
-# {"status":"ok","version":"1.0.0"}
+# {"status":"ok","version":"1.5.0"}   # version reflects the release you have installed
 ```
 
 The **Dashboard** is available at `http://localhost:3001`.
@@ -47,12 +56,12 @@ The **Dashboard** is available at `http://localhost:3001`.
 
 ## Step 2: Get an API Token
 
-Log in with your admin credentials to get a JWT token:
+Log in with your admin credentials to get a JWT token (with the stock compose file, these are the dev defaults shown below):
 
 ```bash
 curl -s -X POST http://localhost:3000/v2/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"admin@example.com","password":"your-secure-password"}'
+  -d '{"email":"admin@crawlee.cloud","password":"crawlee.cloud"}'
 ```
 
 The response contains your token:
@@ -60,7 +69,7 @@ The response contains your token:
 ```json
 {
   "data": {
-    "user": { "id": "...", "email": "admin@example.com" },
+    "user": { "id": "...", "email": "admin@crawlee.cloud" },
     "token": "eyJhbGciOiJIUzI1NiIs..."
   }
 }

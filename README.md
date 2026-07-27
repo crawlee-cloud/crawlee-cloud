@@ -9,8 +9,8 @@
 **Self-hosted, open-source platform for running Apify Actors on your own infrastructure.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue)](https://www.typescriptlang.org/)
-[![Node.js](https://img.shields.io/badge/Node.js-18+-green)](https://nodejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue)](https://www.typescriptlang.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-20+-green)](https://nodejs.org/)
 
 [Dashboard](#dashboard) · [Quick Start](#quick-start) · [Documentation](#documentation) · [Contributing](#contributing)
 
@@ -105,7 +105,7 @@ await Actor.exit();
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 20+
 - Docker & Docker Compose
 - PostgreSQL, Redis, and S3-compatible storage (or use our Docker setup)
 
@@ -221,11 +221,11 @@ See [deploy/](deploy/) for detailed instructions.
 
 ## What's New
 
-**v1.4.0** — cost visibility everywhere. The runs list now shows what each finished run cost you at a glance, backed by a batch cost endpoint (`GET /v2/actor-runs/costs`) that answers a whole page in two queries; run details already carried the full breakdown — your cost via actual-overlap droplet attribution vs what the same run would cost on Apify, with savings %. See the [full changelog](CHANGELOG.md#140---2026-07-19).
+**v1.5.0** — safe actor deletion plus a hardening-and-testing release. `DELETE /v2/acts/:actorId` now refuses to delete an actor that still has runs (409 `actor-has-runs`) instead of surfacing a raw FK 500; passing `?force=true` deletes the actor together with its terminated runs in one transaction, while active runs always block deletion — and the dashboard's delete confirmation spells out exactly what force deletion removes. Also in this release: webhook SSRF loopback bypasses closed (the rest of `127.0.0.0/8`, bracketed IPv6 `[::1]`), and the first enforced test-coverage floors in CI across the monorepo. See the [full changelog](CHANGELOG.md#150---2026-07-26).
 
-The 1.1–1.3 line that led here covered: the zombie-run reliability overhaul from a live production incident — Redis-blip-proof dead-runner detection, a zombie-run reaper, OOM kills made visible, failed-run logs archived to KV, prebuilt runner images cutting ~4.5 min off scale-up (v1.1.x); memory-aware placement, fast dead-runner reap, and the claim-time cost-attribution stamps (v1.2.0); ingest hot-path performance and runner-key self-healing (v1.2.1/1.2.2); and the run-details cost analysis card (v1.3.0).
+The 1.1–1.4 line that led here covered: the zombie-run reliability overhaul from a live production incident — Redis-blip-proof dead-runner detection, a zombie-run reaper, OOM kills made visible, failed-run logs archived to KV, prebuilt runner images cutting ~4.5 min off scale-up (v1.1.x); memory-aware placement, fast dead-runner reap, and the claim-time cost-attribution stamps (v1.2.0); ingest hot-path performance and runner-key self-healing (v1.2.1/1.2.2); the run-details cost analysis card (v1.3.0); and per-run cost across the runs list, backed by the batch cost endpoint `GET /v2/actor-runs/costs` (v1.4.0).
 
-> **Upgrading from v1.3.x to v1.4.0** is a drop-in: no schema migration, no env-var changes, API + dashboard redeploy only. From v1.2.x, also note the optional `APIFY_CU_PRICE` (default `0.40`) added in 1.3.0. From v1.0.x or earlier, walk the [CHANGELOG](CHANGELOG.md) forward — deploy notes are flagged inline at each release.
+> **Upgrading from v1.4.x to v1.5.0** is a drop-in: no schema migration, no env-var changes, API + dashboard redeploy only. From v1.2.x, also note the optional `APIFY_CU_PRICE` (default `0.40`) added in 1.3.0. From v1.0.x or earlier, walk the [CHANGELOG](CHANGELOG.md) forward — deploy notes are flagged inline at each release.
 
 ---
 

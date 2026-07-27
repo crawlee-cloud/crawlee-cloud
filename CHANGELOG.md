@@ -628,7 +628,80 @@ PRs in this release: #47 (multi-replica), #48 (actor default timeout).
 - Dataset items return type narrowed at the consumer rather than the helper, unblocking dashboard CI.
 - Runner prefixes `actor-` when pulling from a configured registry, matching the build naming convention.
 
-## [0.1.0] - 2025-12-14
+## [0.7.0] - 2026-04-06
+
+Image registry & runner cleanup: scaler-provisioned runners can pull actor images on demand, and runner disks no longer fill up.
+
+### Added
+
+- Runner image registry support (GHCR / custom registry) so auto-scaled runners pull actor images instead of requiring a local build.
+- Periodic Docker cleanup on runners: exited containers, old images, and build cache are pruned on an interval.
+- CLI: `crc list` shows actors and runs; `crc push` gains remote build, GHCR, and upsert support.
+- DigitalOcean deployment workflow in CI.
+
+### Fixed
+
+- CLI `list` shows the last run status and the correct deployed timestamp.
+
+## [0.6.0] - 2026-03-19
+
+Cloud deployment: run the whole platform on DigitalOcean with automatic runner scaling.
+
+### Added
+
+- DigitalOcean deployment: App Platform (API + dashboard) plus a runner droplet, provisioned end-to-end by `deploy/digitalocean/setup.sh`.
+- Queue-based runner auto-scaler with a platform-agnostic provider interface (DigitalOcean provider included).
+- Runner heartbeat: CPU / memory / disk metrics published via Redis.
+- SSL auto-enabled for managed production Postgres; migrations run automatically before the API starts.
+
+## [0.5.0] - 2026-03-06
+
+Security & polish: lock the platform down ahead of wider use.
+
+### Security
+
+- Authentication middleware on every API route via a preHandler hook.
+- User-scoped resources: datasets, KV stores, request queues, and actors are isolated per user (IDOR protection).
+- Input validation: Zod schemas on all route inputs.
+- SSRF protection: webhook delivery to private / loopback / link-local addresses is blocked.
+
+## [0.4.0] - 2026-02-07
+
+Reliability & operations: production-grade stability primitives.
+
+### Added
+
+- Prometheus metrics module (`GET /metrics`) with HTTP and application counters.
+- Health check endpoints (`/health/live`, `/health/ready`) and API graceful shutdown.
+- Runner graceful shutdown with active-run draining.
+- Data cleanup and database backup / restore scripts.
+
+## [0.3.0] - 2026-01-27
+
+Production scraping at scale: schedules, webhooks, and retries.
+
+### Added
+
+- Cron scheduling: schedule CRUD routes (Zod-validated) backed by a node-cron scheduler module.
+- Webhooks: CRUD routes plus delivery tracking with exponential-backoff retry and a delivery-history endpoint.
+- Run retry policies: per-actor `max_retries` with delayed re-queue.
+- Actor environment variable support.
+- Schema: `schedules`, `webhook_deliveries`, and retry columns.
+
+## [0.2.0] - 2026-01-13
+
+CLI & developer experience: make the CLI the best way to work with the platform.
+
+### Added
+
+- CLI: `crc init` (scaffold new Actor projects from templates), `crc dev` (local development mode), `crc status`.
+- CLI auto-publish CI workflow with version bump.
+
+### Fixed
+
+- `crc init` zip extraction, plus assorted API bugs surfaced by the new commands.
+
+## [0.1.0] - 2025-12-26
 
 ### Added
 

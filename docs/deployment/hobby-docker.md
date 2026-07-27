@@ -21,8 +21,14 @@ hundreds-to-thousands of dataset items per run, ≤ 10 concurrent runs.
    ```
 
 2. Edit `.env`. Minimum required: set `API_SECRET` to at least 32 random
-   characters, set `ADMIN_EMAIL` and `ADMIN_PASSWORD` for the initial admin
-   user. Defaults for everything else are fine for hobby scale.
+   characters, and add `ADMIN_EMAIL` and `ADMIN_PASSWORD` keys (the template
+   does not include them) for the initial admin user. Defaults for everything
+   else are fine for hobby scale.
+
+   Note: these `.env` credentials apply to the from-source flow below and to
+   `deploy/vps/docker-compose.prod.yml`. The root `docker-compose.yml` does
+   not read `.env` — it hard-codes the dev login `admin@crawlee.cloud` /
+   `crawlee.cloud`.
 
 3. Start the infrastructure:
 
@@ -30,7 +36,14 @@ hundreds-to-thousands of dataset items per run, ≤ 10 concurrent runs.
    npm install
    npm run docker:dev    # starts PG, Redis, MinIO
    npm run db:migrate --workspace=@crawlee-cloud/api
-   npm run dev           # starts API + runner
+   npm run dev           # starts the API only
+   ```
+
+   `npm run dev` starts only the API server. Start the runner separately so
+   pushed actors actually execute:
+
+   ```bash
+   npm run dev --workspace=@crawlee-cloud/runner
    ```
 
 ## Tunables relevant for this tier

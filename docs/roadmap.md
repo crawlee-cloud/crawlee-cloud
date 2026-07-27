@@ -2,15 +2,14 @@
 
 A CLI-first platform for running large-scale scrapers on your own infrastructure.
 
-## Current Version: v0.9.1
+## Current Version: v1.5.0
 
-- Apify-compatible webhook payload templating engine (quoted, unquoted, interpolated, dot notation)
-- Server-side `?q=` substring search on every list endpoint
-- Reaper uses `GREATEST(accessed_at, modified_at)` so actively-written-to unnamed resources don't get reaped
-- Dashboard counter tiles read real `COUNT(*)` instead of capped `items.length`
-- Stress-fixture script in tree for at-scale QA
+- Safe actor force-deletion (`DELETE /v2/acts/:id?force=true`; active runs always block)
+- Webhook SSRF guard closes `127.0.0.0/8` and bracketed-IPv6 loopback bypasses
+- Enforced per-package test-coverage floors in CI
+- Run cost analysis: per-run breakdown plus a Cost column in the runs list (v1.3.0–v1.4.0)
 
-The platform survives months of operation unattended (retention reaper from v0.9.0), runs on real production volume (race-free dataset push from v0.8.0+, real pagination from v0.9.0), and is now Apify-template-compatible end-to-end.
+The 1.0 stability commitment (2026-06-06) is well behind us. The 1.x line has focused on production reliability (runner lifecycle races in v1.0.1, zombie-run reaping in v1.1.0, memory-aware placement in v1.2.0), cost visibility (v1.3.0–v1.4.0), and hardening (v1.5.0) — all additive, as the semver commitment requires.
 
 ---
 
@@ -127,13 +126,13 @@ The "platform survives months of operation" gate.
 
 The 0.9.x line was the run-up to 1.0. Highlights:
 
-| Release | Headline                                                                                                              |
-| ------- | --------------------------------------------------------------------------------------------------------------------- |
-| v0.9.4  | Apify proxy support (`useApifyProxy=true`) end-to-end; `PROXY_ENCRYPTION_KEY` plumbing.                               |
-| v0.9.5  | Scaler-provisioned runners inherit `PROXY_ENCRYPTION_KEY` via cloud-init.                                             |
-| v0.9.6  | `RUNNER_CLONE_REF` operator knob pins scaler-provisioned runners to a specific clone ref (shell-injection hardened).  |
-| v0.9.7  | API multi-replica safety via Postgres advisory-lock leader election; poll-based scheduler; actor `default_run_options` propagated to runs. |
-| v0.9.8  | `crc push` now forwards `actor.json` `defaultRunOptions` (timeoutSecs / memoryMbytes / build) — fixes the "scraper stuck at 3600s" report. |
+| Release | Headline                                                                                                                                       |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| v0.9.4  | Apify proxy support (`useApifyProxy=true`) end-to-end; `PROXY_ENCRYPTION_KEY` plumbing.                                                        |
+| v0.9.5  | Scaler-provisioned runners inherit `PROXY_ENCRYPTION_KEY` via cloud-init.                                                                      |
+| v0.9.6  | `RUNNER_CLONE_REF` operator knob pins scaler-provisioned runners to a specific clone ref (shell-injection hardened).                           |
+| v0.9.7  | API multi-replica safety via Postgres advisory-lock leader election; poll-based scheduler; actor `default_run_options` propagated to runs.     |
+| v0.9.8  | `crc push` now forwards `actor.json` `defaultRunOptions` (timeoutSecs / memoryMbytes / build) — fixes the "scraper stuck at 3600s" report.     |
 | v0.9.9  | Autoscaler scale-down freeze fix: math + heartbeat / `started_at` correlation against zombie RUNNING rows. Semantic `--ok` green colour token. |
 
 ---
@@ -152,18 +151,62 @@ The 0.9.x line was the run-up to 1.0. Highlights:
 
 The 1.0-launch PR was deliberately small (live dataset item counts on the runs grid + 5s auto-refresh + semantic-green success colour); most of the 1.0-worthy substance shipped across 0.9.x — see the patch-line summary above.
 
-### Deferred from the 1.0 push (candidates for v1.1 or v2.0)
+### Deferred from the 1.0 push (status as of v1.5.0)
 
-The original 1.0 wish-list had more on it than shipped. These are the genuinely-deferred items:
+The original 1.0 wish-list had more on it than shipped. Status of the deferred items:
 
-| Area                                                    | Why it's still open                                                                                                   |
-| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Area                                                    | Why it's still open                                                                                                                                     |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `packages/shared` workspace                             | `applyWebhookTemplate` engine is duplicated in api+runner with KEEP-IN-SYNC headers. Land before v2.0 to keep options open for breaking the engine API. |
-| Apify v2 API drift audit                                | Periodic compatibility check against current Apify, especially as their own surface evolves. Triggers v1.x minors as gaps are closed additively.       |
-| Zombie RUNNING row reaper                               | The v0.9.9 scaler resilience covers the symptom; a dedicated periodic job for the data-integrity cleanup is still pending. Probably v1.0.1 / v1.1.       |
-| DigitalOcean `listRunners` pagination                   | Provider's `per_page=100` with no iteration; deployments with >100 droplets silently underreport capacity. Probably v1.0.1.                              |
-| Webhook `payload_template` examples in dashboard editor | Operators still consult Apify docs to discover `{{eventData}}` syntax. UX-only, no contract change — v1.x minor.                                          |
-| Auth/role surface tightening                            | Admin scopes, API key TTLs. Anything role-related that breaks tokens is a v2.0 candidate; anything additive can land in v1.x.                            |
+| Apify v2 API drift audit                                | Periodic compatibility check against current Apify, especially as their own surface evolves. Triggers v1.x minors as gaps are closed additively.        |
+| ~~Zombie RUNNING row reaper~~                           | ✅ Shipped in v1.1.0 — dedicated periodic reaper flips orphaned RUNNING rows past their own timeout to `TIMED-OUT`, with transactional webhook enqueue. |
+| DigitalOcean `listRunners` pagination                   | Provider's `per_page=100` with no iteration; deployments with >100 droplets silently underreport capacity. Still open as of v1.5.0.                     |
+| Webhook `payload_template` examples in dashboard editor | Operators still consult Apify docs to discover `{{eventData}}` syntax. UX-only, no contract change — v1.x minor.                                        |
+| Auth/role surface tightening                            | Admin scopes, API key TTLs. Anything role-related that breaks tokens is a v2.0 candidate; anything additive can land in v1.x.                           |
+
+---
+
+## v1.0.1 ✅ — Runner Lifecycle Races & Dashboard Correctness (2026-07-06)
+
+- Resurrect actually executes (sets `READY`, clears stale exit state, publishes `run:new`); abort actually stops the container (`run:abort` channel, pull/create race windows covered)
+- Run claiming is atomic (single `UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED)`); webhook retries no longer double-deliver across runners; per-run timer leak fixed
+- Dashboard: server-side actor-run filtering, poll-tick over-fetch fixes, sign-out clears the auth cookie
+
+## v1.1.0 ✅ — Zombie-Run Reaper & OOM Visibility (2026-07-15)
+
+- Zombie-run reaper: unclaimed RUNNING rows past their own timeout flip to `TIMED-OUT`, with the terminal UPDATE and `ACTOR.RUN.TIMED_OUT` webhook enqueue in one transaction; zombies no longer count as scaling demand
+- Dead-runner detection survives Redis blips (consecutive-miss + time-window condemnation instead of a single-tick destroy)
+- OOM kills are visible (`State.OOMKilled`), `status_message` set on every terminal update, failed-run logs archived to KV as `RUN_LOG.txt`
+- Prebuilt runner image boot (`RUNNER_IMAGE`) removes the ~4.5-minute cold-boot penalty per scale-up
+
+## v1.1.1 ✅ — Reaped-Run Deadline Stamping (2026-07-15)
+
+- Reaped zombie runs stamp `finished_at` at their own deadline (`started_at + timeout_secs`) instead of the reap moment, matching Apify timed-out semantics
+
+## v1.2.0 ✅ — Memory-Aware Placement (2026-07-16)
+
+- Claim-time admission by host memory headroom; container limits clamped to host capacity; scaler demand in droplet-shares with starvation protection on both sides
+- Fast dead-runner reap via the claim-time `runner_id` stamp; log/pull hardening; cost-attribution groundwork (`runner_price_hourly`, `peak_memory_mb`)
+
+## v1.2.1 / v1.2.2 ✅ — Auth Hot Path & Runner-Key Self-Heal (2026-07-18)
+
+- v1.2.1: bcrypt removed from the ingest hot path (verified-key cache + sha256-indexed API-key lookup)
+- v1.2.2: runner-key split-brain self-heals on boot
+
+## v1.3.0 / v1.3.1 ✅ — Run Cost Analysis (2026-07-19)
+
+- `GET /v2/actor-runs/:runId/cost`: actual-overlap droplet-hour attribution, Apify compute-unit estimate, $/1k-items normalization; dashboard Cost Analysis card. Read-only and additive
+- v1.3.1: Started column shows `startedAt` (READY runs read "queued"); resurrect clears `started_at`
+
+## v1.4.0 ✅ — Per-Run Cost in the Runs List (2026-07-19)
+
+- Batch `GET /v2/actor-runs/costs?ids=...` (up to 50 runs, two set-based queries); shared `computeYourCostUsd()` so single-run and batch paths can't drift; dashboard Cost column with client-side caching and 50-id chunking
+
+## v1.5.0 ✅ — Safe Actor Force-Deletion & Hardening (2026-07-26)
+
+- `DELETE /v2/acts/:actorId` refuses while runs exist (409 `actor-has-runs`); `?force=true` transactionally deletes the actor with its terminated runs and webhook deliveries — active runs always block
+- Webhook SSRF guard closes the `127.0.0.0/8` and bracketed-IPv6 (`[::1]`) loopback bypasses
+- Enforced per-package test-coverage floors in CI, with new runner, api, cli, and dashboard suites
 
 ---
 
@@ -174,7 +217,7 @@ To keep focus, these are explicitly **not** on the roadmap:
 - ❌ Web IDE for editing Actors
 - ❌ Multi-tenant workspaces
 - ❌ Complex RBAC/permissions
-- ❌ Built-in proxy rotation (use your own)
+- ❌ Built-in rotation of custom proxy URLs (bring your own; Apify proxy passthrough — runner proxy-resolver with three-tier resolution and AES-256-GCM at rest — shipped in v0.9.4)
 
 ---
 

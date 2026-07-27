@@ -21,26 +21,18 @@ The fastest way to get the full stack running:
 git clone https://github.com/crawlee-cloud/crawlee-cloud.git
 cd crawlee-cloud
 
-# Configure environment
-cp .env.example .env
-```
-
-Edit `.env` and set the following (required for authentication):
-
-```bash
-ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=your-secure-password
-```
-
-> **Important:** Without `ADMIN_EMAIL` and `ADMIN_PASSWORD`, the admin user will not be created and you will not be able to log in.
-
-Then start everything:
-
-```bash
+# Start everything
 docker compose up -d
+
+# Run database migrations (they do not run automatically on startup)
+docker compose exec api node packages/api/dist/db/migrate.js
 ```
 
-This brings up the full stack — API, Runner, Dashboard, PostgreSQL, Redis, and MinIO. Once running:
+> **Important:** The stock `docker-compose.yml` does **not** read a `.env` file — it hard-codes dev admin credentials (`ADMIN_EMAIL=admin@crawlee.cloud`, `ADMIN_PASSWORD=crawlee.cloud`), so that is the login for this flow. Setting `ADMIN_EMAIL` / `ADMIN_PASSWORD` in `.env` applies to the non-Docker flow below and to `deploy/vps/docker-compose.prod.yml` (which does substitute `${ADMIN_EMAIL}`). Note that `.env.example` does not include `ADMIN_EMAIL`, `ADMIN_PASSWORD`, or `CORS_ORIGINS` — add these keys yourself where needed.
+
+> **Note:** The stock compose file sets `DOCKER_NETWORK=crawlee-platfrom_crawlee-network` for the Runner, which only matches if the checkout directory is named `crawlee-platfrom`. If you cloned into a differently named directory, adjust that value to `<your-directory>_crawlee-network`.
+
+This brings up the full stack — API, Runner, Dashboard, Scheduler, PostgreSQL, Redis, and MinIO (plus a one-shot `minio-init` job that creates the storage bucket and exits). Once running:
 
 - **Dashboard:** `http://localhost:3001` — monitor runs, view datasets, manage Actors
 - **API:** `http://localhost:3000`
@@ -83,11 +75,18 @@ This starts:
 - API Server (port 3000)
 - Runner
 - Dashboard (port 3001)
+- Scheduler
 - PostgreSQL
 - Redis
-- MinIO
+- MinIO (plus a one-shot `minio-init` job that creates the storage bucket and exits)
 
-Database migrations run automatically on startup. If you are running outside Docker, you must run `npm run db:migrate` manually before starting the server.
+Database migrations do **not** run automatically on startup — run them once after the containers are up:
+
+```bash
+docker compose exec api node packages/api/dist/db/migrate.js
+```
+
+If you are running from source outside Docker, run `npm run db:migrate` instead before starting the server.
 
 The **Dashboard** at `http://localhost:3001` provides a web UI for monitoring Actor runs, viewing datasets and key-value stores, and managing Actors.
 
@@ -168,8 +167,10 @@ curl http://localhost:3000/health
 Returns:
 
 ```json
-{ "status": "ok", "version": "0.1.0" }
+{ "status": "ok", "version": "1.5.0" }
 ```
+
+The `version` field reflects the release you have installed.
 
 ---
 
@@ -191,7 +192,11 @@ The database schema is out of date. Run migrations:
 npm run db:migrate
 ```
 
-If you are using Docker Compose, restart the containers — migrations run automatically on startup.
+If you are using Docker Compose, run the migrations inside the API container:
+
+```bash
+docker compose exec api node packages/api/dist/db/migrate.js
+```
 
 ### Actor runs fail with "401 Invalid token"
 

@@ -13,6 +13,8 @@ Next.js web UI for monitoring and managing your self-hosted [Crawlee Cloud](http
 - **Schedules** — cron-style scheduled runs
 - **Webhooks** — configure event-driven notifications
 - **Runners** — view connected runners, capacity, and recent assignments
+- **Retention** — reaper status for expired datasets, stores, queues, and runs
+- **Docs** — in-app documentation hub linking to guides and API references
 - **Settings** — API tokens, users, and instance configuration
 
 Built with Next.js 16 App Router, React 19, Tailwind v4, and Radix UI primitives.
@@ -26,15 +28,15 @@ npm install
 npm run dev --workspace=@crawlee-cloud/dashboard
 ```
 
-The dashboard runs at [http://localhost:3001](http://localhost:3001) and talks to the API server at `NEXT_PUBLIC_API_URL` (defaults to `http://localhost:3000`).
+`npm run dev` starts plain `next dev`, so the dashboard runs at [http://localhost:3000](http://localhost:3000) locally (port 3001 applies only in the Docker Compose stack, via `PORT=3001`). It talks to the API server at `NEXT_PUBLIC_API_URL` (defaults to `http://localhost:3000`).
 
 ## Configuration
 
-| Variable              | Description                                          |
-| --------------------- | ---------------------------------------------------- |
-| `NEXT_PUBLIC_API_URL` | Base URL of the Crawlee Cloud API server             |
-| `NEXTAUTH_SECRET`     | Secret used to sign session cookies                  |
-| `NEXTAUTH_URL`        | Public URL of the dashboard (used for callback URLs) |
+| Variable              | Description                              |
+| --------------------- | ---------------------------------------- |
+| `NEXT_PUBLIC_API_URL` | Base URL of the Crawlee Cloud API server |
+
+Authentication is a simple token cookie checked in the Next.js middleware — there is no NextAuth dependency and no extra auth configuration.
 
 ## Deployment
 

@@ -44,8 +44,8 @@ crc <command> [options]
 # Login
 crc login
 
-# Push the current directory as an Actor
-crc push my-actor
+# Push the current directory as an Actor (name comes from .actor/actor.json)
+crc push
 
 # Run the Actor
 crc call my-actor
@@ -100,12 +100,14 @@ crc info --json >/dev/null && crc push
 
 ### Environment Variables
 
-| Variable                     | Description                                                     |
-| ---------------------------- | --------------------------------------------------------------- |
-| `CRAWLEE_CLOUD_API_URL`      | Override the active profile's API base URL                      |
-| `CRAWLEE_CLOUD_TOKEN`        | Override the active profile's API token                         |
-| `CRAWLEE_CLOUD_PROFILE`      | Override the active profile name for this invocation            |
-| `CRAWLEE_CLOUD_REGISTRY_URL` | Docker registry URL used by `crc push` for image push, optional |
+| Variable                     | Description                                                        |
+| ---------------------------- | ------------------------------------------------------------------ |
+| `CRAWLEE_CLOUD_API_URL`      | Override the active profile's API base URL                         |
+| `CRAWLEE_CLOUD_TOKEN`        | Override the active profile's API token                            |
+| `CRAWLEE_CLOUD_PROFILE`      | Override the active profile name for this invocation               |
+| `CRAWLEE_CLOUD_REGISTRY_URL` | Docker registry URL used by `crc push` for image push, optional    |
+| `GHCR_TOKEN`                 | GitHub Container Registry token used by the `crc push --ghcr` path |
+| `GHCR_USER`                  | GHCR username for `crc push --ghcr` (default: `github`)            |
 
 ## Documentation
 

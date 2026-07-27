@@ -6,11 +6,15 @@ Choose your deployment method:
 
 **Step 1:** Deploy API + Dashboard + managed databases with one click:
 
-| Provider     | Deploy                                                                                                                                                                               | Notes                                       |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------- |
-| Railway      | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/crawlee-cloud/crawlee-cloud&referralCode=crawlee)                | Includes PostgreSQL + Redis. Easiest setup. |
-| Render       | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/crawlee-cloud/crawlee-cloud)                          | Free tier available.                        |
-| DigitalOcean | [![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/crawlee-cloud/crawlee-cloud/tree/main&refcode=crawlee) | Managed PostgreSQL + Redis.                 |
+| Provider     | Deploy                                                                                                                                                                               | Notes                                                                      |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| Railway      | [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template?template=https://github.com/crawlee-cloud/crawlee-cloud&referralCode=crawlee)                | References PostgreSQL + Redis plugins — add them in the Railway dashboard. |
+| Render       | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/crawlee-cloud/crawlee-cloud)                          | Free tier available.                                                       |
+| DigitalOcean | [![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/crawlee-cloud/crawlee-cloud/tree/main&refcode=crawlee) | Managed PostgreSQL + Redis.                                                |
+
+> **Railway:** the template references `${{Postgres.*}}` / `${{Redis.*}}` variables from Railway's database plugins — the file itself does not provision them, so add the PostgreSQL and Redis plugins in the Railway dashboard before deploying.
+>
+> **Render:** known gap — the blueprint's `REDIS_URL` references a `crawlee-redis` service that `render.yaml` does not define (consistent with the "not yet verified" status in the main README).
 
 **Step 2:** Connect a Runner on a $5 VPS so Actors can execute. See [Connecting a Runner](#connecting-a-runner-required-for-paas-deployments) below.
 

@@ -126,6 +126,10 @@ Built with Fastify, implements Apify v2 API endpoints:
   - `auth.ts` - User authentication (JWT-based)
   - `registry.ts` - Actor version/build management
   - `users.ts` - User management
+  - `webhooks.ts` - Webhook CRUD, deliveries, and test dispatch
+  - `schedules.ts` - Cron-based scheduled runs
+  - `scaler.ts` - Autoscaler status (admin-only)
+  - `system.ts` - System info and retention status (admin-only)
 
 - **Validation Schemas** (`src/schemas/`) - Zod schemas for request validation:
   - `actors.ts` - Actor create/update/run schemas
@@ -137,6 +141,15 @@ Built with Fastify, implements Apify v2 API endpoints:
 - **Configuration** (`src/`):
   - `config.ts` - Typed configuration with dev defaults and production enforcement
   - `config-validator.ts` - Security validation at startup (weak secrets, insecure defaults, CORS)
+
+- **Platform Services** (`src/`):
+  - `scheduler.ts` - Cron tick loop that dispatches scheduled runs
+  - `retention.ts` - Data retention/cleanup job (tombstones, configurable via `RETENTION_*`)
+  - `scaler/` - Runner autoscaler with pluggable cloud providers (`providers/`)
+  - `metrics.ts` - Prometheus metrics (`/metrics`, admin-only unless `METRICS_PUBLIC=true`)
+  - `health.ts` - Liveness/readiness probes (`/health/live`, `/health/ready`)
+  - `lib/run-cost.ts` - Compute-unit cost attribution for runs
+  - `webhooks/apply-template.ts` - Apify-compatible webhook payload templating (kept in sync with the runner's copy)
 
 - **Storage Layer** (`src/storage/`):
   - `s3.ts` - S3-compatible object storage (MinIO, AWS S3, etc.)
@@ -167,6 +180,12 @@ Docker orchestration service:
   - Enforces memory limits and timeouts
   - Merges env vars: base env < actor env (from actor.json) < runtime env (from CLI `-e` flag)
 
+- **Supporting Modules** (`src/`):
+  - `heartbeat.ts` - Publishes runner metrics to Redis every 30s (`runner:heartbeat:{runnerId}`, TTL 90s)
+  - `proxy-resolver.ts` / `proxy-crypto.ts` - Three-tier proxy resolution (actor → user → platform) with AES-256-GCM credential decryption (`PROXY_ENCRYPTION_KEY`, required in production)
+  - `webhook-template.ts` - Webhook payload templating + retry processor (KEEP-IN-SYNC copy of the API's `webhooks/apply-template.ts`)
+  - `wait.ts` - Readiness/wait helpers
+
 ### Database Schema
 
 Key tables (see `packages/api/src/db/migrate.ts`):
@@ -182,19 +201,25 @@ Key tables (see `packages/api/src/db/migrate.ts`):
 - `users` - User accounts
 - `api_keys` - API authentication keys
 - `webhooks` - Event webhooks
+- `webhook_deliveries` - Webhook delivery attempts and retry state
+- `schedules` - Cron schedules for actor runs
+- `retention_tombstones` - Markers for retention-deleted resources
 
 ### CLI (packages/cli)
 
 Commands:
 
 - `login` - Authenticate with platform
-- `push` - Package and upload Actor
+- `push` - Package and upload Actor (name always comes from `.actor/actor.json`; no positional arg)
 - `run` - Start Actor run
 - `call` - Run Actor and wait for completion
 - `logs` - Stream real-time logs
 - `init` - Initialize a new Actor project
 - `dev` - Run Actor locally in development mode
 - `status` - Show platform and Actor status
+- `list` (alias `ls`) - List actors and runs
+- `info` - Show current profile/connection info
+- `profile` - Manage named auth profiles (`list`/`use`/`rm`)
 
 Configuration stored in `~/.crawlee-cloud/config.json`
 

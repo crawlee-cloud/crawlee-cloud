@@ -2,13 +2,24 @@
 
 A CLI-first platform for running large-scale scrapers on your own infrastructure.
 
-## Current Version: v0.5.0 ✅
+## Current Version: v1.5.0 ✅
 
 - Apify-compatible REST API
-- Docker-based Actor execution
+- Docker-based Actor execution with auto-scaling runners
 - CLI for deployment (`crc push`, `crc run`, `crc logs`)
 - Datasets, Key-Value Stores, Request Queues
-- Basic web dashboard
+- Web dashboard with run cost analysis
+
+> Detailed per-version history lives in [docs/roadmap.md](docs/roadmap.md) and [CHANGELOG.md](CHANGELOG.md).
+
+### Shipped since v0.5.0 (highlights)
+
+- **v0.6.0 – v0.7.0** — DigitalOcean deployment, runner auto-scaler + heartbeat, image registry support, periodic Docker cleanup
+- **v0.8.x** — build versioning, CLI profiles, dashboard rewrite, production-hardening patch cycle
+- **v0.9.x** — retention reaper, pagination at scale, Apify webhook templating, Apify proxy passthrough, multi-replica safety
+- **v1.0.0** — semver stability commitment on the Apify v2 API, `crc` CLI commands, and documented env vars
+- **v1.1.x – v1.2.x** — zombie-run reaper, OOM visibility, memory-aware placement, auth hot-path and runner-key fixes
+- **v1.3.0 – v1.5.0** — run cost analysis (per run and in the runs list), safe actor force-deletion, webhook SSRF loopback fixes, CI coverage floors
 
 ---
 
@@ -55,10 +66,10 @@ Priority: Secure the platform and prepare for wider use.
 - [x] **SSRF protection** - Block webhook delivery to private/internal network addresses (RFC 1918, loopback, link-local)
 - [x] **Runner API key from Redis** - Runner fetches API key from Redis instead of static config
 - [x] **Security config validation** - Startup checks for weak secrets, insecure DB/S3 credentials, CORS
-- [ ] Actor versioning - Deploy and rollback specific versions
+- [x] Actor versioning - Deploy and rollback specific versions (shipped in v0.8.0: registry routes, `actor_versions`/`actor_builds` tables, dashboard Builds page)
 - [ ] API key scopes - Read-only vs full access keys
-- [ ] Improved dashboard - Better UX for those who prefer UI
-- [ ] Documentation improvements
+- [x] Improved dashboard - Better UX for those who prefer UI (shipped in v0.8.0 dashboard rewrite)
+- [x] Documentation improvements (docs moved into `docs/` as source of truth in v0.8.0)
 
 ---
 
@@ -69,7 +80,7 @@ To keep focus, these are explicitly **not** on the roadmap:
 - ❌ Web IDE for editing Actors
 - ❌ Multi-tenant workspaces
 - ❌ Complex RBAC/permissions
-- ❌ Built-in proxy rotation (use your own)
+- ❌ Built-in rotation of custom proxy URLs (bring your own; Apify proxy passthrough shipped in v0.9.4)
 
 ---
 

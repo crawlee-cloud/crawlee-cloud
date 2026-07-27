@@ -15,20 +15,40 @@ The Runner executes Actors in isolated Docker containers.
 
 ## Configuration
 
-| Variable               | Description                                                  | Default                                                       |
-| ---------------------- | ------------------------------------------------------------ | ------------------------------------------------------------- |
-| `API_BASE_URL`         | API server URL                                               | `http://localhost:3000`                                       |
-| `API_TOKEN`            | Authentication token (auto-provisioned via Redis if not set) | Auto-provisioned                                              |
-| `DATABASE_URL`         | PostgreSQL connection string                                 | `postgresql://postgres:postgres@localhost:5432/crawlee_cloud` |
-| `REDIS_URL`            | Redis connection string                                      | `redis://localhost:6379`                                      |
-| `DOCKER_SOCKET`        | Docker socket path                                           | `/var/run/docker.sock`                                        |
-| `DOCKER_NETWORK`       | Docker network name                                          | `crawlee-cloud_default`                                       |
-| `MAX_CONCURRENT_RUNS`  | Max concurrent containers                                    | `10`                                                          |
-| `DEFAULT_MEMORY_MB`    | Default container memory (MB)                                | `1024`                                                        |
-| `DEFAULT_TIMEOUT_SECS` | Default run timeout (seconds)                                | `3600`                                                        |
-| `LOG_LEVEL`            | Log verbosity                                                | `info`                                                        |
+| Variable                     | Description                                                                                                                                                                                    | Default                                                       |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `API_BASE_URL`               | API server URL                                                                                                                                                                                 | `http://localhost:3000`                                       |
+| `API_TOKEN`                  | Fallback authentication token. At runtime the runner prefers the auto-provisioned key stored in Redis at `runner:api-key`; this value is only used until/unless that key is available.         | `runner-token`                                                |
+| `DATABASE_URL`               | PostgreSQL connection string                                                                                                                                                                   | `postgresql://postgres:postgres@localhost:5432/crawlee_cloud` |
+| `REDIS_URL`                  | Redis connection string                                                                                                                                                                        | `redis://localhost:6379`                                      |
+| `DOCKER_SOCKET`              | Docker socket path                                                                                                                                                                             | `/var/run/docker.sock`                                        |
+| `DOCKER_NETWORK`             | Docker network name                                                                                                                                                                            | `crawlee-cloud_default`                                       |
+| `IMAGE_REGISTRY`             | Registry to pull actor images from (e.g. `ghcr.io/your-org`). Empty means local image builds. Also used by the auto-scaler — see [Cloud / registry credentials](#cloud--registry-credentials). | _(empty)_                                                     |
+| `IMAGE_REGISTRY_USER`        | Username for the registry login                                                                                                                                                                | _(empty)_                                                     |
+| `IMAGE_REGISTRY_TOKEN`       | Token / password for the registry login                                                                                                                                                        | _(empty)_                                                     |
+| `MAX_CONCURRENT_RUNS`        | Max concurrent containers                                                                                                                                                                      | `10`                                                          |
+| `DEFAULT_MEMORY_MB`          | Default container memory (MB)                                                                                                                                                                  | `1024`                                                        |
+| `DEFAULT_TIMEOUT_SECS`       | Default run timeout (seconds)                                                                                                                                                                  | `3600`                                                        |
+| `HOST_TOTAL_MEMORY_MB`       | Host RAM the memory admission gate budgets against. Override for exotic setups where the runner's view of RAM isn't the actors' host.                                                          | Detected physical RAM                                         |
+| `RUNNER_MEMORY_RESERVE_MB`   | RAM held back for the OS, dockerd, and the runner process itself                                                                                                                               | `768`                                                         |
+| `RUNNER_MAX_READY_WAIT_SECS` | How long an unfittable `READY` run may wait before busy hosts stop claiming past it and drain toward idle                                                                                      | `300`                                                         |
+| `APIFY_PROXY_PASSWORD`       | Platform-level fallback proxy password injected into actor containers                                                                                                                          | _(empty)_                                                     |
+| `APIFY_PROXY_HOSTNAME`       | Proxy hostname override. Empty means the SDK default (`proxy.apify.com`).                                                                                                                      | _(empty)_                                                     |
+| `APIFY_PROXY_PORT`           | Proxy port override. `0` means the SDK default (`8000`).                                                                                                                                       | `0`                                                           |
+| `RUNNER_ID`                  | Identity used for heartbeats and cost attribution. On DigitalOcean, cloud-init pins it to the droplet ID.                                                                                      | Hostname                                                      |
+| `RUNNER_PRICE_HOURLY`        | Hourly price stamped onto claimed runs for cost analysis. Unset means "not recorded" in cost views.                                                                                            | _(unset)_                                                     |
+| `RUNNER_PROVIDER`            | Provider label stamped onto claimed runs (`digitalocean` via cloud-init)                                                                                                                       | `local-docker`                                                |
+| `SHUTDOWN_TIMEOUT_SECS`      | Grace period for running containers before a forced exit on shutdown                                                                                                                           | `60`                                                          |
+| `PROXY_ENCRYPTION_KEY`       | ⚠️ **Required in production** — see below.                                                                                                                                                     | _(unset)_                                                     |
+| `LOG_LEVEL`                  | Log verbosity                                                                                                                                                                                  | `info`                                                        |
 
 > **Note:** On startup, the API server creates a dedicated runner API key and stores it in Redis. The runner automatically fetches this key. You only need to set `API_TOKEN` manually if running the runner outside of the standard Docker Compose setup.
+
+> **⚠️ `PROXY_ENCRYPTION_KEY`:** the runner **exits fatally at startup in production** (`NODE_ENV=production`) if this is unset. It must be exactly 64 hex characters (32 bytes) and **identical to the value on the API server** — both processes encrypt/decrypt the same database columns. If it is unset outside production, the key is derived as a fallback from `sha256(API_SECRET)`, which must then also match on both processes; a mismatch makes every decrypt fail silently and runs proceed without their resolved proxy credentials. Generate one with:
+>
+> ```bash
+> node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+> ```
 
 ---
 
@@ -81,14 +101,28 @@ docker run \
 
 The Runner injects these variables into Actor containers:
 
-| Variable                           | Description                    |
-| ---------------------------------- | ------------------------------ |
-| `APIFY_API_BASE_URL`               | Points to your API server      |
-| `APIFY_TOKEN`                      | Authentication token           |
-| `APIFY_ACTOR_RUN_ID`               | Current run ID                 |
-| `APIFY_DEFAULT_DATASET_ID`         | Default dataset for `pushData` |
-| `APIFY_DEFAULT_KEY_VALUE_STORE_ID` | Default KV store               |
-| `APIFY_DEFAULT_REQUEST_QUEUE_ID`   | Default request queue          |
+| Variable                           | Description                                                                                          |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `APIFY_ACTOR_ID`                   | ID of the Actor being run                                                                            |
+| `APIFY_ACTOR_RUN_ID`               | Current run ID                                                                                       |
+| `APIFY_USER_ID`                    | Owner of the run (`anonymous` when unknown)                                                          |
+| `APIFY_API_BASE_URL`               | Points to your API server                                                                            |
+| `APIFY_API_PUBLIC_BASE_URL`        | Public API URL (same value as `APIFY_API_BASE_URL`)                                                  |
+| `APIFY_TOKEN`                      | Authentication token                                                                                 |
+| `APIFY_DEFAULT_DATASET_ID`         | Default dataset for `pushData`                                                                       |
+| `APIFY_DEFAULT_KEY_VALUE_STORE_ID` | Default KV store                                                                                     |
+| `APIFY_DEFAULT_REQUEST_QUEUE_ID`   | Default request queue                                                                                |
+| `APIFY_IS_AT_HOME`                 | Set to `1` so the SDK behaves as if running on the platform                                          |
+| `APIFY_HEADLESS`                   | Set to `1` to force headless browsers                                                                |
+| `APIFY_MEMORY_MBYTES`              | Memory limit for the run (MB)                                                                        |
+| `APIFY_TIMEOUT_AT`                 | ISO timestamp when the run times out                                                                 |
+| `APIFY_INPUT_KEY`                  | KV store key holding the run input (`INPUT`)                                                         |
+| `APIFY_CONTAINER_PORT`             | Port the Actor may listen on (`4321`)                                                                |
+| `APIFY_CONTAINER_URL`              | URL of the run container (`http://run-<runId>:4321`)                                                 |
+| `CRAWLEE_STORAGE_DIR`              | Local storage dir for newer crawlers (`/tmp/storage`)                                                |
+| `APIFY_PROXY_PASSWORD`             | Resolved proxy password — only set when a proxy resolves (see [Proxy Resolution](#proxy-resolution)) |
+| `APIFY_PROXY_HOSTNAME`             | Proxy hostname — only set when configured                                                            |
+| `APIFY_PROXY_PORT`                 | Proxy port — only set when configured                                                                |
 
 Environment variables are merged in order: base env < actor env (from actor.json) < runtime env (from CLI `-e` flag).
 
@@ -99,9 +133,35 @@ Environment variables are merged in order: base env < actor env (from actor.json
 On SIGTERM/SIGINT:
 
 1. Stop accepting new jobs
-2. Wait for running containers to finish
+2. Wait for running containers to finish (up to `SHUTDOWN_TIMEOUT_SECS`, then force exit)
 3. Clean up resources
 4. Exit
+
+---
+
+## Heartbeat
+
+Every 30 seconds the runner publishes system metrics (CPU, memory, disk, active run IDs, capacity, health) to Redis at `runner:heartbeat:{runnerId}` with a 90-second TTL — if the runner dies, its heartbeat expires automatically. The auto-scaler and the dashboard's Runners page read these keys to track live runner state.
+
+---
+
+## Memory Admission Control
+
+Before claiming a run, the runner checks that the sum of active containers' memory limits plus the new run's limit fits under `HOST_TOTAL_MEMORY_MB - RUNNER_MEMORY_RESERVE_MB`. Runs that don't fit are left for another runner, preventing coincident memory peaks from OOM-ing the host. If an unfittable `READY` run has waited longer than `RUNNER_MAX_READY_WAIT_SECS`, busy hosts stop claiming past it and drain toward idle so it isn't starved forever.
+
+At claim time the runner also stamps cost attribution onto the run — `runner_id`, `runner_price_hourly` (from `RUNNER_PRICE_HOURLY`), and `runner_provider` — which powers the dashboard's per-run cost views.
+
+---
+
+## Proxy Resolution
+
+Proxy credentials are resolved per run in three tiers: actor-level, then user-level, then the platform default (`APIFY_PROXY_PASSWORD`). Stored credentials are encrypted with AES-256-GCM and decrypted using `PROXY_ENCRYPTION_KEY` (shared with the API server). The winning tier is logged to the run's lifecycle log for triage — never the credential itself — and the resolved values are injected into the container as `APIFY_PROXY_*` variables.
+
+---
+
+## Webhook Delivery
+
+On run completion the runner delivers webhooks with Apify-compatible payloads. Custom `payload_template` strings go through a template engine (`{{key}}` substitution with dot-notation lookups) that is kept byte-identical to the API's "test webhook" path, so a template verified in the dashboard behaves the same in production. Failed deliveries are picked up by a retry processor that runs every 10 seconds.
 
 ---
 
@@ -111,29 +171,30 @@ The API server can automatically provision and destroy runner VMs based on queue
 
 ### Providers
 
-| Provider       | When to use                                                                       |
-| -------------- | --------------------------------------------------------------------------------- |
-| `noop`         | Default. Scaler runs but takes no action. Useful for testing config.              |
-| `local-docker` | Spins up runner containers on the same Docker daemon. Dev / single-host setups.   |
-| `digitalocean` | Creates and destroys DigitalOcean Droplets. Requires `DO_TOKEN` and `SSH_KEY_ID`. |
+| Provider       | When to use                                                                              |
+| -------------- | ---------------------------------------------------------------------------------------- |
+| `noop`         | Default. Scaler runs but takes no action. Useful for testing config.                     |
+| `local-docker` | Spins up runner containers on the same Docker daemon. Dev / single-host setups.          |
+| `digitalocean` | Creates and destroys DigitalOcean Droplets. Requires `DO_TOKEN` and `SCALER_SSH_KEY_ID`. |
 
 ### Core scaler variables
 
-| Variable                        | Default       | Description                                                                                                         |
-| ------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `SCALER_ENABLED`                | `false`       | Set to `true` to start the scaling loop.                                                                            |
-| `SCALER_PROVIDER`               | `noop`        | One of `noop`, `local-docker`, `digitalocean`.                                                                      |
-| `SCALER_MIN_RUNNERS`            | `1`           | Minimum runners kept warm at all times.                                                                             |
-| `SCALER_MAX_RUNNERS`            | `5`           | Hard cap on provisioned runners. Clamped to `>= MIN_RUNNERS`.                                                       |
-| `SCALER_SCALE_UP_THRESHOLD`     | `5`           | Don't scale up unless `READY` queue depth exceeds this (and we're already at `MIN_RUNNERS`).                        |
-| `SCALER_RUNS_PER_RUNNER`        | `5`           | How many concurrent runs each runner can handle. Drives demand math: `desired = ceil(totalDemand / runsPerRunner)`. |
-| `SCALER_POLL_INTERVAL_SECS`     | `30`          | How often the scaler evaluates demand.                                                                              |
-| `SCALER_IDLE_TIMEOUT_SECS`      | `600`         | After the queue empties, wait this long before scaling down. Avoids thrashing during natural lulls.                 |
-| `SCALER_REAPER_DEAD_AFTER_SECS` | `180`         | A booting runner with no heartbeat for longer than this is marked `dead` and destroyed. Bump on slow apt mirrors.   |
-| `SCALER_RUNNER_SIZE`            | `s-2vcpu-4gb` | Provider-specific instance size (DigitalOcean droplet slug).                                                        |
-| `SCALER_RUNNER_REGION`          | `nyc1`        | Provider-specific region.                                                                                           |
-| `SCALER_SSH_KEY_ID`             | _(empty)_     | DigitalOcean SSH key fingerprint or ID — required for `digitalocean` provider so you can shell in for forensics.    |
-| `SCALER_API_BASE_URL`           | _(empty)_     | URL the freshly-booted runner will call back to. Must be reachable from the runner VM.                              |
+| Variable                        | Default       | Description                                                                                                                                                                                                                                                              |
+| ------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `SCALER_ENABLED`                | `false`       | Set to `true` to start the scaling loop.                                                                                                                                                                                                                                 |
+| `SCALER_PROVIDER`               | `noop`        | One of `noop`, `local-docker`, `digitalocean`.                                                                                                                                                                                                                           |
+| `SCALER_MIN_RUNNERS`            | `1`           | Minimum runners kept warm at all times.                                                                                                                                                                                                                                  |
+| `SCALER_MAX_RUNNERS`            | `5`           | Hard cap on provisioned runners. Clamped to `>= MIN_RUNNERS`.                                                                                                                                                                                                            |
+| `SCALER_SCALE_UP_THRESHOLD`     | `5`           | Don't scale up unless `READY` queue depth exceeds this (and we're already at `MIN_RUNNERS`).                                                                                                                                                                             |
+| `SCALER_RUNS_PER_RUNNER`        | `5`           | How many concurrent runs each runner can handle. Drives demand math: `desired = ceil(totalDemand / runsPerRunner)`.                                                                                                                                                      |
+| `SCALER_POLL_INTERVAL_SECS`     | `30`          | How often the scaler evaluates demand.                                                                                                                                                                                                                                   |
+| `SCALER_IDLE_TIMEOUT_SECS`      | `600`         | After the queue empties, wait this long before scaling down. Avoids thrashing during natural lulls.                                                                                                                                                                      |
+| `SCALER_REAPER_DEAD_AFTER_SECS` | `180`         | A booting runner with no heartbeat for longer than this is marked `dead` and destroyed. Bump on slow apt mirrors.                                                                                                                                                        |
+| `SCALER_MAX_READY_WAIT_SECS`    | `300`         | Starvation escalation: once the oldest `READY` run has waited longer than this, provision one extra runner even when demand math says none is needed. The capacity-side half of starvation protection; the runner's `RUNNER_MAX_READY_WAIT_SECS` is the claim-side half. |
+| `SCALER_RUNNER_SIZE`            | `s-2vcpu-4gb` | Provider-specific instance size (DigitalOcean droplet slug).                                                                                                                                                                                                             |
+| `SCALER_RUNNER_REGION`          | `nyc1`        | Provider-specific region.                                                                                                                                                                                                                                                |
+| `SCALER_SSH_KEY_ID`             | _(empty)_     | DigitalOcean SSH key fingerprint or ID — required for `digitalocean` provider so you can shell in for forensics.                                                                                                                                                         |
+| `SCALER_API_BASE_URL`           | _(empty)_     | URL the freshly-booted runner will call back to. Must be reachable from the runner VM.                                                                                                                                                                                   |
 
 ### Cloud / registry credentials
 

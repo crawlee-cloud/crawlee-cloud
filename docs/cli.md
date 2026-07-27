@@ -39,6 +39,7 @@ crawlee-cloud init [name] [options]
 | Flag             | Description                    |
 | ---------------- | ------------------------------ |
 | `--template, -t` | Template ID from Apify catalog |
+| `--list, -l`     | List available templates       |
 
 **Example:**
 
@@ -86,10 +87,10 @@ crawlee-cloud status <run-id> [options]
 
 **Options:**
 
-| Flag             | Description               |
-| ---------------- | ------------------------- |
-| `--watch, -w`    | Watch for status updates  |
-| `--interval, -i` | Watch interval in seconds |
+| Flag             | Description                            |
+| ---------------- | -------------------------------------- |
+| `--watch, -w`    | Watch for status updates               |
+| `--interval, -i` | Watch interval in seconds (default: 5) |
 
 **Example:**
 
@@ -142,7 +143,7 @@ Credentials are stored in `~/.crawlee-cloud/config.json`. The file uses a multi-
 Show the active profile, API URL, server status, and authenticated user. The "where am I?" command for context-switching between environments.
 
 ```bash
-crawlee-cloud info [--json]
+crawlee-cloud info [-j, --json]
 ```
 
 **Output (human-readable):**
@@ -162,7 +163,7 @@ Token:      eyJhbGciOiJI...
 crc info --json >/dev/null && crc push
 ```
 
-The `--json` output has a stable shape suitable for piping into scripts. The full token is never exposed; only a 12-char preview.
+The `--json` output (short flag: `-j`) has a stable shape suitable for piping into scripts. The full token is never exposed; only a 12-char preview.
 
 ---
 
@@ -171,9 +172,9 @@ The `--json` output has a stable shape suitable for piping into scripts. The ful
 Manage saved login profiles. A profile is a stored `apiBaseUrl + token` pair; one is active at a time. Use `crc login --profile <name>` to create one.
 
 ```bash
-crawlee-cloud profile list           # show all profiles, mark active
+crawlee-cloud profile list           # show all profiles, mark active (alias: ls)
 crawlee-cloud profile use <name>     # switch active
-crawlee-cloud profile rm  <name>     # delete a profile
+crawlee-cloud profile rm  <name>     # delete a profile (alias: remove)
 ```
 
 **Examples:**
@@ -198,24 +199,43 @@ CRAWLEE_CLOUD_PROFILE=prod crc push    # one-off push, no `profile use` needed
 
 ### `push`
 
-Build and push an Actor to the registry.
+Build and push an Actor to the registry. The command takes no positional argument — the Actor name is always read from `.actor/actor.json` in the current directory.
 
 ```bash
-crawlee-cloud push [actor-name]
+crawlee-cloud push [options]
 ```
 
 **Options:**
 
-| Flag         | Description                    |
-| ------------ | ------------------------------ |
-| `--tag, -t`  | Docker image tag for the build |
-| `--no-build` | Skip local build step          |
+| Flag           | Description                                                                          |
+| -------------- | ------------------------------------------------------------------------------------ |
+| `--tag, -t`    | Docker image tag for the build (default: `latest`)                                   |
+| `--no-build`   | Skip local build step                                                                |
+| `--platform`   | Docker build platform (e.g. `linux/amd64`)                                           |
+| `--remote`     | Build on a remote runner via SSH (`user@host`)                                       |
+| `--ssh-key`    | SSH key to use for the remote build                                                  |
+| `--ghcr`       | Build and push to GitHub Container Registry (e.g. `org/repo`)                        |
+| `--ghcr-user`  | GHCR username (default: `github`)                                                    |
+| `--ghcr-token` | GHCR token (or set the `GHCR_TOKEN` env var)                                         |
+| `--env, -e`    | Set an Actor default env var as `KEY=VALUE` (repeatable; empty values are dropped)   |
+| `--env-file`   | Load Actor default env vars from a file (`KEY=VALUE` per line, `#` comments allowed) |
 
-**Example:**
+**Examples:**
 
 ```bash
 cd my-actor
-crawlee-cloud push my-scraper --tag 1.0.0
+
+# Push (name comes from .actor/actor.json)
+crawlee-cloud push --tag 1.0.0
+
+# Build on a remote host over SSH
+crawlee-cloud push --remote user@build-host --ssh-key ~/.ssh/id_ed25519
+
+# Build and push the image to GitHub Container Registry
+crawlee-cloud push --ghcr my-org/my-repo --ghcr-token <token>
+
+# Inject default env vars into the Actor (repeatable -e, or a file)
+crawlee-cloud push -e API_KEY=abc123 --env-file .env.production
 ```
 
 ---
@@ -263,10 +283,10 @@ crawlee-cloud logs <run-id> [options]
 
 **Options:**
 
-| Flag           | Description                  |
-| -------------- | ---------------------------- |
-| `--follow, -f` | Continuously stream new logs |
-| `--tail, -n`   | Number of lines to show      |
+| Flag           | Description                                 |
+| -------------- | ------------------------------------------- |
+| `--follow, -f` | Continuously stream new logs                |
+| `--limit, -l`  | Number of log lines to show (default: 1000) |
 
 **Example:**
 
@@ -308,6 +328,35 @@ crc call my-actor -e KEY1=val1 -e KEY2=val2
 ```
 
 > **Tip:** The `-e` flag can be repeated to pass multiple environment variables in a single call.
+
+---
+
+### `list`
+
+List actors and recent runs on the platform. Alias: `ls`. Without flags, both actors and recent runs are shown.
+
+```bash
+crawlee-cloud list [options]
+```
+
+**Options:**
+
+| Flag           | Description                     |
+| -------------- | ------------------------------- |
+| `--actors, -a` | List actors only                |
+| `--runs, -r`   | List recent runs only           |
+| `--limit, -n`  | Max items to show (default: 20) |
+| `--json, -j`   | Output as JSON                  |
+
+**Examples:**
+
+```bash
+# List actors and recent runs
+crawlee-cloud list
+
+# Recent runs only, as JSON
+crc ls --runs --json
+```
 
 ---
 
@@ -364,9 +413,11 @@ If you have a legacy flat config file (just `{ apiBaseUrl, token }` at the top l
 
 ### Environment Variables
 
-| Variable                     | Description                                                     |
-| ---------------------------- | --------------------------------------------------------------- |
-| `CRAWLEE_CLOUD_API_URL`      | Override the active profile's API base URL                      |
-| `CRAWLEE_CLOUD_TOKEN`        | Override the active profile's API token                         |
-| `CRAWLEE_CLOUD_PROFILE`      | Use this profile for the current invocation (overrides active)  |
-| `CRAWLEE_CLOUD_REGISTRY_URL` | Docker registry URL used by `crc push` for image push, optional |
+| Variable                     | Description                                                        |
+| ---------------------------- | ------------------------------------------------------------------ |
+| `CRAWLEE_CLOUD_API_URL`      | Override the active profile's API base URL                         |
+| `CRAWLEE_CLOUD_TOKEN`        | Override the active profile's API token                            |
+| `CRAWLEE_CLOUD_PROFILE`      | Use this profile for the current invocation (overrides active)     |
+| `CRAWLEE_CLOUD_REGISTRY_URL` | Docker registry URL used by `crc push` for image push, optional    |
+| `GHCR_TOKEN`                 | GitHub Container Registry token used by the `crc push --ghcr` path |
+| `GHCR_USER`                  | GHCR username for `crc push --ghcr` (default: `github`)            |
