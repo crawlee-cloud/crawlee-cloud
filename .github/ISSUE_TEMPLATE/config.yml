@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: ❓ Questions & help
+    url: https://github.com/crawlee-cloud/crawlee-cloud/discussions/categories/q-a
+    about: Ask anything — setup, SDK compatibility, deployment. Usually answered within a day.
+  - name: 🤝 Free 15-minute setup help
+    url: mailto:aminembarki@gmail.com?subject=crawlee-cloud%20setup%20help
+    about: Stuck deploying? Email the maintainer and get personal help getting your instance running — free, in exchange for your honest feedback.
+  - name: 💬 Ideas & general discussion
+    url: https://github.com/crawlee-cloud/crawlee-cloud/discussions
+    about: Roadmap input, show & tell, and everything that isn't a bug.

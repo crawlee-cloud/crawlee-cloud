@@ -1,0 +1,51 @@
+name: 🐛 Bug report
+description: Something broke? Tell us and we'll dig in.
+title: '[Bug]: '
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this — bug reports from real deployments are the most valuable feedback we get.
+  - type: input
+    id: version
+    attributes:
+      label: Crawlee Cloud version
+      description: Find it in the dashboard Settings page or your `package.json`.
+      placeholder: '1.5.0'
+    validations:
+      required: true
+  - type: dropdown
+    id: deploy-method
+    attributes:
+      label: How is it deployed?
+      options:
+        - DigitalOcean App Platform (deploy button)
+        - VPS deploy script (Caddy)
+        - Docker Compose (local/dev)
+        - Manual / custom setup
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        1. Pushed an actor with `crc push`
+        2. Started a run from the dashboard
+        3. Expected the run to start, but it stayed in READY forever
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: API, runner, or actor logs. This will be formatted as code automatically — no backticks needed. Please redact tokens and connection strings.
+      render: shell
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Environment details, screenshots, workarounds you tried.
