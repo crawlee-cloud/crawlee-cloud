@@ -1,0 +1,83 @@
+name: Publish Docker images
+
+# Tag-driven GHCR publish, mirroring publish-cli.yml's flow: the v* tag
+# pushed after the chore(release) PR merges triggers a build+push of the
+# four production images. Publishing to ghcr.io under the org, with the
+# org.opencontainers.image.source label, links each package to this repo
+# so it appears on the repo's Packages page — and, more importantly,
+# lets self-hosters `docker pull` instead of building from source.
+#
+# NOTE after the FIRST publish of each image: GHCR packages default to
+# private. Flip each to public in the org package settings (one-time),
+# or pulls will 403 for anonymous users.
+#
+# amd64-only on purpose: every supported deploy target (DO App
+# Platform, DO droplets, the VPS script) is amd64, and multi-arch
+# roughly doubles build minutes. Add linux/arm64 via buildx when
+# there's a real target for it.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Manual fallback: backfill images for an existing tag (e.g. the
+  # first rollout of this workflow, or a re-push after a GHCR hiccup).
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Tag to publish images from (vX.Y.Z)'
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [api, runner, dashboard, actor-base]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Resolve version tag
+        env:
+          TAG_REF: ${{ github.ref }}
+          DISPATCH_REF: ${{ github.event.inputs.ref }}
+        run: |
+          # Same guard as publish-cli.yml: only v* tags are publishable,
+          # whichever event got us here. A branch name would produce an
+          # un-auditable "version".
+          REF="${DISPATCH_REF:-${TAG_REF#refs/tags/}}"
+          case "$REF" in
+            v[0-9]*) ;;
+            *)
+              echo "::error::ref must be a tag like v1.5.0 (got: $REF)"
+              exit 1
+              ;;
+          esac
+          echo "VERSION=${REF#v}" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build image
+        run: |
+          docker build \
+            -f "docker/Dockerfile.${{ matrix.image }}" \
+            -t "ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:$VERSION" \
+            -t "ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:latest" \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            .
+
+      - name: Push image
+        run: |
+          docker push "ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:$VERSION"
+          docker push "ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:latest"
