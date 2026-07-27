@@ -246,6 +246,18 @@ npm run lint
 
 ---
 
+## Supported by
+
+Crawlee Cloud's infrastructure is generously supported by DigitalOcean through their [Open Source Credits Program](https://www.digitalocean.com/open-source/credits-for-projects).
+
+<div align="center">
+
+[![DigitalOcean Referral Badge](https://web-platforms.sfo2.cdn.digitaloceanspaces.com/WWW/Badge%203.svg)](https://www.digitalocean.com/?refcode=ce0e27c04a52&utm_campaign=Referral_Invite&utm_medium=Referral_Program&utm_source=badge)
+
+</div>
+
+---
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
