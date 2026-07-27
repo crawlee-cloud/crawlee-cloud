@@ -59,7 +59,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          # '^24.15.0' (not bare '24') so npm 12's documented engine
+          # floor is ENCODED, not assumed — a stale toolcache resolving
+          # an older 24.x patch would otherwise re-trigger EBADENGINE.
+          node-version: '^24.15.0'
           registry-url: 'https://registry.npmjs.org'
 
       # See top-of-file note: Trusted Publishing's auth-token exchange
