@@ -9,6 +9,7 @@
 **Self-hosted, open-source platform for running Apify Actors on your own infrastructure.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![npm](https://img.shields.io/npm/v/%40crawlee-cloud%2Fcli?logo=npm&label=%40crawlee-cloud%2Fcli)](https://www.npmjs.com/package/@crawlee-cloud/cli)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-green)](https://nodejs.org/)
 
