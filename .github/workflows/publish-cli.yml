@@ -20,9 +20,15 @@ name: Publish CLI
 # versions can sign provenance via OIDC just fine but then fall back to
 # .npmrc auth for the PUT — and with TP we have no token in .npmrc, so
 # the publish 404s with npm's intentionally-misleading "package not
-# found" response. Node 20 ships with npm 10.8.2, so we explicitly
-# upgrade. Once setup-node ships npm >= 11.5.1 by default, drop the
-# upgrade step.
+# found" response. We explicitly upgrade to npm@latest to stay TP-capable.
+#
+# Node version: MUST track npm@latest's engine floor. npm 12 requires
+# Node ^22.22.2 || ^24.15.0 || >= 26, so the `npm install -g npm@latest`
+# step EBADENGINE-fails on a Node 20 runner — that silently broke every
+# publish from v1.1.0 through v1.5.0 (npm stayed at 1.0.1 while the repo
+# moved on). Node 24 (LTS) satisfies both npm 12 and this repo's
+# engines (>= 20). If a publish fails with EBADENGINE again, bump
+# node-version to npm@latest's new floor.
 
 on:
   push:
@@ -53,11 +59,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
-      # See top-of-file note: setup-node ships npm 10.8.2 with Node 20,
-      # but Trusted Publishing's auth-token exchange needs >= 11.5.1.
+      # See top-of-file note: Trusted Publishing's auth-token exchange
+      # needs npm >= 11.5.1, and npm@latest's engine floor dictates the
+      # node-version above.
       - name: Upgrade npm to a Trusted-Publishing-capable version
         run: npm install -g npm@latest
 
