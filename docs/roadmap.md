@@ -13,6 +13,15 @@ The 1.0 stability commitment (2026-06-06) is well behind us. The 1.x line has fo
 
 ---
 
+## Proposed — RFC open
+
+Not committed to a version yet — each has an open discussion gathering input before implementation is scoped:
+
+- **Official Python actor support** — Python actors already run today (the runner is Docker-image-based, and `crc init`/`crc dev` handle Python templates); this makes it official with docs, curated templates, and SDK-compat verification. [Join the RFC →](https://github.com/orgs/crawlee-cloud/discussions/95)
+- **Platform MCP server** — let AI agents (Claude, Cursor, …) run actors, check runs, and fetch datasets on your instance via the Model Context Protocol. TypeScript, against the platform as it is today. [Join the RFC →](https://github.com/orgs/crawlee-cloud/discussions/96)
+
+---
+
 ## v0.1.0 ✅
 
 - Initial Apify-compatible REST API
