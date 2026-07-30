@@ -436,4 +436,117 @@ describe('Dataset Routes', () => {
       expect(response.headers['x-apify-pagination-total']).toBe('50000');
     });
   });
+
+  describe('GET /v2/datasets/:datasetId/items — no limit ⇒ full dataset (Apify parity)', () => {
+    const datasetRow = (itemCount: number) => ({
+      rows: [
+        {
+          id: 'ds-1',
+          name: 'test',
+          user_id: null,
+          created_at: new Date(),
+          modified_at: new Date(),
+          accessed_at: new Date(),
+          item_count: itemCount,
+        },
+      ],
+    });
+
+    const items = (count: number) => Array.from({ length: count }, (_, i) => ({ n: i }));
+
+    const yieldAll = (all: Array<Record<string, unknown>>) =>
+      mockIterateDatasetItems.mockImplementationOnce(async function* () {
+        for (const item of all) yield item;
+      });
+
+    it('should stream ALL items when limit is omitted — real Apify has no implicit page size', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(150));
+      yieldAll(items(150));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/datasets/ds-1/items',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body).toHaveLength(150);
+      expect(response.headers['x-apify-pagination-total']).toBe('150');
+      expect(response.headers['x-apify-pagination-offset']).toBe('0');
+      expect(response.headers['x-apify-pagination-limit']).toBe('150');
+      expect(response.headers['content-type']).toContain('application/json');
+      // Plain JSON response, not a file download
+      expect(response.headers['content-disposition']).toBeUndefined();
+      // The paged path must not have been touched
+      expect(mockListDatasetItems).not.toHaveBeenCalled();
+    });
+
+    it('should honor offset while streaming the remainder when limit is omitted', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(150));
+      yieldAll(items(150));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/datasets/ds-1/items?offset=50',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body).toHaveLength(100);
+      expect(body[0]).toEqual({ n: 50 });
+      expect(response.headers['x-apify-pagination-offset']).toBe('50');
+      expect(response.headers['x-apify-pagination-limit']).toBe('100');
+    });
+
+    it('should keep the paged path byte-for-byte when limit IS provided', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(150));
+      mockListDatasetItems.mockResolvedValueOnce({
+        items: items(10),
+        total: 150,
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/datasets/ds-1/items?offset=0&limit=10',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockListDatasetItems).toHaveBeenCalledWith('ds-1', {
+        offset: 0,
+        limit: 10,
+        total: 150,
+      });
+      expect(mockIterateDatasetItems).not.toHaveBeenCalled();
+      expect(response.headers['x-apify-pagination-limit']).toBe('10');
+    });
+
+    it('should return an empty array for an empty dataset when limit is omitted', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(0));
+      yieldAll([]);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/datasets/ds-1/items',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toEqual([]);
+      expect(response.headers['x-apify-pagination-total']).toBe('0');
+      expect(response.headers['x-apify-pagination-limit']).toBe('0');
+    });
+
+    it('should keep download=1 as an attachment download', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(2));
+      yieldAll(items(2));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/datasets/ds-1/items?download=1',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-disposition']).toContain('attachment');
+      expect(JSON.parse(response.body)).toHaveLength(2);
+    });
+  });
 });

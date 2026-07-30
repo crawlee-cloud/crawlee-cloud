@@ -226,6 +226,44 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
       return reply;
     }
 
+    // Apify parity: when `limit` is omitted, return the FULL dataset — real
+    // Apify has no implicit page size, and clients built against it assume
+    // that (a consumer paginating "like Apify" without an explicit limit got
+    // silently capped at 100 items here). Streams via iterateDatasetItems
+    // like the download branch — no in-memory materialization — but as a
+    // plain JSON response: no attachment disposition, and Apify-style
+    // pagination headers so clients can verify completeness.
+    if (request.query.limit === undefined) {
+      const dsId = dataset.rows[0].id;
+      const total = dataset.rows[0].item_count;
+      const fullOffset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
+
+      const stream = reply.raw;
+      for (const [k, v] of Object.entries(reply.getHeaders())) {
+        if (v !== undefined) stream.setHeader(k, v);
+      }
+      stream.setHeader('content-type', 'application/json; charset=utf-8');
+      stream.setHeader('x-apify-pagination-total', String(total));
+      stream.setHeader('x-apify-pagination-offset', String(fullOffset));
+      stream.setHeader('x-apify-pagination-limit', String(Math.max(0, total - fullOffset)));
+      stream.write('[');
+
+      let skipped = 0;
+      let firstWritten = false;
+      for await (const item of iterateDatasetItems(dsId)) {
+        if (skipped < fullOffset) {
+          skipped++;
+          continue;
+        }
+        stream.write((firstWritten ? ',' : '') + JSON.stringify(item));
+        firstWritten = true;
+      }
+
+      stream.write(']');
+      stream.end();
+      return reply;
+    }
+
     const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
     const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
 
