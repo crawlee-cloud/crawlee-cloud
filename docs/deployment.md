@@ -167,7 +167,7 @@ curl http://localhost:3000/health
 Returns:
 
 ```json
-{ "status": "ok", "version": "1.5.0" }
+{ "status": "ok", "version": "1.6.0" }
 ```
 
 The `version` field reflects the release you have installed.

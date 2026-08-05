@@ -32,6 +32,8 @@ The Runner executes Actors in isolated Docker containers.
 | `HOST_TOTAL_MEMORY_MB`       | Host RAM the memory admission gate budgets against. Override for exotic setups where the runner's view of RAM isn't the actors' host.                                                          | Detected physical RAM                                         |
 | `RUNNER_MEMORY_RESERVE_MB`   | RAM held back for the OS, dockerd, and the runner process itself                                                                                                                               | `768`                                                         |
 | `RUNNER_MAX_READY_WAIT_SECS` | How long an unfittable `READY` run may wait before busy hosts stop claiming past it and drain toward idle                                                                                      | `300`                                                         |
+| `RUNNER_DISK_CLAIM_MAX_PCT`  | Disk-used % at or above which the runner stops claiming runs — see [Disk Pressure Control](#disk-pressure-control). Validated into 1–100 at startup.                                           | `90`                                                          |
+| `RUNNER_DISK_EVICT_PCT`      | Disk-used % at or above which cleanup also evicts unused actor images tagged under `IMAGE_REGISTRY`. Must be below the claim gate (warned + clamped at startup).                               | `80`                                                          |
 | `APIFY_PROXY_PASSWORD`       | Platform-level fallback proxy password injected into actor containers                                                                                                                          | _(empty)_                                                     |
 | `APIFY_PROXY_HOSTNAME`       | Proxy hostname override. Empty means the SDK default (`proxy.apify.com`).                                                                                                                      | _(empty)_                                                     |
 | `APIFY_PROXY_PORT`           | Proxy port override. `0` means the SDK default (`8000`).                                                                                                                                       | `0`                                                           |
@@ -150,6 +152,19 @@ Every 30 seconds the runner publishes system metrics (CPU, memory, disk, active 
 Before claiming a run, the runner checks that the sum of active containers' memory limits plus the new run's limit fits under `HOST_TOTAL_MEMORY_MB - RUNNER_MEMORY_RESERVE_MB`. Runs that don't fit are left for another runner, preventing coincident memory peaks from OOM-ing the host. If an unfittable `READY` run has waited longer than `RUNNER_MAX_READY_WAIT_SECS`, busy hosts stop claiming past it and drain toward idle so it isn't starved forever.
 
 At claim time the runner also stamps cost attribution onto the run — `runner_id`, `runner_price_hourly` (from `RUNNER_PRICE_HOURLY`), and `runner_provider` — which powers the dashboard's per-run cost views.
+
+---
+
+## Disk Pressure Control
+
+A near-full disk fails every image pull in about 90 seconds — and because work is runner-pull, a disk-full runner out-claims healthy capacity and drains the `READY` queue by fast-failing it, while the failed runs hide the real demand from the auto-scaler. Two thresholds (percent of root-disk used) prevent this:
+
+- **Claim gate (`RUNNER_DISK_CLAIM_MAX_PCT`, default 90):** at or above this, the runner stops claiming and idles. The queue backs up visibly, so the scaler's starvation escalation provisions healthy capacity instead of feeding a broken host.
+- **Image eviction (`RUNNER_DISK_EVICT_PCT`, default 80):** at or above this, the periodic cleanup also removes unused **tagged** actor images — but only tags under the configured `IMAGE_REGISTRY` prefix, the only images with a guaranteed re-pull path (and exactly where fleet disk growth comes from). Locally built images are never evicted: with no registry there is no way to get them back. Removals are per-tag and non-forced, so the Docker daemon protects images that are in use.
+
+The eviction threshold must sit below the claim gate — otherwise the runner would stop claiming before image eviction ever becomes eligible, idling itself permanently on a disk it could have cleaned; startup warns and clamps if it isn't. Engaging the claim gate kicks a cleanup immediately (debounced per episode) rather than waiting for the periodic sweep.
+
+Infrastructure failures also get a small retry floor: image-pull failures and missing-image container-create errors retry twice with a 60-second delay even when the actor's own retry policy is disabled — host problems shouldn't consume an actor's retry budget or fail runs that would succeed on a healthy node. The floor never reduces a more generous actor policy.
 
 ---
 

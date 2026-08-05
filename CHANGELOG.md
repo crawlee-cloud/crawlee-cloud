@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0] - 2026-08-05
+
+Disk-pressure protection for the runner fleet plus an Apify-parity fix on dataset reads: a full runner disk can no longer black-hole the READY queue, and `GET /v2/datasets/:id/items` without a `limit` now returns the whole dataset like real Apify does. Also: community feedback funnels, and the npm publish pipeline un-wedged (npm still served 1.0.1 while the repo was at 1.5.0).
+
+### Runner
+
+- **Disk admission gate** — a full runner disk fails every image pull in ~90s, and because work is runner-pull, a disk-full runner out-claims healthy capacity and drains the READY queue by fast-failing it while hiding the demand from the scaler (prod 2026-08-04/05: 104 failed runs, both 80 GB runner disks at 100%). At `RUNNER_DISK_CLAIM_MAX_PCT` (default 90%) disk usage the runner stops claiming and idles, letting the queue back up so the scaler's starvation escalation provisions healthy capacity. The threshold is validated into 1–100 at startup (`envInt` accepts 0, which would gate every claim and silently brick the runner).
+- **Registry-scoped image eviction** — at `RUNNER_DISK_EVICT_PCT` (default 80%) the periodic cleanup also removes unused **tagged** images, but only tags under the configured `IMAGE_REGISTRY` prefix: those are the only images with a guaranteed re-pull path, and exactly the fleet's growth source (dangling-only pruning never shrinks a fleet whose growth is new per-actor tags). Locally built images are never evicted — with no registry there is no re-pull path, so removal would be permanent. Per-tag non-forced removes let the daemon protect in-use images. Eviction must sit below the claim gate — enforced at startup with warn + clamp — and engaging the gate kicks cleanup immediately (debounced per episode) instead of waiting out the 30-minute sweep.
+- **Infra retry floor** — image-pull failures and missing-image container-create 404s are host problems, not actor bugs, so they now retry on a small platform floor (2 attempts, 60s delay) even when the actor has retries disabled; the floor never reduces a more generous actor policy. Pull errors are prefix-stamped at the failure site so transport-level errors (registry outage, DNS) classify correctly, and the rethrow always produces a real `Error` — a non-Error rejection previously crashed the failure handler itself, leaving the run un-terminalized.
+- `status_message` is sanitized of NUL bytes before the Postgres write — daemon error strings with NULs failed the UPDATE and shadowed the real failure cause.
+- Heartbeat now reports the disk usage ratio (feeds the gate, cleanup, and the dashboard's Runners page).
+
+### API
+
+- **`GET /v2/datasets/:id/items` without `limit` returns the full dataset (Apify parity)** — real Apify returns everything when `limit` is omitted; we defaulted to 100, silently truncating any Apify-compatible client that used the documented no-limit pattern (found in production: a consumer migrating actors from Apify ingested exactly 100 items per run from every source). With no `limit`, the whole dataset now streams via the same zero-materialization path as `?download=1`, as plain JSON with Apify-style pagination headers; `offset` is honored by skipping. An explicit `limit` keeps the existing paged path unchanged. This also fixes the dashboard's dataset download button, which was truncated to 100 items.
+
+### CLI & Community
+
+- **Community feedback funnels** — issue templates (bug report, feature request, and a low-friction deployment report), Discussions routing for questions, a PR template, README Community & Support section, and Open Collective funding links. The CLI shows a one-time post-first-push feedback note (TTY-only, `CRAWLEE_CLOUD_NO_FEEDBACK_NOTE=1` opt-out, never breaks a deploy); the note's shown-marker uses an exclusive create (`wx`, mode 0600) so the check-then-write race is closed.
+
+### CI
+
+- **npm publish pipeline fixed** — `npm install -g npm@latest` on the Node 20 runner has EBADENGINE-failed every tag publish since v1.1.0 (npm 12 raised its engine floor), so npm still served `@crawlee-cloud/cli@1.0.1`. The publish workflow now pins Node `^24.15.0`, encoding npm 12's documented floor while taking patch updates. This release is the first to publish cleanly again.
+
+### New environment variables
+
+- `RUNNER_DISK_CLAIM_MAX_PCT` (default `90`) — disk-used % at which the runner stops claiming runs.
+- `RUNNER_DISK_EVICT_PCT` (default `80`) — disk-used % at which cleanup also evicts unused registry-tagged actor images. Must be below the claim gate.
+- `CRAWLEE_CLOUD_NO_FEEDBACK_NOTE` (unset) — set to suppress the CLI's one-time post-push feedback note.
+
+### Docs
+
+- Roadmap: Python actor support (#95) and a platform MCP server (#96) opened as Proposed RFC discussions — no version commitment until they converge.
+- README: npm version badge for `@crawlee-cloud/cli`; vestigial pnpm workspace file removed.
+
+### Deploy notes
+
+- Drop-in: no schema migration, no required env-var changes. Redeploy the API (dataset streaming fix) and runners (disk gate — set `RUNNER_CLONE_REF=v1.6.0` or rebuild the runner image). The disk thresholds only need tuning if the defaults (90/80) don't fit your disk sizes.
+
 ## [1.5.0] - 2026-07-26
 
 Safe actor deletion plus a hardening-and-testing release: force-delete with explicit dependency warnings, webhook SSRF loopback fixes, and the first enforced test-coverage floors across the monorepo.

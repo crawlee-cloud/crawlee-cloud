@@ -65,7 +65,9 @@ curl -H "Authorization: Bearer $TOKEN" \
   "https://your-server.com/v2/datasets/{id}/items?offset=0&limit=100"
 ```
 
-Pass `?download=1` to stream the entire dataset as a single JSON array file — no pagination cap and no in-memory materialization on the server.
+**Omitting `limit` returns the entire dataset** (matching real Apify), streamed as plain JSON with Apify-style pagination headers — no in-memory materialization on the server, and `offset` is still honored. Passing an explicit `limit` uses the paged path. Before v1.6.0 the no-limit case silently defaulted to 100 items; Apify-compatible clients fetching without a limit were truncated.
+
+Pass `?download=1` to stream the entire dataset as a single JSON array file (attachment disposition) — same zero-materialization path.
 
 ---
 
