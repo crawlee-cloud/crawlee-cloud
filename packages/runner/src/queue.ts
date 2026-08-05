@@ -14,8 +14,9 @@ import {
   stopRun,
   writeLifecycleLog,
   clampMemoryToHost,
+  cleanupDocker,
 } from './docker.js';
-import { getAvailableMemoryMb } from './heartbeat.js';
+import { getAvailableMemoryMb, getDiskUsageRatio } from './heartbeat.js';
 import { applyWebhookTemplate } from './webhook-template.js';
 import { resolveProxy } from './proxy-resolver.js';
 
@@ -146,6 +147,7 @@ const activeRunMemoryMb = new Map<string, number>();
 // Log the memory-backpressure skip only on entering the throttled state —
 // the poll fires every second and would otherwise flood the journal.
 let memoryThrottled = false;
+let diskThrottled = false;
 
 export function stopProcessing(): void {
   shuttingDown = true;
@@ -348,12 +350,16 @@ export async function processNextRun(
   deps: {
     db?: pg.Pool;
     getAvailableMemory?: () => number | null;
+    getDiskUsageRatio?: () => number;
     runProcessor?: (run: RunJob) => Promise<void>;
+    cleanup?: () => Promise<void>;
   } = {}
 ): Promise<void> {
   const db = deps.db ?? pool;
   const getAvailableMemory = deps.getAvailableMemory ?? getAvailableMemoryMb;
+  const getDiskRatio = deps.getDiskUsageRatio ?? getDiskUsageRatio;
   const runProcessor = deps.runProcessor ?? processRun;
+  const cleanup = deps.cleanup ?? cleanupDocker;
 
   if (shuttingDown || isProcessing || activeRuns >= config.maxConcurrentRuns) {
     return;
@@ -386,6 +392,37 @@ export async function processNextRun(
     if (memoryThrottled) {
       memoryThrottled = false;
       console.log('[Runner] Host memory pressure cleared — resuming claims');
+    }
+
+    // Disk admission gate: a claim on a near-full disk dies at image
+    // pull ("no space left on device") in ~90s — and because work is
+    // runner-pull, a fast-failing runner out-claims healthy capacity
+    // and drains the READY queue by failing it, hiding the pressure
+    // from the scaler (prod 2026-08-04/05: 104 runs failed this way).
+    // Idling instead lets the queue back up so the scaler's starvation
+    // escalation provisions a healthy replacement, while the periodic
+    // cleanup's eviction (threshold below this one) frees the disk.
+    const diskRatio = getDiskRatio();
+    if (diskRatio * 100 >= config.diskClaimMaxPct) {
+      if (!diskThrottled) {
+        diskThrottled = true;
+        console.warn(
+          `[Runner] Host disk ${String(Math.round(diskRatio * 100))}% full (>= ${String(config.diskClaimMaxPct)}% claim gate) — pausing claims until cleanup frees space`
+        );
+        // Kick cleanup NOW instead of waiting out the 30-minute periodic
+        // sweep: one 2.5-8.4GB pull can jump usage from below the evict
+        // threshold straight past the gate within a single sweep window,
+        // and a gated runner claiming nothing has no other path back
+        // below the gate. Transition-edge only (debounced by the
+        // diskThrottled flag), fire-and-forget so the poll tick isn't
+        // blocked — cleanupDocker contains its own errors.
+        void cleanup();
+      }
+      return;
+    }
+    if (diskThrottled) {
+      diskThrottled = false;
+      console.log('[Runner] Host disk pressure cleared — resuming claims');
     }
 
     // Memory-aware admission: gate the claim on the sum of active
@@ -591,7 +628,7 @@ async function processRun(run: RunJob): Promise<void> {
       WHERE id = $5 AND status = 'RUNNING'
       RETURNING status
     `,
-      [status, result.finishedAt, result.exitCode, statusMessage, runId]
+      [status, result.finishedAt, result.exitCode, sanitizeStatusMessage(statusMessage), runId]
     );
 
     // Peak memory rides a SEPARATE best-effort UPDATE, deliberately NOT
@@ -668,7 +705,7 @@ async function processRun(run: RunJob): Promise<void> {
       WHERE id = $2 AND status = 'RUNNING'
       RETURNING status
     `,
-      [(err as Error).message, runId]
+      [sanitizeStatusMessage((err as Error).message), runId]
     );
 
     let webhookStatus = 'FAILED';
@@ -687,7 +724,9 @@ async function processRun(run: RunJob): Promise<void> {
     await persistFailureLog(run, webhookStatus);
     await triggerWebhooks(runId, webhookStatus);
     if (webhookStatus === 'FAILED') {
-      await maybeRetryRun(run, runId);
+      await maybeRetryRun(run, runId, pool, redis, {
+        infraFailure: isInfraFailure((err as Error).message),
+      });
     }
   }
 }
@@ -748,6 +787,36 @@ async function ingestCrawlerStats(runId: string): Promise<void> {
  * one prod actor had 7/8 runs "exit 1" whose real cause (OOM) was only visible
  * in a Redis log tail that expires after 24h.
  */
+/**
+ * Postgres text columns reject NUL bytes: an unsanitized status_message
+ * write fails with `invalid byte sequence for encoding "UTF8": 0x00`,
+ * and that PG error then gets stored as the status_message — shadowing
+ * the real failure cause (3 prod runs 2026-08-05, actual cause was a
+ * disk-full pull failure). Docker daemon error strings are the known
+ * NUL source; collapse the leftover double spaces for readability.
+ */
+export function sanitizeStatusMessage(message: string | null): string | null {
+  if (message === null) return null;
+  // eslint-disable-next-line no-control-regex -- matching NUL is the point
+  return message.replace(/\u0000/g, '').replace(/ {2,}/g, ' ');
+}
+
+/**
+ * Infrastructure failures are runner/host problems (full disk, registry
+ * outage), not actor bugs — they retry on a platform floor even when the
+ * actor has retries disabled (see maybeRetryRun).
+ *
+ * "Image pull failed" is stamped at the pull site in executeRun
+ * (docker.ts), covering both in-band daemon errors and transport-level
+ * ones. "No such image" is createContainer's 404 — reachable when the
+ * periodic cleanup's eviction races a just-pulled image in the
+ * pull→create window (only under disk pressure, i.e. exactly when
+ * fast-failing terminally is most harmful).
+ */
+export function isInfraFailure(message: string): boolean {
+  return message.startsWith('Image pull failed') || /no such image/i.test(message);
+}
+
 export function buildRunStatusMessage(params: {
   status: string;
   exitCode: number;
@@ -915,14 +984,25 @@ export async function triggerWebhooks(
   }
 }
 
+// Infra-failure retry floor: pull failures are host problems, not actor
+// bugs, so they get a couple of delayed attempts even when the actor has
+// retries disabled (fleet-wide max_retries=0 made all 104 disk-full pull
+// failures terminal on 2026-08-04/05). The delay floor gives the disk
+// gate + eviction cleanup time to act; the retried run lands on whichever
+// runner is healthy by then.
+const INFRA_MAX_RETRIES = 2;
+const INFRA_MIN_DELAY_SECS = 60;
+
 /**
- * Schedule a retry run if the actor's retry policy allows it.
+ * Schedule a retry run if the actor's retry policy allows it — or, for
+ * infrastructure failures, the platform floor (whichever is larger).
  */
 export async function maybeRetryRun(
   run: RunJob,
   runId: string,
   db: pg.Pool = pool,
-  redisClient: Redis = redis
+  redisClient: Redis = redis,
+  opts: { infraFailure?: boolean } = {}
 ): Promise<void> {
   try {
     const actorResult = await db.query<{
@@ -931,16 +1011,21 @@ export async function maybeRetryRun(
     }>('SELECT max_retries, retry_delay_secs FROM actors WHERE id = $1', [run.actor_id]);
 
     const actor = actorResult.rows[0];
-    if (!actor || actor.max_retries <= 0) return;
-    if (run.retry_count >= actor.max_retries) return;
+    if (!actor) return;
+    const maxRetries = opts.infraFailure
+      ? Math.max(actor.max_retries, INFRA_MAX_RETRIES)
+      : actor.max_retries;
+    if (maxRetries <= 0) return;
+    if (run.retry_count >= maxRetries) return;
+    const delaySecs = opts.infraFailure
+      ? Math.max(actor.retry_delay_secs, INFRA_MIN_DELAY_SECS)
+      : actor.retry_delay_secs;
 
     const newRunId = nanoid();
     const originRunId = run.origin_run_id ?? runId;
     const newRetryCount = run.retry_count + 1;
 
-    console.log(
-      `Scheduling retry ${newRetryCount}/${actor.max_retries} for run ${runId} as ${newRunId}`
-    );
+    console.log(`Scheduling retry ${newRetryCount}/${maxRetries} for run ${runId} as ${newRunId}`);
 
     await db.query(
       `INSERT INTO runs (id, actor_id, user_id, status, default_dataset_id, default_key_value_store_id,
@@ -959,7 +1044,7 @@ export async function maybeRetryRun(
         run.memory_mbytes,
         newRetryCount,
         originRunId,
-        actor.retry_delay_secs,
+        delaySecs,
       ]
     );
 

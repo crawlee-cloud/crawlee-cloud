@@ -6,7 +6,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type pg from 'pg';
 import type { Redis } from 'ioredis';
-import { scheduleRetry, maybeRetryRun, processWebhookRetries, type RunJob } from '../src/queue.js';
+import {
+  scheduleRetry,
+  maybeRetryRun,
+  isInfraFailure,
+  processWebhookRetries,
+  type RunJob,
+} from '../src/queue.js';
 
 function mockPool(...results: { rows: unknown[] }[]) {
   const query = vi.fn();
@@ -112,6 +118,49 @@ describe('maybeRetryRun', () => {
     expect(params[8]).toBe(2);
   });
 
+  // Infra failures (image pull died: disk full, registry down) are not
+  // the actor's fault — they retry on a small platform floor even when
+  // the actor itself has retries disabled (prod 2026-08-04: max_retries
+  // is 0 fleet-wide, so 104 pull failures were all terminal).
+  it('retries an infra failure even when the actor has retries disabled', async () => {
+    const db = mockPool({ rows: [{ max_retries: 0, retry_delay_secs: 0 }] }, { rows: [] });
+    const redis = fakeRedis();
+
+    await maybeRetryRun(RUN, 'run-1', db, redis, { infraFailure: true });
+
+    const [sql, params] = db.query.mock.calls[1] as [string, unknown[]];
+    expect(sql).toContain('INSERT INTO runs');
+    expect(params[8]).toBe(1); // retry_count bumped
+    expect(params[10]).toBe(60); // delay floored to 60s, not the actor's 0
+    expect(redis.publish).toHaveBeenCalled();
+  });
+
+  // The floor uses Math.max semantics: it may only RAISE a disabled
+  // policy, never lower a generous one — an actor with 5 retries at 300s
+  // keeps exactly that on an infra failure.
+  it('never reduces a generous actor retry policy on infra failures', async () => {
+    const db = mockPool({ rows: [{ max_retries: 5, retry_delay_secs: 300 }] }, { rows: [] });
+    const redis = fakeRedis();
+
+    await maybeRetryRun({ ...RUN, retry_count: 3 }, 'run-1', db, redis, { infraFailure: true });
+
+    const [sql, params] = db.query.mock.calls[1] as [string, unknown[]];
+    expect(sql).toContain('INSERT INTO runs'); // retry_count 3 < 5 still allowed (floor is 2)
+    expect(params[8]).toBe(4);
+    expect(params[10]).toBe(300); // actor's 300s delay kept, not floored down to 60
+    expect(redis.publish).toHaveBeenCalled();
+  });
+
+  it('caps infra retries at the platform floor', async () => {
+    const db = mockPool({ rows: [{ max_retries: 0, retry_delay_secs: 0 }] });
+    const redis = fakeRedis();
+
+    await maybeRetryRun({ ...RUN, retry_count: 2 }, 'run-1', db, redis, { infraFailure: true });
+
+    expect(db.query).toHaveBeenCalledTimes(1); // actor lookup only, no INSERT
+    expect(redis.publish).not.toHaveBeenCalled();
+  });
+
   it('does nothing when the actor has retries disabled', async () => {
     const db = mockPool({ rows: [{ max_retries: 0, retry_delay_secs: 60 }] });
     const redis = fakeRedis();
@@ -214,5 +263,35 @@ describe('processWebhookRetries', () => {
     const db = { query: vi.fn().mockRejectedValue(new Error('pg reset')) } as unknown as pg.Pool;
     await expect(processWebhookRetries(db)).resolves.toBeUndefined();
     expect(console.error).toHaveBeenCalledWith('Webhook retry processor error:', expect.any(Error));
+  });
+});
+
+describe('isInfraFailure', () => {
+  it('classifies image pull failures as infra failures', () => {
+    expect(
+      isInfraFailure('Image pull failed: failed to extract layer: no space left on device')
+    ).toBe(true);
+  });
+
+  // Transport-level pull errors (registry outage, DNS, socket reset)
+  // don't carry the prefix from the daemon — executeRun's pull catch
+  // (docker.ts) stamps it by failure SITE. This pins the contract: the
+  // classifier alone must NOT match raw transport messages, so the
+  // site-wrap is load-bearing.
+  it('relies on the executeRun site-wrap for transport-level pull errors', () => {
+    expect(isInfraFailure('connect ECONNREFUSED 140.82.112.34:443')).toBe(false);
+    expect(isInfraFailure('Image pull failed: connect ECONNREFUSED 140.82.112.34:443')).toBe(true);
+  });
+
+  // createContainer's 404 — reachable when disk-pressure eviction races
+  // a just-pulled image in the pull→create window.
+  it('classifies a missing image at container create as an infra failure', () => {
+    expect(
+      isInfraFailure('(HTTP code 404) no such image - No such image: crawlee-cloud/actor-x:latest')
+    ).toBe(true);
+  });
+
+  it('does not classify actor errors as infra failures', () => {
+    expect(isInfraFailure('Container exited with code 1')).toBe(false);
   });
 });
