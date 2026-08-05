@@ -156,6 +156,17 @@ export const config: Config = {
   logLevel: env('LOG_LEVEL', 'info'),
 };
 
+// Claim-gate range: envInt accepts any non-negative integer, but a gate of
+// 0 blocks EVERY claim (ratio * 100 >= 0 is always true — including the
+// "disk unknown" 0 fallback on non-Linux hosts), silently bricking the
+// runner; a gate above 100 can never engage. Recover to the default.
+if (config.diskClaimMaxPct < 1 || config.diskClaimMaxPct > 100) {
+  console.warn(
+    `[Runner] RUNNER_DISK_CLAIM_MAX_PCT=${String(config.diskClaimMaxPct)} is outside 1-100 — using default 90`
+  );
+  config.diskClaimMaxPct = 90;
+}
+
 // Threshold-order invariant: eviction must fire BELOW the claim gate, or
 // the runner can idle itself permanently — claims pause at diskClaimMaxPct
 // but nothing frees space until diskEvictPct, which never arrives once

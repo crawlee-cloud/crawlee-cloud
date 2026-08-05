@@ -412,10 +412,15 @@ export async function executeRun(options: RunOptions): Promise<RunResult> {
     // isInfraFailure (queue.ts) would misclassify as actor failures —
     // terminal for max_retries=0 actors, which is exactly the population
     // the infra retry floor exists for.
+    // Always throw an Error: processRun's catch reads `.message`, and a
+    // rethrown non-Error rejection (e.g. a raw string) would make that
+    // undefined — sanitizeStatusMessage then throws INSIDE the failure
+    // handler and the run never reaches a terminal state.
     const message = err instanceof Error ? err.message : String(err);
-    throw message.startsWith('Image pull failed')
-      ? err
-      : new Error(`Image pull failed: ${message}`);
+    if (err instanceof Error && message.startsWith('Image pull failed')) throw err;
+    throw new Error(
+      message.startsWith('Image pull failed') ? message : `Image pull failed: ${message}`
+    );
   }
 
   // Abort may have landed during the pull, when there was no container
@@ -878,37 +883,54 @@ export async function cleanupDocker(
     // `:latest` tags (2.5-8.4GB each, browsers bundled), which filled
     // both 80GB prod runner disks to 100% on 2026-08-04 while this
     // cleanup ran faithfully every 30 minutes — every image pull then
-    // failed with "no space left on device" (104 runs). `dangling:false`
-    // is the API form of `docker image prune -a`: it removes all images
-    // with no container, so in-use images are safe; evicted ones simply
+    // failed with "no space left on device" (104 runs). Evicted images
     // re-pull on next claim (~1-2 min). Threshold sits BELOW the claim
     // gate (diskClaimMaxPct) so eviction normally keeps the runner
     // claimable and the gate stays a last resort.
     //
-    // ONLY when a registry is configured: "re-pull on next claim" is the
-    // whole safety argument, and it holds solely for registry-backed
-    // images. The default deployment (no IMAGE_REGISTRY) builds
-    // `crawlee-cloud/actor-NAME:latest` straight on the host daemon via
-    // `crc push` — evicting those is permanent, and the next claim's
-    // pull 404s against Docker Hub until someone re-pushes every actor.
+    // Eviction is scoped to tags under the configured IMAGE_REGISTRY
+    // prefix — the only images with a PROVEN re-pull path. A blanket
+    // `dangling:false` prune (docker image prune -a) would also remove
+    // (a) locally built images in the default no-registry deployment
+    // (crc push builds `crawlee-cloud/actor-NAME:latest` straight on the
+    // host daemon — eviction would be permanent, next pull 404s against
+    // Docker Hub), (b) custom `default_run_options.image` values that
+    // resolve locally even when a registry IS configured (queue.ts gives
+    // them priority over the registry-derived name), and (c) innocent
+    // bystanders on shared Docker hosts — the same blast-radius concern
+    // that keeps the container removal above label-scoped.
     //
-    // Blast-radius caveat: unlike the label-scoped container removal
-    // above, the image-prune API only filters on label/until, so this
-    // removes EVERY unused image on the host — including other tenants'
-    // on a shared daemon. Acceptable on the dedicated registry-backed
-    // fleet this targets; another reason it stays off by default
-    // elsewhere.
+    // Per-tag, non-forced remove: the daemon refuses images referenced
+    // by any container (running or stopped), so in-use images and a pull
+    // racing this sweep stay safe; multi-tag images just lose the
+    // registry tag. Registry-prefixed tags ARE the fleet's growth source,
+    // so this still solves the incident.
     const ratio = diskRatio();
     if (ratio * 100 >= config.diskEvictPct) {
       if (!config.imageRegistry) {
         console.warn(
-          `[Cleanup] Disk ${String(Math.round(ratio * 100))}% full (>= ${String(config.diskEvictPct)}% eviction threshold) but no IMAGE_REGISTRY configured — skipping tagged-image eviction (locally built images cannot be re-pulled). Free disk space manually.`
+          `[Cleanup] Disk ${String(Math.round(ratio * 100))}% full (>= ${String(config.diskEvictPct)}% eviction threshold) but no IMAGE_REGISTRY configured — skipping image eviction (locally built images cannot be re-pulled). Free disk space manually.`
         );
       } else {
-        const evictResult = await client.pruneImages({ filters: { dangling: { false: true } } });
-        const evictedMb = Math.round((evictResult.SpaceReclaimed || 0) / 1024 / 1024);
+        const prefix = `${config.imageRegistry}/`;
+        const images = await client.listImages();
+        let evictedTags = 0;
+        let evictedMb = 0;
+        for (const image of images) {
+          for (const tag of image.RepoTags ?? []) {
+            if (!tag.startsWith(prefix)) continue;
+            try {
+              await client.getImage(tag).remove();
+              evictedTags++;
+              evictedMb += Math.round((image.Size || 0) / 1024 / 1024);
+            } catch {
+              // In use, shared, or already gone — the daemon is the
+              // authority; skip.
+            }
+          }
+        }
         console.log(
-          `[Cleanup] Disk ${String(Math.round(ratio * 100))}% full (>= ${String(config.diskEvictPct)}% eviction threshold) — evicted unused tagged images: ${String(evictedMb)}MB freed`
+          `[Cleanup] Disk ${String(Math.round(ratio * 100))}% full (>= ${String(config.diskEvictPct)}% eviction threshold) — evicted ${String(evictedTags)} unused registry image tag(s): ~${String(evictedMb)}MB freed`
         );
       }
     }
