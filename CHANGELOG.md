@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [1.6.0] - 2026-08-05
 
-Disk-pressure protection for the runner fleet plus an Apify-parity fix on dataset reads: a full runner disk can no longer black-hole the READY queue, and `GET /datasets/:id/items` without a `limit` now returns the whole dataset like real Apify does. Also: community feedback funnels, and the npm publish pipeline un-wedged (npm still served 1.0.1 while the repo was at 1.5.0).
+Disk-pressure protection for the runner fleet plus an Apify-parity fix on dataset reads: a full runner disk can no longer black-hole the READY queue, and `GET /v2/datasets/:id/items` without a `limit` now returns the whole dataset like real Apify does. Also: community feedback funnels, and the npm publish pipeline un-wedged (npm still served 1.0.1 while the repo was at 1.5.0).
 
 ### Runner
 
