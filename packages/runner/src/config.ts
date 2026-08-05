@@ -46,6 +46,19 @@ export interface Config {
   // SCALER_MAX_READY_WAIT_SECS escalation is the capacity-side half.
   starvedReadyWaitSecs: number;
 
+  // Disk admission/eviction control (percent of root disk used). A full
+  // disk fails every image pull ("no space left on device") in ~90s —
+  // and because work is runner-pull, a disk-full runner out-claims
+  // healthy capacity and drains the READY queue by fast-failing it, so
+  // the scaler never sees demand (prod 2026-08-04/05: 104 failed runs,
+  // both runners at 100%). Above diskClaimMaxPct the runner stops
+  // claiming; above diskEvictPct the periodic cleanup evicts unused
+  // TAGGED images (dangling-only pruning never shrinks a fleet whose
+  // growth is new per-actor tags). Eviction must trigger BELOW the claim
+  // gate so cleanup normally keeps the runner claimable.
+  diskClaimMaxPct: number;
+  diskEvictPct: number;
+
   // Apify proxy defaults — injected into actor containers as the
   // platform-level fallback. Per-actor and per-user overrides resolved
   // in queue.ts → proxy-resolver.ts take precedence over these.
@@ -125,6 +138,8 @@ export const config: Config = {
   hostTotalMemoryMb: envInt('HOST_TOTAL_MEMORY_MB', Math.round(os.totalmem() / (1024 * 1024))),
   memoryReserveMb: envInt('RUNNER_MEMORY_RESERVE_MB', 768),
   starvedReadyWaitSecs: envInt('RUNNER_MAX_READY_WAIT_SECS', 300),
+  diskClaimMaxPct: envInt('RUNNER_DISK_CLAIM_MAX_PCT', 90),
+  diskEvictPct: envInt('RUNNER_DISK_EVICT_PCT', 80),
 
   apifyProxyPassword: env('APIFY_PROXY_PASSWORD', ''),
   apifyProxyHostname: env('APIFY_PROXY_HOSTNAME', ''),
@@ -140,6 +155,31 @@ export const config: Config = {
 
   logLevel: env('LOG_LEVEL', 'info'),
 };
+
+// Claim-gate range: envInt accepts any non-negative integer, but a gate of
+// 0 blocks EVERY claim (ratio * 100 >= 0 is always true — including the
+// "disk unknown" 0 fallback on non-Linux hosts), silently bricking the
+// runner; a gate above 100 can never engage. Recover to the default.
+if (config.diskClaimMaxPct < 1 || config.diskClaimMaxPct > 100) {
+  console.warn(
+    `[Runner] RUNNER_DISK_CLAIM_MAX_PCT=${String(config.diskClaimMaxPct)} is outside 1-100 — using default 90`
+  );
+  config.diskClaimMaxPct = 90;
+}
+
+// Threshold-order invariant: eviction must fire BELOW the claim gate, or
+// the runner can idle itself permanently — claims pause at diskClaimMaxPct
+// but nothing frees space until diskEvictPct, which never arrives once
+// claiming (and thus image pulling) has stopped. Same warn-and-recover
+// spirit as envInt: a misconfigured env var must not produce a silently
+// wedged runner.
+if (config.diskEvictPct >= config.diskClaimMaxPct) {
+  const clamped = Math.max(0, config.diskClaimMaxPct - 10);
+  console.warn(
+    `[Runner] RUNNER_DISK_EVICT_PCT (${String(config.diskEvictPct)}) must be below RUNNER_DISK_CLAIM_MAX_PCT (${String(config.diskClaimMaxPct)}) — clamping eviction threshold to ${String(clamped)}%`
+  );
+  config.diskEvictPct = clamped;
+}
 
 // Proxy encryption key validation. PROXY_ENCRYPTION_KEY must match the value
 // used by the API process — both encrypt/decrypt the same DB columns. If the

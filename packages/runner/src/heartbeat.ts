@@ -95,8 +95,11 @@ export function getAvailableMemoryMb(): number | null {
 /**
  * Get root disk usage ratio (0-1).
  * Falls back to 0 if unavailable.
+ * Exported: also feeds the claim gate (queue.ts) and image eviction
+ * (docker.ts) — the 0 fallback means "unknown = no throttle" there,
+ * matching the memory gate's non-Linux behavior.
  */
-function getDiskUsage(): number {
+export function getDiskUsageRatio(): number {
   try {
     // Read from /proc on Linux
     const stat = fs.statfsSync('/');
@@ -123,7 +126,7 @@ export function collectMetrics(
 
   const cpuUsage = getCpuUsage();
   const memoryUsageRatio = totalMem === 0 ? 0 : usedMem / totalMem;
-  const diskUsageRatio = getDiskUsage();
+  const diskUsageRatio = getDiskUsageRatio();
 
   // Runner is unhealthy if memory > 95% or disk > 95%
   const healthy = memoryUsageRatio < 0.95 && diskUsageRatio < 0.95;

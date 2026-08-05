@@ -132,7 +132,10 @@ describe('processNextRun', () => {
     // rejection consumed by main().catch is a HANDLED rejection.
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
-    await expect(processNextRun()).resolves.toBeUndefined();
+    // Disk probe injected (only): the real probe reads the host's actual
+    // root disk, and a nearly-full dev machine would gate the claim before
+    // it ever reaches the uninitialized pool this test depends on.
+    await expect(processNextRun({ getDiskUsageRatio: () => 0 })).resolves.toBeUndefined();
 
     expect(error).toHaveBeenCalledWith(
       expect.stringContaining('Claim poll failed'),

@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildRunStatusMessage } from '../src/queue.js';
+import { buildRunStatusMessage, sanitizeStatusMessage } from '../src/queue.js';
 
 describe('buildRunStatusMessage', () => {
   it('returns null for SUCCEEDED (no message noise on healthy runs)', () => {
@@ -120,5 +120,28 @@ describe('buildRunStatusMessage', () => {
     });
     expect(msg).not.toBeNull();
     expect(msg.length).toBeLessThanOrEqual(500);
+  });
+});
+
+// Postgres text columns reject NUL bytes. Docker daemon error strings can
+// carry them, and an unsanitized status_message write then fails with
+// `invalid byte sequence for encoding "UTF8": 0x00` — which itself gets
+// stored as the status_message, shadowing the real failure cause (3 prod
+// runs on 2026-08-05 whose actual error was a disk-full pull failure).
+describe('sanitizeStatusMessage', () => {
+  it('strips NUL bytes so Postgres accepts the message', () => {
+    expect(sanitizeStatusMessage('pull failed\u0000 at\u0000 layer 3')).toBe(
+      'pull failed at layer 3'
+    );
+  });
+
+  it('passes null through', () => {
+    expect(sanitizeStatusMessage(null)).toBeNull();
+  });
+
+  it('leaves clean messages untouched', () => {
+    expect(sanitizeStatusMessage('Container exited with code 1')).toBe(
+      'Container exited with code 1'
+    );
   });
 });

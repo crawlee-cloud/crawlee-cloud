@@ -50,6 +50,9 @@ function deferredProcessor() {
 }
 
 const plentyOfMemory = () => config.memoryReserveMb + 10_000;
+// The real probe reads the host's actual root disk — a nearly-full dev
+// machine would trip the disk claim gate and fail every claim test here.
+const emptyDisk = () => 0;
 
 async function drain() {
   // Let the runProcessor .finally() callbacks run.
@@ -73,7 +76,12 @@ describe('processNextRun', () => {
     const db = mockPool([claimRow('run-42')]);
     const { processor, release } = deferredProcessor();
 
-    await processNextRun({ db, getAvailableMemory: plentyOfMemory, runProcessor: processor });
+    await processNextRun({
+      db,
+      getDiskUsageRatio: emptyDisk,
+      getAvailableMemory: plentyOfMemory,
+      runProcessor: processor,
+    });
 
     expect(processor).toHaveBeenCalledTimes(1);
     expect(getActiveRunCount()).toBe(1);
@@ -89,7 +97,12 @@ describe('processNextRun', () => {
     const db = mockPool([]);
     const { processor } = deferredProcessor();
 
-    await processNextRun({ db, getAvailableMemory: plentyOfMemory, runProcessor: processor });
+    await processNextRun({
+      db,
+      getDiskUsageRatio: emptyDisk,
+      getAvailableMemory: plentyOfMemory,
+      runProcessor: processor,
+    });
 
     expect(processor).not.toHaveBeenCalled();
     expect(getActiveRunCount()).toBe(0);
@@ -100,8 +113,18 @@ describe('processNextRun', () => {
     const { processor } = deferredProcessor();
     const lowMemory = () => config.memoryReserveMb - 1;
 
-    await processNextRun({ db, getAvailableMemory: lowMemory, runProcessor: processor });
-    await processNextRun({ db, getAvailableMemory: lowMemory, runProcessor: processor });
+    await processNextRun({
+      db,
+      getDiskUsageRatio: emptyDisk,
+      getAvailableMemory: lowMemory,
+      runProcessor: processor,
+    });
+    await processNextRun({
+      db,
+      getDiskUsageRatio: emptyDisk,
+      getAvailableMemory: lowMemory,
+      runProcessor: processor,
+    });
 
     expect(db.query).not.toHaveBeenCalled();
     expect(processor).not.toHaveBeenCalled();
@@ -112,6 +135,7 @@ describe('processNextRun', () => {
     const { processor: nextProcessor, release } = deferredProcessor();
     await processNextRun({
       db,
+      getDiskUsageRatio: emptyDisk,
       getAvailableMemory: plentyOfMemory,
       runProcessor: nextProcessor,
     });
@@ -122,7 +146,12 @@ describe('processNextRun', () => {
 
   it('treats unknown memory (null probe) as no throttle', async () => {
     const db = mockPool([]);
-    await processNextRun({ db, getAvailableMemory: () => null, runProcessor: vi.fn() });
+    await processNextRun({
+      db,
+      getDiskUsageRatio: emptyDisk,
+      getAvailableMemory: () => null,
+      runProcessor: vi.fn(),
+    });
     expect(db.query).toHaveBeenCalledTimes(1);
   });
 
@@ -133,6 +162,7 @@ describe('processNextRun', () => {
     const { processor, release } = deferredProcessor();
     await processNextRun({
       db: bigDb,
+      getDiskUsageRatio: emptyDisk,
       getAvailableMemory: plentyOfMemory,
       runProcessor: processor,
     });
@@ -141,7 +171,12 @@ describe('processNextRun', () => {
     // With zero headroom the next tick must not even query.
     const db = mockPool([claimRow('run-next')]);
     const { processor: blocked } = deferredProcessor();
-    await processNextRun({ db, getAvailableMemory: plentyOfMemory, runProcessor: blocked });
+    await processNextRun({
+      db,
+      getDiskUsageRatio: emptyDisk,
+      getAvailableMemory: plentyOfMemory,
+      runProcessor: blocked,
+    });
     expect(db.query).not.toHaveBeenCalled();
     expect(blocked).not.toHaveBeenCalled();
 
@@ -155,7 +190,12 @@ describe('processNextRun', () => {
     } as unknown as pg.Pool;
 
     await expect(
-      processNextRun({ db, getAvailableMemory: plentyOfMemory, runProcessor: vi.fn() })
+      processNextRun({
+        db,
+        getDiskUsageRatio: emptyDisk,
+        getAvailableMemory: plentyOfMemory,
+        runProcessor: vi.fn(),
+      })
     ).resolves.toBeUndefined();
 
     expect(console.error).toHaveBeenCalledWith(
@@ -168,7 +208,7 @@ describe('processNextRun', () => {
     // Sanity check that the default probe wiring works end-to-end: on
     // Linux it reads /proc/meminfo, elsewhere it returns null (no gate).
     const db = mockPool([]);
-    await processNextRun({ db, runProcessor: vi.fn() });
+    await processNextRun({ db, getDiskUsageRatio: emptyDisk, runProcessor: vi.fn() });
     // Either the claim ran (no pressure) or the host is genuinely under
     // reserve — both are valid; the call must simply not throw.
   });

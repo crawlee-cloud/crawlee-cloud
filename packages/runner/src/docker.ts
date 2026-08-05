@@ -12,6 +12,7 @@ import os from 'node:os';
 import Docker from 'dockerode';
 import { Redis } from 'ioredis';
 import { config } from './config.js';
+import { getDiskUsageRatio } from './heartbeat.js';
 import { waitWithTimeout } from './wait.js';
 
 let warnedAboutDarwinTranslate = false;
@@ -405,7 +406,21 @@ export async function executeRun(options: RunOptions): Promise<RunResult> {
   } catch (err) {
     console.error(`[${runId}] Failed to pull image:`, err);
     await writeLifecycleLog(runId, 'ERROR', `Failed to pull image: ${String(err)}`);
-    throw err;
+    // Re-prefix by failure SITE, not message shape: followPull only tags
+    // in-band daemon frames, so transport-level failures (registry
+    // outage, DNS, socket reset) reject with raw messages that
+    // isInfraFailure (queue.ts) would misclassify as actor failures —
+    // terminal for max_retries=0 actors, which is exactly the population
+    // the infra retry floor exists for.
+    // Always throw an Error: processRun's catch reads `.message`, and a
+    // rethrown non-Error rejection (e.g. a raw string) would make that
+    // undefined — sanitizeStatusMessage then throws INSIDE the failure
+    // handler and the run never reaches a terminal state.
+    const message = err instanceof Error ? err.message : String(err);
+    if (err instanceof Error && message.startsWith('Image pull failed')) throw err;
+    throw new Error(
+      message.startsWith('Image pull failed') ? message : `Image pull failed: ${message}`
+    );
   }
 
   // Abort may have landed during the pull, when there was no container
@@ -820,22 +835,31 @@ export function buildActorEnv(options: {
 
 /**
  * Clean up Docker resources to free disk space.
- * Removes: stopped containers, dangling images, build cache.
- * Keeps images used in the last 24h.
+ * Removes: stopped containers, dangling images, build cache — and, under
+ * disk pressure, ALL unused tagged images.
  */
-export async function cleanupDocker(): Promise<void> {
+export async function cleanupDocker(
+  // Injectable seams for unit tests; production uses the module docker
+  // client and the real disk probe.
+  deps: {
+    dockerClient?: Docker;
+    getDiskUsageRatio?: () => number;
+  } = {}
+): Promise<void> {
+  const client = deps.dockerClient ?? docker;
+  const diskRatio = deps.getDiskUsageRatio ?? getDiskUsageRatio;
   try {
     // Remove stopped containers — ONLY ours. The label filter matches
     // listRunningContainers/stopRun; without it this swept every exited
     // container on the host (innocent bystanders on shared Docker hosts)
     // and widened the remove()-race window in executeRun.
-    const containers = await docker.listContainers({
+    const containers = await client.listContainers({
       all: true,
       filters: { status: ['exited', 'dead'], label: ['crawlee-cloud.run-id'] },
     });
     for (const c of containers) {
       try {
-        await docker.getContainer(c.Id).remove();
+        await client.getContainer(c.Id).remove();
       } catch {
         // ignore
       }
@@ -845,14 +869,71 @@ export async function cleanupDocker(): Promise<void> {
     }
 
     // Prune dangling images
-    const pruneResult = await docker.pruneImages({ filters: { dangling: { true: true } } });
+    const pruneResult = await client.pruneImages({ filters: { dangling: { true: true } } });
     const reclaimedMb = Math.round((pruneResult.SpaceReclaimed || 0) / 1024 / 1024);
     if (reclaimedMb > 0) {
       console.log(`[Cleanup] Pruned dangling images: ${String(reclaimedMb)}MB freed`);
     }
 
     // Prune build cache
-    await docker.pruneBuilder();
+    await client.pruneBuilder();
+
+    // Disk-pressure eviction of unused TAGGED images. Dangling-prune
+    // alone never shrinks this fleet: growth comes from new per-actor
+    // `:latest` tags (2.5-8.4GB each, browsers bundled), which filled
+    // both 80GB prod runner disks to 100% on 2026-08-04 while this
+    // cleanup ran faithfully every 30 minutes — every image pull then
+    // failed with "no space left on device" (104 runs). Evicted images
+    // re-pull on next claim (~1-2 min). Threshold sits BELOW the claim
+    // gate (diskClaimMaxPct) so eviction normally keeps the runner
+    // claimable and the gate stays a last resort.
+    //
+    // Eviction is scoped to tags under the configured IMAGE_REGISTRY
+    // prefix — the only images with a PROVEN re-pull path. A blanket
+    // `dangling:false` prune (docker image prune -a) would also remove
+    // (a) locally built images in the default no-registry deployment
+    // (crc push builds `crawlee-cloud/actor-NAME:latest` straight on the
+    // host daemon — eviction would be permanent, next pull 404s against
+    // Docker Hub), (b) custom `default_run_options.image` values that
+    // resolve locally even when a registry IS configured (queue.ts gives
+    // them priority over the registry-derived name), and (c) innocent
+    // bystanders on shared Docker hosts — the same blast-radius concern
+    // that keeps the container removal above label-scoped.
+    //
+    // Per-tag, non-forced remove: the daemon refuses images referenced
+    // by any container (running or stopped), so in-use images and a pull
+    // racing this sweep stay safe; multi-tag images just lose the
+    // registry tag. Registry-prefixed tags ARE the fleet's growth source,
+    // so this still solves the incident.
+    const ratio = diskRatio();
+    if (ratio * 100 >= config.diskEvictPct) {
+      if (!config.imageRegistry) {
+        console.warn(
+          `[Cleanup] Disk ${String(Math.round(ratio * 100))}% full (>= ${String(config.diskEvictPct)}% eviction threshold) but no IMAGE_REGISTRY configured — skipping image eviction (locally built images cannot be re-pulled). Free disk space manually.`
+        );
+      } else {
+        const prefix = `${config.imageRegistry}/`;
+        const images = await client.listImages();
+        let evictedTags = 0;
+        let evictedMb = 0;
+        for (const image of images) {
+          for (const tag of image.RepoTags ?? []) {
+            if (!tag.startsWith(prefix)) continue;
+            try {
+              await client.getImage(tag).remove();
+              evictedTags++;
+              evictedMb += Math.round((image.Size || 0) / 1024 / 1024);
+            } catch {
+              // In use, shared, or already gone — the daemon is the
+              // authority; skip.
+            }
+          }
+        }
+        console.log(
+          `[Cleanup] Disk ${String(Math.round(ratio * 100))}% full (>= ${String(config.diskEvictPct)}% eviction threshold) — evicted ${String(evictedTags)} unused registry image tag(s): ~${String(evictedMb)}MB freed`
+        );
+      }
+    }
   } catch (err) {
     console.error('[Cleanup] Error:', (err as Error).message);
   }
