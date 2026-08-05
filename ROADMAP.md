@@ -2,7 +2,7 @@
 
 A CLI-first platform for running large-scale scrapers on your own infrastructure.
 
-## Current Version: v1.5.0 ✅
+## Current Version: v1.6.0 ✅
 
 - Apify-compatible REST API
 - Docker-based Actor execution with auto-scaling runners
@@ -20,6 +20,7 @@ A CLI-first platform for running large-scale scrapers on your own infrastructure
 - **v1.0.0** — semver stability commitment on the Apify v2 API, `crc` CLI commands, and documented env vars
 - **v1.1.x – v1.2.x** — zombie-run reaper, OOM visibility, memory-aware placement, auth hot-path and runner-key fixes
 - **v1.3.0 – v1.5.0** — run cost analysis (per run and in the runs list), safe actor force-deletion, webhook SSRF loopback fixes, CI coverage floors
+- **v1.6.0** — runner disk-pressure protection (claim gate + registry-scoped image eviction + infra retry floor), full-dataset streaming on no-limit reads (Apify parity)
 
 ---
 

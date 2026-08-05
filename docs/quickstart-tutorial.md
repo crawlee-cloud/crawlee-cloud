@@ -47,7 +47,7 @@ Wait a moment for services to initialize, then verify:
 
 ```bash
 curl http://localhost:3000/health
-# {"status":"ok","version":"1.5.0"}   # version reflects the release you have installed
+# {"status":"ok","version":"1.6.0"}   # version reflects the release you have installed
 ```
 
 The **Dashboard** is available at `http://localhost:3001`.
