@@ -50,6 +50,7 @@ export async function createTestApp(): Promise<FastifyInstance> {
   const { requestQueuesRoutes } = await import('../../src/routes/request-queues.js');
   const { logsRoutes } = await import('../../src/routes/logs.js');
   const { systemRoutes } = await import('../../src/routes/system.js');
+  const { webhooksRoutes } = await import('../../src/routes/webhooks.js');
 
   await initDatabase();
   await initS3();
@@ -98,6 +99,7 @@ export async function createTestApp(): Promise<FastifyInstance> {
   await app.register(requestQueuesRoutes, { prefix: '/v2' });
   await app.register(logsRoutes, { prefix: '/v2' });
   await app.register(systemRoutes, { prefix: '/v2' });
+  await app.register(webhooksRoutes, { prefix: '/v2' });
 
   await app.ready();
   return app;

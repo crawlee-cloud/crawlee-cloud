@@ -85,6 +85,13 @@ export async function getClient(): Promise<pg.PoolClient> {
  *   0xC0DE0003  - scheduler tick         (packages/api/src/scheduler.ts)
  *
  *   0xC0DE9000-0xC0DE9FFF — reserved for tests; never use in production code.
+ *
+ * Dynamic locks (transaction-scoped, hashed keyspace — not registered as
+ * constants because the key derives from a row id):
+ *   hashtextextended('rerun:' || chainRootId, 0)
+ *     — serializes reruns of one run chain (routes/runs.ts POST
+ *       /actor-runs/:runId/rerun). xact-scoped via pg_advisory_xact_lock,
+ *       so it auto-releases at COMMIT/ROLLBACK and cannot leak.
  */
 export const LOCK_IDS = {
   retention: 0xc0debeef,

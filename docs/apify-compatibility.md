@@ -39,10 +39,11 @@ This doc tracks every known divergence with one of three statuses:
 
 ## Dataset / KV / runs read APIs
 
-| Gap                                    | Status       | Notes                                                                                                                          |
-| -------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| `GET /v2/datasets/:id/items` shape     | DONE         | Returns array; paginates via `x-apify-pagination-*` response headers.                                                          |
-| `?clean=true&format=json` query params | DONE (no-op) | Crawlee Cloud's items endpoint already returns clean JSON; flags accepted but ignored by Fastify (loose querystring handling). |
+| Gap                                    | Status          | Notes                                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /v2/datasets/:id/items` shape     | DONE            | Returns array; paginates via `x-apify-pagination-*` response headers.                                                                                                                                                                                                                                                                                                                        |
+| `?clean=true&format=json` query params | DONE (no-op)    | Crawlee Cloud's items endpoint already returns clean JSON; flags accepted but ignored by Fastify (loose querystring handling).                                                                                                                                                                                                                                                               |
+| `POST /v2/actor-runs/:id/rerun`        | N/A (extension) | Not an Apify endpoint — Crawlee Cloud extension (since 1.7.0). Clones a terminal run into a NEW run (fresh id/storages, copied INPUT + per-run webhooks + envVars, `originRunId` lineage). Exists because resurrect reuses the run id, which webhook consumers with per-run-id idempotency treat as a duplicate and drop. `apify-client` won't call it; the dashboard and custom tooling do. |
 
 ## Client SDK compat
 

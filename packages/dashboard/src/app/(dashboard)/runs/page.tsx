@@ -3,10 +3,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
+  Check,
   ChevronLeft,
   ChevronRight,
   Database,
   Play,
+  RotateCcw,
   RotateCw,
   Search,
 } from 'lucide-react';
@@ -14,9 +16,10 @@ import { AppLink } from '@/components/app-link';
 import { StatusChip } from '@/components/ui/badge';
 import { CopyButton } from '@/components/ui/copy-button';
 import type { Actor, Run } from '@/lib/api';
-import { getActors, getRunCosts, listRuns } from '@/lib/api';
+import { getActors, getRunCosts, listRuns, rerunRun } from '@/lib/api';
 import { FETCH_ALL_LIMIT, PAGE_SIZE } from '@/lib/constants';
 import { cn } from '@/lib/utils';
+import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
 
 /*
@@ -59,6 +62,14 @@ const POLL_RUNS_MS = 5_000;
 const COST_TERMINAL = new Set<Run['status']>(['SUCCEEDED', 'FAILED', 'TIMED-OUT', 'ABORTED']);
 
 /**
+ * Statuses the rerun endpoint accepts — exactly the API's guard set.
+ * A rerun creates a NEW run and leaves this row terminal, so rows are
+ * additionally marked "already rerun" in-session (rerunDoneIds) to keep
+ * a double-click from cloning twice.
+ */
+const RERUNNABLE = new Set<Run['status']>(['FAILED', 'TIMED-OUT', 'ABORTED']);
+
+/**
  * Compact per-row cost. undefined = not loaded (or not applicable),
  * null = not recorded — both render as a muted "—"; the detail page
  * carries the full breakdown and the "not recorded" explanation.
@@ -71,6 +82,7 @@ function fmtCost(v: number | null | undefined): string | null {
 
 export default function RunsPage() {
   const toast = useToast();
+  const confirm = useConfirm();
   const [items, setItems] = useState<Run[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -86,6 +98,13 @@ export default function RunsPage() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusGroup>('all');
   const [costs, setCosts] = useState<Record<string, number | null>>({});
+  // Rerun bookkeeping: in-flight ids (spinner + disabled) and ids already
+  // rerun this session (the origin row STAYS terminal after a rerun —
+  // without the mark, nothing on the row would show it was handled).
+  const [rerunningIds, setRerunningIds] = useState<Set<string>>(new Set());
+  const [rerunDoneIds, setRerunDoneIds] = useState<Set<string>>(new Set());
+  // Bulk rerun progress; null = idle. Drives the header button's label.
+  const [bulkRerun, setBulkRerun] = useState<{ done: number; total: number } | null>(null);
   // Ids we've already asked the /costs endpoint about, so the 5s poll only
   // fetches newly-finished runs. A terminal run's cost is a one-shot fetch:
   // it can drift slightly while droplet siblings are still running, but the
@@ -212,6 +231,72 @@ export default function RunsPage() {
     await loadPage(statusFilter, offset, /* silent */ true);
   }
 
+  async function handleRerunOne(id: string) {
+    const ok = await confirm({
+      title: 'Rerun this run?',
+      description:
+        'Starts a NEW run with the same input and settings. This row stays as the failure record.',
+      confirmLabel: 'rerun',
+    });
+    if (!ok) return;
+    setRerunningIds((prev) => new Set(prev).add(id));
+    try {
+      await rerunRun(id);
+      setRerunDoneIds((prev) => new Set(prev).add(id));
+      toast.success('Rerun started');
+      // Silent reload so the new READY run shows up now, not at the next
+      // 5s tick (visible under "All" / "Running"; this row is unchanged).
+      await Promise.all([loadPage(statusFilter, offset, true), loadCounts()]);
+    } catch (err) {
+      toast.error('Failed to rerun', { description: (err as Error).message });
+    } finally {
+      setRerunningIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  }
+
+  async function handleRerunAllFailed() {
+    const targets = filtered.filter((r) => RERUNNABLE.has(r.status) && !rerunDoneIds.has(r.id));
+    if (targets.length === 0) return;
+    const ok = await confirm({
+      tone: 'warn',
+      title: `Rerun ${targets.length} failed run${targets.length === 1 ? '' : 's'}?`,
+      description:
+        'Each gets a NEW run with its original input and settings. Scoped to the runs visible on this page — other pages are untouched.',
+      confirmLabel: `rerun ${targets.length}`,
+    });
+    if (!ok) return;
+    setBulkRerun({ done: 0, total: targets.length });
+    const failures: string[] = [];
+    // Sequential on purpose: ≤PAGE_SIZE body-less POSTs finish in seconds,
+    // each publish independently wakes the runners, and sequencing avoids
+    // hammering the API with a 50-request burst.
+    for (const run of targets) {
+      try {
+        await rerunRun(run.id);
+        setRerunDoneIds((prev) => new Set(prev).add(run.id));
+      } catch {
+        failures.push(run.id);
+      }
+      setBulkRerun((p) => (p ? { ...p, done: p.done + 1 } : p));
+    }
+    setBulkRerun(null);
+    if (failures.length === 0) {
+      toast.success(`Started ${targets.length} rerun${targets.length === 1 ? '' : 's'}`);
+    } else {
+      toast.error(`${failures.length} of ${targets.length} reruns failed`, {
+        description: `e.g. ${failures
+          .slice(0, 3)
+          .map((id) => id.slice(0, 12))
+          .join(', ')} — input may be reaped or a rerun of that run is already active.`,
+      });
+    }
+    await Promise.all([loadPage(statusFilter, offset, true), loadCounts()]);
+  }
+
   // First mount: kick off counts + actors. Page load happens via the
   // status-filter effect, which fires on mount with the default 'all' filter.
   useEffect(() => {
@@ -288,6 +373,13 @@ export default function RunsPage() {
   const canPrev = offset > 0;
   const canNext = offset + PAGE_SIZE < total;
 
+  // Bulk-rerun candidates on the visible page. Drives both the button's
+  // visibility (failed filter only) and its count label, so the bounded
+  // "this page only" scope is explicit before the confirm even opens.
+  const rerunnableOnPage = filtered.filter(
+    (r) => RERUNNABLE.has(r.status) && !rerunDoneIds.has(r.id)
+  ).length;
+
   return (
     <div className="space-y-6">
       <div className="flex items-end justify-between gap-6 pb-4 border-b border-border">
@@ -315,6 +407,19 @@ export default function RunsPage() {
           >
             <RotateCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} /> refresh
           </button>
+          {statusFilter === 'failed' && rerunnableOnPage > 0 && (
+            <button
+              type="button"
+              onClick={() => void handleRerunAllFailed()}
+              disabled={bulkRerun !== null || loading}
+              className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-warn/40 text-warn hover:bg-warn/10 rounded-sm disabled:opacity-50"
+            >
+              <RotateCcw className={cn('h-3.5 w-3.5', bulkRerun && 'animate-spin')} />
+              {bulkRerun
+                ? `rerunning ${bulkRerun.done}/${bulkRerun.total}`
+                : `rerun failed (${rerunnableOnPage})`}
+            </button>
+          )}
           <AppLink
             href="/runs/new"
             className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider bg-signal text-background hover:brightness-110 rounded-sm"
@@ -442,6 +547,11 @@ export default function RunsPage() {
                 <th className="px-5 py-2 font-normal text-right">Items</th>
                 <th className="px-5 py-2 font-normal text-right">Cost</th>
                 <th className="px-5 py-2 font-normal text-right">Started</th>
+                {/* Header-less actions column: cells render a rerun button
+                    only on terminal-failed rows, so the column reads as
+                    negative space everywhere else. Always visible (no
+                    hover-reveal) — touch devices have no hover. */}
+                <th className="px-2 py-2 font-normal w-10" aria-label="Actions" />
               </tr>
             </thead>
             <tbody>
@@ -521,6 +631,31 @@ export default function RunsPage() {
                       ) : (
                         <span title={`created ${timeAgo(run.createdAt)}`}>queued</span>
                       )}
+                    </td>
+                    <td className="px-2 py-3 text-center">
+                      {RERUNNABLE.has(run.status) &&
+                        (rerunDoneIds.has(run.id) ? (
+                          // The origin row stays terminal after a rerun; the
+                          // check is the only signal it was already handled.
+                          <span title="Rerun already started this session">
+                            <Check className="h-3.5 w-3.5 inline text-signal/60" />
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            title="Rerun with same input"
+                            disabled={rerunningIds.has(run.id)}
+                            onClick={() => void handleRerunOne(run.id)}
+                            className="p-1 text-muted-foreground hover:text-signal disabled:opacity-40 align-middle"
+                          >
+                            <RotateCcw
+                              className={cn(
+                                'h-3.5 w-3.5',
+                                rerunningIds.has(run.id) && 'animate-spin'
+                              )}
+                            />
+                          </button>
+                        ))}
                     </td>
                   </tr>
                 );

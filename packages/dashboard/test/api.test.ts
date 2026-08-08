@@ -15,7 +15,7 @@ vi.hoisted(() => {
   process.env.NEXT_PUBLIC_API_URL = '';
 });
 
-import { getCurrentUser, listRuns, getRun, deleteActor } from '@/lib/api';
+import { getCurrentUser, listRuns, getRun, deleteActor, rerunRun } from '@/lib/api';
 
 const fetchMock = vi.fn();
 
@@ -27,8 +27,20 @@ function jsonResponse(body: unknown, status = 200) {
   };
 }
 
+// Node >= 25 ships a built-in `localStorage` global that is non-functional
+// without --localstorage-file and shadows jsdom's implementation under
+// vitest. Stub a working in-memory one so the suite runs on any Node.
+const storageBacking = new Map<string, string>();
+const localStorageStub = {
+  getItem: (key: string) => storageBacking.get(key) ?? null,
+  setItem: (key: string, value: string) => void storageBacking.set(key, String(value)),
+  removeItem: (key: string) => void storageBacking.delete(key),
+  clear: () => storageBacking.clear(),
+};
+
 beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock);
+  vi.stubGlobal('localStorage', localStorageStub);
   fetchMock.mockReset();
   localStorage.clear();
 });
@@ -85,6 +97,54 @@ describe('fetchApi plumbing', () => {
     });
 
     await expect(getRun('r1')).rejects.toThrow('Request failed');
+  });
+});
+
+describe('rerunRun', () => {
+  it('POSTs body-less to the rerun endpoint (no Content-Type)', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ data: { id: 'new-run', status: 'READY', retryCount: 0, originRunId: 'r1' } })
+    );
+
+    await rerunRun('r1');
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://localhost:3000/v2/actor-runs/r1/rerun');
+    expect(init.method).toBe('POST');
+    // Body-less POST — a Content-Type here would trip Fastify's
+    // FST_ERR_CTP_EMPTY_JSON_BODY, same regression class as deleteActor.
+    expect(init.headers as Record<string, string>).not.toHaveProperty('Content-Type');
+  });
+
+  it('unwraps the envelope and passes lineage fields through typed', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ data: { id: 'new-run', status: 'READY', retryCount: 0, originRunId: 'r1' } })
+    );
+
+    const run = await rerunRun('r1');
+
+    // The NEW run's identity is what callers navigate to.
+    expect(run.id).toBe('new-run');
+    expect(run.originRunId).toBe('r1');
+    expect(run.retryCount).toBe(0);
+  });
+
+  it('unwraps API errors (origin input reaped → 409)', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        {
+          error: {
+            type: 'input-not-found',
+            message: "The origin run's INPUT record no longer exists",
+          },
+        },
+        409
+      )
+    );
+
+    await expect(rerunRun('old-run')).rejects.toThrow(
+      "The origin run's INPUT record no longer exists"
+    );
   });
 });
 
