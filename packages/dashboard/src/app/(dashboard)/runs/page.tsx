@@ -70,6 +70,35 @@ const COST_TERMINAL = new Set<Run['status']>(['SUCCEEDED', 'FAILED', 'TIMED-OUT'
 const RERUNNABLE = new Set<Run['status']>(['FAILED', 'TIMED-OUT', 'ABORTED']);
 
 /**
+ * Bulk-rerun candidates on the visible page, at most one per lineage
+ * chain.
+ *
+ * The API allows exactly one active clone per chain, so firing at both
+ * an origin and its own failed rerun (both terminal, both on this page)
+ * guarantees a `409 rerun-already-active` for the second — a real
+ * request reported to the operator as a failure they can do nothing
+ * about. Chains are collapsed server-side, so `originRunId ?? id` IS the
+ * chain key; keep the first row per key. The list is ordered
+ * most-recent-first, so that's the newest attempt — the one whose input
+ * is least likely to have been reaped.
+ *
+ * Note the bulk button only renders under the "failed" filter, which is
+ * FAILED + TIMED-OUT (see STATUS_GROUPS). ABORTED is rerunnable per-row
+ * but deliberately has no bulk path: aborts are operator decisions, and
+ * un-aborting a batch by accident is not a recovery action.
+ */
+function bulkRerunTargets(rows: Run[], doneIds: Set<string>): Run[] {
+  const seenChains = new Set<string>();
+  return rows.filter((r) => {
+    if (!RERUNNABLE.has(r.status) || doneIds.has(r.id)) return false;
+    const chain = r.originRunId ?? r.id;
+    if (seenChains.has(chain) || doneIds.has(chain)) return false;
+    seenChains.add(chain);
+    return true;
+  });
+}
+
+/**
  * Compact per-row cost. undefined = not loaded (or not applicable),
  * null = not recorded — both render as a muted "—"; the detail page
  * carries the full breakdown and the "not recorded" explanation.
@@ -231,7 +260,18 @@ export default function RunsPage() {
     await loadPage(statusFilter, offset, /* silent */ true);
   }
 
-  async function handleRerunOne(id: string) {
+  /**
+   * Mark a rerun as handled, under BOTH the row's id and its chain key.
+   * The chain key keeps sibling rows of the same lineage (an origin and
+   * its failed rerun, both terminal and both on this page) out of a
+   * later bulk run, where they'd only earn a 409 rerun-already-active.
+   */
+  function markRerunDone(run: Run) {
+    setRerunDoneIds((prev) => new Set(prev).add(run.id).add(run.originRunId ?? run.id));
+  }
+
+  async function handleRerunOne(run: Run) {
+    const id = run.id;
     const ok = await confirm({
       title: 'Rerun this run?',
       description:
@@ -242,7 +282,7 @@ export default function RunsPage() {
     setRerunningIds((prev) => new Set(prev).add(id));
     try {
       await rerunRun(id);
-      setRerunDoneIds((prev) => new Set(prev).add(id));
+      markRerunDone(run);
       toast.success('Rerun started');
       // Silent reload so the new READY run shows up now, not at the next
       // 5s tick (visible under "All" / "Running"; this row is unchanged).
@@ -259,7 +299,7 @@ export default function RunsPage() {
   }
 
   async function handleRerunAllFailed() {
-    const targets = filtered.filter((r) => RERUNNABLE.has(r.status) && !rerunDoneIds.has(r.id));
+    const targets = bulkRerunTargets(filtered, rerunDoneIds);
     if (targets.length === 0) return;
     const ok = await confirm({
       tone: 'warn',
@@ -277,7 +317,7 @@ export default function RunsPage() {
     for (const run of targets) {
       try {
         await rerunRun(run.id);
-        setRerunDoneIds((prev) => new Set(prev).add(run.id));
+        markRerunDone(run);
       } catch {
         failures.push(run.id);
       }
@@ -376,9 +416,9 @@ export default function RunsPage() {
   // Bulk-rerun candidates on the visible page. Drives both the button's
   // visibility (failed filter only) and its count label, so the bounded
   // "this page only" scope is explicit before the confirm even opens.
-  const rerunnableOnPage = filtered.filter(
-    (r) => RERUNNABLE.has(r.status) && !rerunDoneIds.has(r.id)
-  ).length;
+  // Same chain-deduped list the handler fires, so the label never
+  // promises more reruns than actually get sent.
+  const rerunnableOnPage = bulkRerunTargets(filtered, rerunDoneIds).length;
 
   return (
     <div className="space-y-6">
@@ -645,7 +685,7 @@ export default function RunsPage() {
                             type="button"
                             title="Rerun with same input"
                             disabled={rerunningIds.has(run.id)}
-                            onClick={() => void handleRerunOne(run.id)}
+                            onClick={() => void handleRerunOne(run)}
                             className="p-1 text-muted-foreground hover:text-signal disabled:opacity-40 align-middle"
                           >
                             <RotateCcw

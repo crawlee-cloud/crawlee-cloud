@@ -89,8 +89,11 @@ export async function getClient(): Promise<pg.PoolClient> {
  * Dynamic locks (transaction-scoped, hashed keyspace — not registered as
  * constants because the key derives from a row id):
  *   hashtextextended('rerun:' || chainRootId, 0)
- *     — serializes reruns of one run chain (routes/runs.ts POST
- *       /actor-runs/:runId/rerun). xact-scoped via pg_advisory_xact_lock,
+ *     — serializes clone creation for one run chain. Two KEEP-IN-SYNC
+ *       call sites take it: routes/runs.ts POST /actor-runs/:runId/rerun
+ *       and the runner's auto-retry (packages/runner/src/queue.ts
+ *       maybeRetryRun) — a manual rerun racing an infra retry must not
+ *       yield two active clones. xact-scoped via pg_advisory_xact_lock,
  *       so it auto-releases at COMMIT/ROLLBACK and cannot leak.
  */
 export const LOCK_IDS = {

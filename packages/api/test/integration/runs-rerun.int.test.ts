@@ -70,6 +70,13 @@ describe('Run rerun (integration)', () => {
     expect(startRun.statusCode).toBe(201);
     const origin = startRun.json().data;
 
+    const originHooks = await app.inject({
+      method: 'GET',
+      url: `/v2/webhooks?runId=${origin.id}`,
+      headers: authHeaders(),
+    });
+    const originHookId: string = originHooks.json().data.items[0].id;
+
     // Fake-runner: claim then fail the run.
     await app.inject({
       method: 'PUT',
@@ -85,12 +92,12 @@ describe('Run rerun (integration)', () => {
     });
     expect(failed.statusCode).toBe(200);
 
-    return { actorId, origin };
+    return { actorId, origin, originHookId };
   }
 
   it('creates a NEW run with fresh storages, copied INPUT, copied webhooks; origin untouched', async () => {
     ({ token } = await createTestUser('rerun@test.local', 'pw-rerun-1'));
-    const { origin } = await createFailedRun();
+    const { origin, originHookId } = await createFailedRun();
 
     const rerun = await app.inject({
       method: 'POST',
@@ -135,6 +142,9 @@ describe('Run rerun (integration)', () => {
     expect(hookItems).toHaveLength(1);
     expect(hookItems[0].requestUrl).toBe('https://consumer.test.local/webhooks/coupons');
     expect(hookItems[0].eventTypes).toEqual(['ACTOR.RUN.SUCCEEDED', 'ACTOR.RUN.FAILED']);
+    // Fresh row, not a re-pointed origin row — the origin's own webhook
+    // must survive for its delivery history.
+    expect(hookItems[0].id).not.toBe(originHookId);
 
     // Origin row untouched: still FAILED, failure message intact.
     const originAfter = await app.inject({
@@ -200,6 +210,48 @@ describe('Run rerun (integration)', () => {
     });
     expect(second.statusCode).toBe(409);
     expect(second.json().error.type).toBe('rerun-already-active');
+  });
+
+  it('creates exactly one clone when two reruns race (real advisory lock under concurrency)', async () => {
+    // The sequential case above passes even with NO lock — the first
+    // clone is already committed and visible. Only true concurrency
+    // exercises the lock: without it both transactions read "no active
+    // clone" in their snapshot and both insert, double-billing the
+    // actor and double-firing its webhooks. Separate pool clients, so
+    // this is a genuine database-level race.
+    ({ token } = await createTestUser('rerun-race@test.local', 'pw-rerun-8'));
+    const { origin } = await createFailedRun();
+
+    const results = await Promise.all([
+      app.inject({
+        method: 'POST',
+        url: `/v2/actor-runs/${origin.id}/rerun`,
+        headers: authHeaders(),
+      }),
+      app.inject({
+        method: 'POST',
+        url: `/v2/actor-runs/${origin.id}/rerun`,
+        headers: authHeaders(),
+      }),
+    ]);
+
+    const codes = results.map((r) => r.statusCode).sort();
+    expect(codes).toEqual([201, 409]);
+    expect(results.find((r) => r.statusCode === 409).json().error.type).toBe(
+      'rerun-already-active'
+    );
+
+    // Ground truth: exactly one clone exists in the database, not just
+    // one 201 in the responses.
+    const listed = await app.inject({
+      method: 'GET',
+      url: '/v2/actor-runs?limit=100',
+      headers: authHeaders(),
+    });
+    const clones = listed
+      .json()
+      .data.items.filter((r: { originRunId: string | null }) => r.originRunId === origin.id);
+    expect(clones).toHaveLength(1);
   });
 
   it('rejects rerun with 409 input-not-found when the origin INPUT was reaped', async () => {

@@ -1025,30 +1025,77 @@ export async function maybeRetryRun(
     const originRunId = run.origin_run_id ?? runId;
     const newRetryCount = run.retry_count + 1;
 
-    console.log(`Scheduling retry ${newRetryCount}/${maxRetries} for run ${runId} as ${newRunId}`);
-
-    await db.query(
-      `INSERT INTO runs (id, actor_id, user_id, status, default_dataset_id, default_key_value_store_id,
-        default_request_queue_id, timeout_secs, memory_mbytes, retry_count, origin_run_id, run_after)
-       VALUES ($1, $2, (SELECT user_id FROM runs WHERE id = $3), 'READY',
-        $4, $5, $6, $7, $8, $9, $10,
-        NOW() + INTERVAL '1 second' * $11)`,
-      [
-        newRunId,
-        run.actor_id,
-        runId,
-        run.default_dataset_id,
-        run.default_key_value_store_id,
-        run.default_request_queue_id,
-        run.timeout_secs,
-        run.memory_mbytes,
-        newRetryCount,
+    // One active clone per chain, shared with the API's manual rerun.
+    // KEEP-IN-SYNC: the lock key and the active-clone check mirror the
+    // rerun endpoint (packages/api/src/routes/runs.ts POST
+    // /actor-runs/:runId/rerun). Without them, a manual rerun committing
+    // in the window between our caller flipping this run FAILED and this
+    // INSERT would leave TWO active clones of the chain. The lock is
+    // transaction-scoped (auto-released at COMMIT/ROLLBACK); the check is
+    // race-free under it because a competing clone either committed
+    // before us (visible here) or is queued behind the lock. The failed
+    // run itself is already terminal (callers flip status first), so it
+    // never trips its own check.
+    const client = await db.connect();
+    let inserted = false;
+    try {
+      await client.query('BEGIN');
+      await client.query(`SELECT pg_advisory_xact_lock(hashtextextended('rerun:' || $1, 0))`, [
         originRunId,
-        delaySecs,
-      ]
-    );
+      ]);
+      const activeClone = await client.query(
+        `SELECT 1 FROM runs
+          WHERE (origin_run_id = $1 OR id = $1)
+            AND status IN ('READY', 'RUNNING', 'ABORTING')
+          LIMIT 1`,
+        [originRunId]
+      );
+      if (activeClone.rows[0]) {
+        await client.query('ROLLBACK');
+        console.log(
+          `Skipping retry for run ${runId}: a rerun or retry of chain ${originRunId} is already queued or running`
+        );
+      } else {
+        console.log(
+          `Scheduling retry ${newRetryCount}/${maxRetries} for run ${runId} as ${newRunId}`
+        );
+        await client.query(
+          `INSERT INTO runs (id, actor_id, user_id, status, default_dataset_id, default_key_value_store_id,
+            default_request_queue_id, timeout_secs, memory_mbytes, retry_count, origin_run_id, run_after)
+           VALUES ($1, $2, (SELECT user_id FROM runs WHERE id = $3), 'READY',
+            $4, $5, $6, $7, $8, $9, $10,
+            NOW() + INTERVAL '1 second' * $11)`,
+          [
+            newRunId,
+            run.actor_id,
+            runId,
+            run.default_dataset_id,
+            run.default_key_value_store_id,
+            run.default_request_queue_id,
+            run.timeout_secs,
+            run.memory_mbytes,
+            newRetryCount,
+            originRunId,
+            delaySecs,
+          ]
+        );
+        await client.query('COMMIT');
+        inserted = true;
+      }
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Ignore rollback errors if transaction was already aborted or connection closed
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
 
-    await redisClient.publish('run:new', newRunId);
+    if (inserted) {
+      await redisClient.publish('run:new', newRunId);
+    }
   } catch (err) {
     console.error(`Failed to schedule retry for run ${runId}:`, err);
   }

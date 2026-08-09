@@ -737,6 +737,7 @@ describe('Actor Runs Routes', () => {
             payload_template: '{"locale":"cl"}',
             headers: { Authorization: 'Bearer secret' },
             is_enabled: true,
+            description: 'coupons ingestion consumer',
           },
         ],
       });
@@ -760,6 +761,12 @@ describe('Actor Runs Routes', () => {
       expect(whParams).not.toContain('wh-1');
       expect(whParams).toContain('https://consumer.example.com/hook');
       expect(whParams).toContain('{"locale":"cl"}');
+      // The clone copies every user-authored column, including ones no
+      // public path can populate on a run-scoped row today (description
+      // — see the route comment). Asserted so a future writer of that
+      // field doesn't have to discover the gap from a missing value.
+      expect(whSelect[0] as string).toContain('description');
+      expect(whParams).toContain('coupons ingestion consumer');
     });
 
     it('publishes run:new with the NEW run id, never the origin id', async () => {
@@ -794,9 +801,29 @@ describe('Actor Runs Routes', () => {
       await mockInputRecord();
       mockRerunQueries();
 
-      await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/rerun' });
+      const response = await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/rerun' });
 
+      // Key ABSENT is the documented TTL case — the rerun still commits.
+      expect(response.statusCode).toBe(201);
       expect(mockRedisSet).not.toHaveBeenCalled();
+      expect(txStatements).toEqual(['BEGIN', 'COMMIT']);
+    });
+
+    it('rolls back rather than committing a clone whose envVars copy errored', async () => {
+      // Distinct from the expired-key case above: a Redis ERROR leaves us
+      // unable to tell whether the origin had env vars, and a container
+      // started without them (proxy credentials!) fails late instead of
+      // loud. Roll back so the caller can retry once Redis is healthy.
+      await mockInputRecord();
+      mockRerunQueries();
+      mockRedisGet.mockRejectedValueOnce(new Error('redis connection reset'));
+
+      const response = await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/rerun' });
+
+      expect(response.statusCode).toBe(500);
+      expect(txStatements).toEqual(['BEGIN', 'ROLLBACK']);
+      expect(mockPublish).not.toHaveBeenCalled();
+      expect(mockRelease).toHaveBeenCalled();
     });
 
     it('returns defaultDatasetItemCount via the formatRun contract (fresh dataset → null count)', async () => {

@@ -891,6 +891,14 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
         // always belong to the run's owner, but this SELECT must never
         // become the query that copies another tenant's webhook (and its
         // auth headers) if that invariant ever loosens.
+        //
+        // The column list is every user-authored column on the table, not
+        // just the ones reachable today: `description` is always NULL on a
+        // run-scoped row right now (run-start payloads have no description
+        // field, and PUT /v2/webhooks/:id refuses run-scoped rows to keep
+        // them immutable post-dispatch), but the day either of those
+        // loosens, a clone that silently drops it is a bug nobody would
+        // think to look for here. Copying NULL costs nothing.
         const originWebhooks = await client.query<{
           user_id: string | null;
           event_types: string[];
@@ -898,15 +906,16 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
           payload_template: string | null;
           headers: Record<string, string> | null;
           is_enabled: boolean;
+          description: string | null;
         }>(
-          `SELECT user_id, event_types, request_url, payload_template, headers, is_enabled
+          `SELECT user_id, event_types, request_url, payload_template, headers, is_enabled, description
              FROM webhooks WHERE run_id = $1 AND user_id = $2`,
           [runId, request.user!.id]
         );
         for (const wh of originWebhooks.rows) {
           await client.query(
-            `INSERT INTO webhooks (id, user_id, event_types, request_url, payload_template, run_id, headers, is_enabled)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            `INSERT INTO webhooks (id, user_id, event_types, request_url, payload_template, run_id, headers, is_enabled, description)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
             [
               nanoid(),
               wh.user_id,
@@ -916,28 +925,29 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
               newRunId,
               wh.headers ? JSON.stringify(wh.headers) : null,
               wh.is_enabled,
+              wh.description,
             ]
           );
         }
 
         // Carry runtime env vars over while the origin's Redis key is
-        // still alive (24h TTL, set at creation). Past the TTL the rerun
-        // proceeds without them — same behavior the runner itself has for
-        // an expired key. Best-effort: env vars are an optional extra.
+        // still alive (24h TTL, set at creation). Two distinct cases:
+        // key ABSENT (TTL expired) → proceed without env vars, same
+        // behavior the runner has for an expired key; Redis ERROR → let
+        // it throw so the outer catch rolls the clone back. We can't
+        // know whether env vars existed, and a container started without
+        // them (proxy credentials!) fails late instead of loud — the
+        // caller can just retry the POST once Redis is back. That also
+        // matches run creation, where the envVars SET is likewise
+        // unguarded (actors.ts POST /acts/:actorId/runs): a Redis outage
+        // fails the request rather than producing a half-provisioned run.
         // Copied BEFORE COMMIT on purpose: the runner's poll loop can
-        // claim the READY row the instant it's visible, and a container
-        // started without the origin's env vars (proxy credentials!)
-        // would fail late instead of loud. On ROLLBACK the stray key is
-        // 24h unreachable garbage — same argument as the S3 INPUT above.
-        try {
-          const envVars = await redis.get(`run:${runId}:envVars`);
-          if (envVars) {
-            await redis.set(`run:${newRunId}:envVars`, envVars, 'EX', 86400);
-          }
-        } catch (err) {
-          fastify.log.warn(
-            `Failed to copy envVars for rerun of ${runId}: ${(err as Error).message}`
-          );
+        // claim the READY row the instant it's visible. On ROLLBACK the
+        // stray key is 24h unreachable garbage — same argument as the
+        // S3 INPUT above.
+        const envVars = await redis.get(`run:${runId}:envVars`);
+        if (envVars) {
+          await redis.set(`run:${newRunId}:envVars`, envVars, 'EX', 86400);
         }
 
         await client.query('COMMIT');
