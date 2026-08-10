@@ -18,6 +18,7 @@ import { CopyButton } from '@/components/ui/copy-button';
 import type { Actor, Run } from '@/lib/api';
 import { getActors, getRunCosts, listRuns, rerunRun } from '@/lib/api';
 import { FETCH_ALL_LIMIT, PAGE_SIZE } from '@/lib/constants';
+import { RERUNNABLE, bulkRerunTargets } from '@/lib/rerun-targets';
 import { cn } from '@/lib/utils';
 import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
@@ -61,42 +62,9 @@ const POLL_RUNS_MS = 5_000;
 /** Statuses whose cost is computable — mirrors the /costs endpoint filter. */
 const COST_TERMINAL = new Set<Run['status']>(['SUCCEEDED', 'FAILED', 'TIMED-OUT', 'ABORTED']);
 
-/**
- * Statuses the rerun endpoint accepts — exactly the API's guard set.
- * A rerun creates a NEW run and leaves this row terminal, so rows are
- * additionally marked "already rerun" in-session (rerunDoneIds) to keep
- * a double-click from cloning twice.
- */
-const RERUNNABLE = new Set<Run['status']>(['FAILED', 'TIMED-OUT', 'ABORTED']);
-
-/**
- * Bulk-rerun candidates on the visible page, at most one per lineage
- * chain.
- *
- * The API allows exactly one active clone per chain, so firing at both
- * an origin and its own failed rerun (both terminal, both on this page)
- * guarantees a `409 rerun-already-active` for the second — a real
- * request reported to the operator as a failure they can do nothing
- * about. Chains are collapsed server-side, so `originRunId ?? id` IS the
- * chain key; keep the first row per key. The list is ordered
- * most-recent-first, so that's the newest attempt — the one whose input
- * is least likely to have been reaped.
- *
- * Note the bulk button only renders under the "failed" filter, which is
- * FAILED + TIMED-OUT (see STATUS_GROUPS). ABORTED is rerunnable per-row
- * but deliberately has no bulk path: aborts are operator decisions, and
- * un-aborting a batch by accident is not a recovery action.
- */
-function bulkRerunTargets(rows: Run[], doneIds: Set<string>): Run[] {
-  const seenChains = new Set<string>();
-  return rows.filter((r) => {
-    if (!RERUNNABLE.has(r.status) || doneIds.has(r.id)) return false;
-    const chain = r.originRunId ?? r.id;
-    if (seenChains.has(chain) || doneIds.has(chain)) return false;
-    seenChains.add(chain);
-    return true;
-  });
-}
+// RERUNNABLE / bulkRerunTargets live in @/lib/rerun-targets: the chain
+// collapsing they implement is what keeps the operator from being shown
+// a 409 as a failed rerun, and a page component can't be unit-tested.
 
 /**
  * Compact per-row cost. undefined = not loaded (or not applicable),
@@ -272,6 +240,10 @@ export default function RunsPage() {
 
   async function handleRerunOne(run: Run) {
     const id = run.id;
+    // Mutual exclusion with the bulk path — guarded here and not only on
+    // the button, because the duplicate-POST window is the in-flight one:
+    // the dialog is closed and the row button is live again by then.
+    if (bulkRerun !== null || rerunningIds.has(id)) return;
     const ok = await confirm({
       title: 'Rerun this run?',
       description:
@@ -299,7 +271,10 @@ export default function RunsPage() {
   }
 
   async function handleRerunAllFailed() {
-    const targets = bulkRerunTargets(filtered, rerunDoneIds);
+    // Same reasoning as handleRerunOne, mirrored: never fan out while a
+    // per-row rerun is still unanswered.
+    if (bulkRerun !== null || rerunningIds.size > 0) return;
+    const targets = bulkRerunTargets(filtered, rerunDoneIds, rerunningIds);
     if (targets.length === 0) return;
     const ok = await confirm({
       tone: 'warn',
@@ -418,7 +393,7 @@ export default function RunsPage() {
   // "this page only" scope is explicit before the confirm even opens.
   // Same chain-deduped list the handler fires, so the label never
   // promises more reruns than actually get sent.
-  const rerunnableOnPage = bulkRerunTargets(filtered, rerunDoneIds).length;
+  const rerunnableOnPage = bulkRerunTargets(filtered, rerunDoneIds, rerunningIds).length;
 
   return (
     <div className="space-y-6">
@@ -451,7 +426,7 @@ export default function RunsPage() {
             <button
               type="button"
               onClick={() => void handleRerunAllFailed()}
-              disabled={bulkRerun !== null || loading}
+              disabled={bulkRerun !== null || loading || rerunningIds.size > 0}
               className="h-8 px-3 inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-warn/40 text-warn hover:bg-warn/10 rounded-sm disabled:opacity-50"
             >
               <RotateCcw className={cn('h-3.5 w-3.5', bulkRerun && 'animate-spin')} />
@@ -684,7 +659,7 @@ export default function RunsPage() {
                           <button
                             type="button"
                             title="Rerun with same input"
-                            disabled={rerunningIds.has(run.id)}
+                            disabled={rerunningIds.has(run.id) || bulkRerun !== null}
                             onClick={() => void handleRerunOne(run)}
                             className="p-1 text-muted-foreground hover:text-signal disabled:opacity-40 align-middle"
                           >

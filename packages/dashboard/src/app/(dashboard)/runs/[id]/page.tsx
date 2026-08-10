@@ -39,6 +39,7 @@ import {
 } from '@/lib/api';
 import { DATASET_PREVIEW_LIMIT, LOG_TAIL_LIMIT } from '@/lib/constants';
 import { prefixPath } from '@/lib/path-prefix';
+import { RERUNNABLE } from '@/lib/rerun-targets';
 import { cn } from '@/lib/utils';
 import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
@@ -46,11 +47,6 @@ import { useToast } from '@/components/ui/toast';
 type Tab = 'logs' | 'input' | 'output' | 'webhooks';
 
 const TERMINAL = new Set<Run['status']>(['SUCCEEDED', 'FAILED', 'TIMED-OUT', 'ABORTED']);
-
-// Exactly the API's rerun guard set. SUCCEEDED is excluded on purpose:
-// rerun is a recovery action; "run again after success" belongs on the
-// actor page where the input is editable.
-const RERUNNABLE = new Set<Run['status']>(['FAILED', 'TIMED-OUT', 'ABORTED']);
 
 function RunDetail() {
   const params = useParams();
@@ -69,6 +65,12 @@ function RunDetail() {
   const [logTotal, setLogTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>('logs');
+  // In-flight rerun. The success path navigates away, so this only ever
+  // clears on failure — but it has to exist: without it a second click
+  // during the POST fires a second rerun, and the API's one-active-clone-
+  // per-chain lock answers it with 409 rerun-already-active, i.e. the
+  // operator sees "failed" for a rerun that actually started.
+  const [rerunning, setRerunning] = useState(false);
 
   const [input, setInput] = useState<unknown>(undefined); // undefined = not fetched
   const [inputLoading, setInputLoading] = useState(false);
@@ -249,6 +251,10 @@ function RunDetail() {
   }
 
   async function handleRerun() {
+    // Guard before the dialog, not just on the button: the window that
+    // actually produces a duplicate POST is the in-flight one, where the
+    // dialog is closed and the button is live again.
+    if (rerunning) return;
     const ok = await confirm({
       title: 'Rerun this run?',
       description:
@@ -256,6 +262,7 @@ function RunDetail() {
       confirmLabel: 'rerun',
     });
     if (!ok) return;
+    setRerunning(true);
     try {
       const newRun = await rerunRun(id);
       toast.success('Rerun started');
@@ -264,6 +271,8 @@ function RunDetail() {
       router.push(prefixPath(`/runs/${newRun.id}`));
     } catch (err) {
       toast.error('Failed to rerun', { description: (err as Error).message });
+    } finally {
+      setRerunning(false);
     }
   }
 
@@ -375,10 +384,11 @@ function RunDetail() {
         {RERUNNABLE.has(run.status) && (
           <button
             type="button"
+            disabled={rerunning}
             onClick={() => void handleRerun()}
-            className="h-8 px-3 self-start md:self-auto inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-signal/40 text-signal hover:bg-signal/10 rounded-sm"
+            className="h-8 px-3 self-start md:self-auto inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-signal/40 text-signal hover:bg-signal/10 rounded-sm disabled:opacity-50"
           >
-            <RotateCcw className="h-3.5 w-3.5" /> Rerun
+            <RotateCcw className={cn('h-3.5 w-3.5', rerunning && 'animate-spin')} /> Rerun
           </button>
         )}
       </div>
