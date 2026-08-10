@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, Suspense } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import {
   ArrowLeft,
   Ban,
@@ -12,6 +12,7 @@ import {
   FileInput,
   ListOrdered,
   Loader2,
+  RotateCcw,
   Terminal,
   Webhook as WebhookIcon,
 } from 'lucide-react';
@@ -21,6 +22,7 @@ import { StatusChip } from '@/components/ui/badge';
 import { CopyButton } from '@/components/ui/copy-button';
 import {
   abortRun,
+  rerunRun,
   downloadAsBlob,
   getActor,
   getRun,
@@ -36,6 +38,8 @@ import {
   type WebhookDelivery,
 } from '@/lib/api';
 import { DATASET_PREVIEW_LIMIT, LOG_TAIL_LIMIT } from '@/lib/constants';
+import { prefixPath } from '@/lib/path-prefix';
+import { RERUNNABLE } from '@/lib/rerun-targets';
 import { cn } from '@/lib/utils';
 import { useConfirm } from '@/components/ui/confirm';
 import { useToast } from '@/components/ui/toast';
@@ -46,6 +50,7 @@ const TERMINAL = new Set<Run['status']>(['SUCCEEDED', 'FAILED', 'TIMED-OUT', 'AB
 
 function RunDetail() {
   const params = useParams();
+  const router = useRouter();
   const id = params.id as string;
   const confirm = useConfirm();
   const toast = useToast();
@@ -60,6 +65,12 @@ function RunDetail() {
   const [logTotal, setLogTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>('logs');
+  // In-flight rerun. The success path navigates away, so this only ever
+  // clears on failure — but it has to exist: without it a second click
+  // during the POST fires a second rerun, and the API's one-active-clone-
+  // per-chain lock answers it with 409 rerun-already-active, i.e. the
+  // operator sees "failed" for a rerun that actually started.
+  const [rerunning, setRerunning] = useState(false);
 
   const [input, setInput] = useState<unknown>(undefined); // undefined = not fetched
   const [inputLoading, setInputLoading] = useState(false);
@@ -239,6 +250,32 @@ function RunDetail() {
     }
   }
 
+  async function handleRerun() {
+    // Guard before the dialog, not just on the button: the window that
+    // actually produces a duplicate POST is the in-flight one, where the
+    // dialog is closed and the button is live again.
+    if (rerunning) return;
+    const ok = await confirm({
+      title: 'Rerun this run?',
+      description:
+        'Starts a NEW run with the same input and settings (fresh storages, fresh run ID). This run and its logs stay untouched for debugging.',
+      confirmLabel: 'rerun',
+    });
+    if (!ok) return;
+    setRerunning(true);
+    try {
+      const newRun = await rerunRun(id);
+      toast.success('Rerun started');
+      // The rerun is a different run — navigate to it. All run-scoped
+      // state on this page resets on the [id] change.
+      router.push(prefixPath(`/runs/${newRun.id}`));
+    } catch (err) {
+      toast.error('Failed to rerun', { description: (err as Error).message });
+    } finally {
+      setRerunning(false);
+    }
+  }
+
   if (loading) {
     return (
       <div className="grid place-items-center min-h-[60vh]">
@@ -321,6 +358,19 @@ function RunDetail() {
                 completed; same value either way (Actor.id == run.actId). */}
             <CopyButton value={actor?.id ?? run.actId} label="Actor ID" />
           </p>
+          {run.originRunId && (
+            <p className="font-mono text-[11px] text-muted-foreground">
+              {/* Chains are collapsed server-side: originRunId is always the
+                  FIRST run, so one link is the whole lineage. */}
+              {run.retryCount > 0 ? `retry #${run.retryCount} of` : 'rerun of'}{' '}
+              <AppLink
+                href={`/runs/${run.originRunId}`}
+                className="text-foreground hover:text-signal"
+              >
+                {run.originRunId.slice(0, 12)}
+              </AppLink>
+            </p>
+          )}
         </div>
         {isLive && (
           <button
@@ -329,6 +379,16 @@ function RunDetail() {
             className="h-8 px-3 self-start md:self-auto inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-fail/40 text-fail hover:bg-fail/10 rounded-sm"
           >
             <Ban className="h-3.5 w-3.5" /> Abort
+          </button>
+        )}
+        {RERUNNABLE.has(run.status) && (
+          <button
+            type="button"
+            disabled={rerunning}
+            onClick={() => void handleRerun()}
+            className="h-8 px-3 self-start md:self-auto inline-flex items-center gap-1.5 text-[12px] font-mono uppercase tracking-wider border border-signal/40 text-signal hover:bg-signal/10 rounded-sm disabled:opacity-50"
+          >
+            <RotateCcw className={cn('h-3.5 w-3.5', rerunning && 'animate-spin')} /> Rerun
           </button>
         )}
       </div>

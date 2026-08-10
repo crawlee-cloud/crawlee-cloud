@@ -16,18 +16,45 @@ vi.mock('../src/auth/middleware.js', () => ({
 import { runsRoutes } from '../src/routes/runs.js';
 
 const mockQuery = vi.fn();
+// The rerun endpoint runs its inserts on a dedicated client inside a
+// transaction. Transaction-control statements (BEGIN/COMMIT/ROLLBACK)
+// auto-resolve and are recorded in txStatements so tests can assert
+// transactional behavior without queuing slots for them; every other
+// client query shares mockQuery with the pool helper, keeping one
+// ordered mock sequence per test.
+const txStatements: string[] = [];
+const mockRelease = vi.fn();
+const mockClient = {
+  query: (...args: unknown[]) => {
+    const sql = (args[0] as string).trim().toUpperCase();
+    if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') {
+      txStatements.push(sql);
+      return Promise.resolve({ rows: [] });
+    }
+    return mockQuery(...args);
+  },
+  release: (...args: unknown[]) => mockRelease(...args),
+};
 vi.mock('../src/db/index.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
+  getClient: () => Promise.resolve(mockClient),
 }));
 
 vi.mock('../src/storage/s3.js', () => ({
   listDatasetItems: vi.fn().mockResolvedValue({ items: [], total: 0 }),
   getKVRecord: vi.fn().mockResolvedValue(null),
+  putKVRecord: vi.fn().mockResolvedValue(undefined),
 }));
 
 const mockPublish = vi.fn();
+const mockRedisGet = vi.fn().mockResolvedValue(null);
+const mockRedisSet = vi.fn().mockResolvedValue('OK');
 vi.mock('../src/storage/redis.js', () => ({
-  redis: { publish: (...args: unknown[]) => mockPublish(...args) },
+  redis: {
+    publish: (...args: unknown[]) => mockPublish(...args),
+    get: (...args: unknown[]) => mockRedisGet(...args),
+    set: (...args: unknown[]) => mockRedisSet(...args),
+  },
 }));
 
 vi.mock('../src/config.js', () => ({
@@ -73,6 +100,8 @@ describe('Actor Runs Routes', () => {
   beforeEach(() => {
     mockQuery.mockReset();
     mockPublish.mockReset();
+    mockRelease.mockReset();
+    txStatements.length = 0;
   });
 
   describe('GET /v2/actor-runs', () => {
@@ -462,6 +491,350 @@ describe('Actor Runs Routes', () => {
       const body = JSON.parse(response.body);
       expect(body.data.defaultDatasetItemCount).toBe(88);
       expect(body.data.stats.datasetItemCount).toBe(88);
+    });
+  });
+
+  describe('POST /v2/actor-runs/:runId/rerun', () => {
+    // Rerun creates a brand-NEW run (fresh id + storages) instead of
+    // re-queuing the origin row like resurrect does. The distinction is
+    // load-bearing for webhook consumers: deliveries are keyed by run id
+    // downstream (e.g. a consumer with a UNIQUE constraint on it), so a
+    // resurrected run's second terminal webhook can be dropped as a
+    // duplicate. A fresh id sidesteps that entirely.
+    const originRow = (overrides = {}) =>
+      createRunRow({
+        id: 'run-1',
+        status: 'FAILED',
+        user_id: 'test-user-id',
+        timeout_secs: 7200,
+        memory_mbytes: 2048,
+        ...overrides,
+      });
+
+    const newRunRow = (overrides = {}) =>
+      createRunRow({
+        id: 'new-run-id',
+        status: 'READY',
+        origin_run_id: 'run-1',
+        timeout_secs: 7200,
+        memory_mbytes: 2048,
+        started_at: null,
+        default_dataset_item_count: null,
+        ...overrides,
+      });
+
+    /**
+     * Queue the happy-path query sequence. Order mirrors the handler:
+     * origin lookup → advisory xact lock → active-clone check →
+     * dataset/kv/queue INSERTs → build lookup → run INSERT (CTE) →
+     * per-run webhooks SELECT → one INSERT per webhook.
+     * (BEGIN/COMMIT/ROLLBACK never consume slots — see the client mock.)
+     */
+    function mockRerunQueries({
+      webhookRows = [] as Array<Record<string, unknown>>,
+      insertedRun = newRunRow(),
+    } = {}) {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [originRow()] })
+        .mockResolvedValueOnce({ rows: [] }) // pg_advisory_xact_lock
+        .mockResolvedValueOnce({ rows: [] }) // active-clone check: none
+        .mockResolvedValueOnce({ rows: [] }) // INSERT dataset
+        .mockResolvedValueOnce({ rows: [] }) // INSERT kv store
+        .mockResolvedValueOnce({ rows: [] }) // INSERT request queue
+        .mockResolvedValueOnce({ rows: [{ build_id: 'b-2', version_number: '1.0.1' }] })
+        .mockResolvedValueOnce({ rows: [insertedRun] })
+        .mockResolvedValueOnce({ rows: webhookRows });
+      for (let i = 0; i < webhookRows.length; i++) {
+        mockQuery.mockResolvedValueOnce({ rows: [] });
+      }
+    }
+
+    async function mockInputRecord(json = '{"startUrls":["https://example.com"]}') {
+      const { getKVRecord } = await import('../src/storage/s3.js');
+      (getKVRecord as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        value: Buffer.from(json),
+        contentType: 'application/json',
+      });
+    }
+
+    beforeEach(async () => {
+      const { getKVRecord, putKVRecord } = await import('../src/storage/s3.js');
+      (getKVRecord as ReturnType<typeof vi.fn>).mockClear();
+      (putKVRecord as ReturnType<typeof vi.fn>).mockClear();
+      mockRedisGet.mockClear().mockResolvedValue(null);
+      mockRedisSet.mockClear();
+    });
+
+    it('creates a NEW run (201) with fresh storages, copied INPUT bytes, and copied options', async () => {
+      await mockInputRecord('{"foo":1}');
+      mockRerunQueries();
+
+      const response = await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/rerun' });
+
+      expect(response.statusCode).toBe(201);
+      const body = JSON.parse(response.body);
+      expect(body.data.id).toBe('new-run-id');
+      expect(body.data.status).toBe('READY');
+      expect(body.data.originRunId).toBe('run-1');
+
+      // Origin lookup must be user-scoped AND terminal-status-guarded.
+      const originSql = (mockQuery.mock.calls[0]?.[0] as string) ?? '';
+      expect(originSql).toContain("'FAILED'");
+      expect(originSql).toContain("'ABORTED'");
+      expect(originSql).toContain("'TIMED-OUT'");
+      expect(originSql).toContain('user_id');
+
+      // Serialization: xact advisory lock on the chain root, then a
+      // race-free active-clone check — both on the transaction client.
+      expect(mockQuery.mock.calls[1]?.[0] as string).toContain('pg_advisory_xact_lock');
+      expect(mockQuery.mock.calls[1]?.[1]).toEqual(['run-1']);
+      const activeCheckSql = (mockQuery.mock.calls[2]?.[0] as string) ?? '';
+      expect(activeCheckSql).toContain('origin_run_id');
+      expect(activeCheckSql).toContain('user_id');
+      expect(txStatements).toEqual(['BEGIN', 'COMMIT']);
+
+      // INPUT is copied byte-for-byte into the NEW kv store, not the origin's.
+      const { putKVRecord } = await import('../src/storage/s3.js');
+      const putCall = (putKVRecord as ReturnType<typeof vi.fn>).mock.calls[0];
+      const kvInsertParams = mockQuery.mock.calls[4]?.[1] as unknown[];
+      expect(putCall[0]).toBe(kvInsertParams[0]); // freshly created store
+      expect(putCall[0]).not.toBe('kv-1'); // never the origin's store
+      expect(putCall[1]).toBe('INPUT');
+      expect(Buffer.isBuffer(putCall[2]) ? putCall[2].toString() : putCall[2]).toBe('{"foo":1}');
+      expect(putCall[3]).toBe('application/json');
+
+      // Run INSERT carries the origin's options, the fresh build, and lineage.
+      const runInsertParams = mockQuery.mock.calls[7]?.[1] as unknown[];
+      expect(runInsertParams).toContain(7200);
+      expect(runInsertParams).toContain(2048);
+      expect(runInsertParams).toContain('b-2');
+      expect(runInsertParams).toContain('1.0.1');
+      expect(runInsertParams).toContain('run-1'); // origin_run_id
+
+      // The origin row is never mutated — its failure history must survive.
+      for (const call of mockQuery.mock.calls) {
+        expect(call[0] as string).not.toMatch(/UPDATE\s+runs/i);
+      }
+    });
+
+    it('collapses lineage chains: rerunning a rerun points at the ORIGINAL run', async () => {
+      // Same convention as the runner's retry path — origin_run_id always
+      // names the first run in the chain, never the immediate parent, so
+      // the UI can link "rerun of X" without walking a chain.
+      await mockInputRecord();
+      mockQuery
+        .mockResolvedValueOnce({ rows: [originRow({ origin_run_id: 'run-0' })] })
+        .mockResolvedValueOnce({ rows: [] }) // advisory lock
+        .mockResolvedValueOnce({ rows: [] }) // active-clone check
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ build_id: 'b-2', version_number: '1.0.1' }] })
+        .mockResolvedValueOnce({ rows: [newRunRow({ origin_run_id: 'run-0' })] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/rerun' });
+
+      expect(response.statusCode).toBe(201);
+      // The lock and the active-clone check both key on the chain ROOT,
+      // not the immediate parent — same collapsing as the insert.
+      expect(mockQuery.mock.calls[1]?.[1]).toEqual(['run-0']);
+      expect(mockQuery.mock.calls[2]?.[1]).toEqual(['run-0', 'test-user-id']);
+      // The check must cover the root row itself, not just its clones —
+      // a resurrected root is active with no origin_run_id pointing at it.
+      expect(mockQuery.mock.calls[2]?.[0] as string).toMatch(/origin_run_id = \$1 OR id = \$1/);
+      const runInsertParams = mockQuery.mock.calls[7]?.[1] as unknown[];
+      expect(runInsertParams).toContain('run-0');
+      expect(runInsertParams).not.toContain('run-1');
+    });
+
+    it('returns 404 (and creates nothing) when the run is missing, foreign, or not terminal', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/rerun' });
+
+      expect(response.statusCode).toBe(404);
+      expect(JSON.parse(response.body).error.type).toBe('record-not-found');
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(mockPublish).not.toHaveBeenCalled();
+      const { putKVRecord } = await import('../src/storage/s3.js');
+      expect(putKVRecord).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 (and creates nothing) when the origin INPUT record no longer exists', async () => {
+      // Retention reaps unnamed storages independently of runs; a rerun
+      // with a silently-empty input would "succeed" and scrape nothing.
+      // Fail loudly instead.
+      mockQuery.mockResolvedValueOnce({ rows: [originRow()] });
+      // getKVRecord default mock resolves null — exactly the reaped case.
+
+      const response = await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/rerun' });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body).error.type).toBe('input-not-found');
+      expect(mockQuery).toHaveBeenCalledTimes(1); // no storage/run INSERTs
+      expect(mockPublish).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 rerun-already-active when a clone of the chain is already queued or running', async () => {
+      // Concurrent POSTs (double click, two tabs, retried request, bulk
+      // overlap) must produce exactly one clone. The advisory lock
+      // serializes them; the loser sees the winner's committed READY row
+      // here and bails before creating anything.
+      await mockInputRecord();
+      mockQuery
+        .mockResolvedValueOnce({ rows: [originRow()] })
+        .mockResolvedValueOnce({ rows: [] }) // advisory lock
+        .mockResolvedValueOnce({ rows: [{ found: 1 }] }); // active clone exists
+
+      const response = await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/rerun' });
+
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body).error.type).toBe('rerun-already-active');
+      expect(mockQuery).toHaveBeenCalledTimes(3); // no storage/run/webhook writes
+      const { putKVRecord } = await import('../src/storage/s3.js');
+      expect(putKVRecord).not.toHaveBeenCalled();
+      expect(mockPublish).not.toHaveBeenCalled();
+      expect(txStatements).toEqual(['BEGIN', 'ROLLBACK']);
+      expect(mockRelease).toHaveBeenCalled();
+    });
+
+    it('rolls back the whole clone when a mid-transaction write fails', async () => {
+      // All-or-nothing is load-bearing: a run row committed without its
+      // webhook clones could be claimed by the runner's poll loop and
+      // finish silently — the exact failure mode rerun exists to fix.
+      await mockInputRecord();
+      mockQuery
+        .mockResolvedValueOnce({ rows: [originRow()] })
+        .mockResolvedValueOnce({ rows: [] }) // advisory lock
+        .mockResolvedValueOnce({ rows: [] }) // active-clone check
+        .mockResolvedValueOnce({ rows: [] }) // INSERT dataset
+        .mockResolvedValueOnce({ rows: [] }) // INSERT kv store
+        .mockResolvedValueOnce({ rows: [] }) // INSERT request queue
+        .mockResolvedValueOnce({ rows: [{ build_id: 'b-2', version_number: '1.0.1' }] })
+        .mockRejectedValueOnce(new Error('run INSERT blew up'));
+
+      const response = await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/rerun' });
+
+      expect(response.statusCode).toBe(500);
+      expect(txStatements).toEqual(['BEGIN', 'ROLLBACK']);
+      expect(mockPublish).not.toHaveBeenCalled();
+      expect(mockRelease).toHaveBeenCalled();
+    });
+
+    it('copies per-run webhooks onto the new run id', async () => {
+      // THE reason rerun exists (vs resurrect): consumers are notified
+      // under a fresh run id. Skipping the copy would make the new run
+      // finish silently — same latent bug the runner's auto-retry has.
+      await mockInputRecord();
+      mockRerunQueries({
+        webhookRows: [
+          {
+            id: 'wh-1',
+            user_id: 'test-user-id',
+            event_types: ['ACTOR.RUN.SUCCEEDED', 'ACTOR.RUN.FAILED'],
+            request_url: 'https://consumer.example.com/hook',
+            payload_template: '{"locale":"cl"}',
+            headers: { Authorization: 'Bearer secret' },
+            is_enabled: true,
+            description: 'coupons ingestion consumer',
+          },
+        ],
+      });
+
+      const response = await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/rerun' });
+      expect(response.statusCode).toBe(201);
+
+      // Webhook SELECT is scoped to the origin run AND the caller — the
+      // clone must never be able to copy another tenant's webhook.
+      const whSelect = mockQuery.mock.calls[8];
+      expect(whSelect[0] as string).toMatch(/FROM webhooks/i);
+      expect(whSelect[0] as string).toContain('user_id');
+      expect(whSelect[1] as unknown[]).toEqual(['run-1', 'test-user-id']);
+
+      // The copy INSERT targets the NEW run id with a fresh webhook id.
+      const newRunId = (mockQuery.mock.calls[7]?.[1] as unknown[])[0];
+      const whInsert = mockQuery.mock.calls[9];
+      expect(whInsert[0] as string).toMatch(/INSERT INTO webhooks/i);
+      const whParams = whInsert[1] as unknown[];
+      expect(whParams).toContain(newRunId);
+      expect(whParams).not.toContain('wh-1');
+      expect(whParams).toContain('https://consumer.example.com/hook');
+      expect(whParams).toContain('{"locale":"cl"}');
+      // The clone copies every user-authored column, including ones no
+      // public path can populate on a run-scoped row today (description
+      // — see the route comment). Asserted so a future writer of that
+      // field doesn't have to discover the gap from a missing value.
+      expect(whSelect[0] as string).toContain('description');
+      expect(whParams).toContain('coupons ingestion consumer');
+    });
+
+    it('publishes run:new with the NEW run id, never the origin id', async () => {
+      await mockInputRecord();
+      mockRerunQueries();
+
+      await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/rerun' });
+
+      const newRunId = (mockQuery.mock.calls[7]?.[1] as unknown[])[0];
+      expect(mockPublish).toHaveBeenCalledWith('run:new', newRunId);
+      expect(mockPublish).not.toHaveBeenCalledWith('run:new', 'run-1');
+    });
+
+    it('copies the origin envVars Redis key to the new run when present', async () => {
+      await mockInputRecord();
+      mockRerunQueries();
+      mockRedisGet.mockResolvedValueOnce('{"PROXY_PASSWORD":"x"}');
+
+      await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/rerun' });
+
+      const newRunId = (mockQuery.mock.calls[7]?.[1] as unknown[])[0] as string;
+      expect(mockRedisGet).toHaveBeenCalledWith('run:run-1:envVars');
+      expect(mockRedisSet).toHaveBeenCalledWith(
+        `run:${newRunId}:envVars`,
+        '{"PROXY_PASSWORD":"x"}',
+        'EX',
+        86400
+      );
+    });
+
+    it('skips the envVars copy when the origin key expired', async () => {
+      await mockInputRecord();
+      mockRerunQueries();
+
+      const response = await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/rerun' });
+
+      // Key ABSENT is the documented TTL case — the rerun still commits.
+      expect(response.statusCode).toBe(201);
+      expect(mockRedisSet).not.toHaveBeenCalled();
+      expect(txStatements).toEqual(['BEGIN', 'COMMIT']);
+    });
+
+    it('rolls back rather than committing a clone whose envVars copy errored', async () => {
+      // Distinct from the expired-key case above: a Redis ERROR leaves us
+      // unable to tell whether the origin had env vars, and a container
+      // started without them (proxy credentials!) fails late instead of
+      // loud. Roll back so the caller can retry once Redis is healthy.
+      await mockInputRecord();
+      mockRerunQueries();
+      mockRedisGet.mockRejectedValueOnce(new Error('redis connection reset'));
+
+      const response = await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/rerun' });
+
+      expect(response.statusCode).toBe(500);
+      expect(txStatements).toEqual(['BEGIN', 'ROLLBACK']);
+      expect(mockPublish).not.toHaveBeenCalled();
+      expect(mockRelease).toHaveBeenCalled();
+    });
+
+    it('returns defaultDatasetItemCount via the formatRun contract (fresh dataset → null count)', async () => {
+      await mockInputRecord();
+      mockRerunQueries();
+
+      const response = await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/rerun' });
+
+      const body = JSON.parse(response.body);
+      expect(body.data).toHaveProperty('defaultDatasetItemCount');
+      expect(body.data.stats).toHaveProperty('datasetItemCount');
     });
   });
 

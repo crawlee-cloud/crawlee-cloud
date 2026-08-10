@@ -3,7 +3,8 @@
  */
 
 import type { FastifyPluginAsync } from 'fastify';
-import { query } from '../db/index.js';
+import { nanoid } from 'nanoid';
+import { query, getClient } from '../db/index.js';
 import { redis } from '../storage/redis.js';
 import { authenticate } from '../auth/middleware.js';
 import { UpdateRunSchema, ListRunsQuerySchema, RunsHistogramQuerySchema } from '../schemas/runs.js';
@@ -677,6 +678,301 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       return { data: formatRun(result.rows[0]) };
+    }
+  );
+
+  /**
+   * POST /v2/actor-runs/:runId/rerun - Rerun a terminal run as a NEW run
+   * (user-scoped).
+   *
+   * Unlike resurrect (which re-queues the SAME row), rerun clones the
+   * origin into a brand-new run: fresh id, fresh dataset/KV/queue, the
+   * origin's INPUT bytes, timeout/memory, per-run webhooks, and — when
+   * still alive in Redis — its envVars. The origin row is left untouched.
+   *
+   * Why a new id matters: webhook consumers key their processing on the
+   * run id. A downstream ingestion API with a UNIQUE constraint on the
+   * run id and create-only semantics consumes the id on the FAILED
+   * delivery — every later delivery for that id is dropped. A
+   * resurrected run therefore succeeds *silently*: its SUCCEEDED
+   * webhook arrives under the consumed id and the data is never
+   * ingested. A fresh id makes the rerun indistinguishable from a
+   * normal run to every consumer.
+   *
+   * Fresh storages also mean the rerun starts clean: no partial dataset
+   * from the failed attempt to append into, no stale
+   * SDK_CRAWLER_STATISTICS_0 for stats ingestion to resurface, and a
+   * fresh created_at so bulk reruns queue BEHIND current work instead of
+   * FIFO-jumping it (resurrected rows keep their original created_at and
+   * instantly trip the claim loop's starvation escalation).
+   *
+   * One active rerun per chain: a transaction-scoped advisory lock on the
+   * chain root plus an active-run check make concurrent POSTs (double
+   * click, two tabs, retried request, bulk rerun overlap) deterministic —
+   * exactly one clone is created, the rest get 409 rerun-already-active.
+   * The check also catches a runner auto-retry already queued for the
+   * same chain, so a manual rerun can't duplicate a pending retry.
+   */
+  fastify.post<{ Params: { runId: string } }>(
+    '/actor-runs/:runId/rerun',
+    async (request, reply) => {
+      const { runId } = request.params;
+
+      // Same terminal-status guard set as resurrect: SUCCEEDED runs are
+      // excluded on purpose — "run again after success" is a new-run
+      // decision made from the actor page with editable input, not a
+      // recovery action.
+      const origin = await query<RunRow>(
+        `SELECT * FROM runs
+          WHERE id = $1 AND status IN ('FAILED', 'ABORTED', 'TIMED-OUT') AND user_id = $2`,
+        [runId, request.user!.id]
+      );
+
+      if (!origin.rows[0]) {
+        reply.status(404);
+        return {
+          error: {
+            type: 'record-not-found',
+            message: 'Run not found or not in a rerunnable state',
+          },
+        };
+      }
+      const originRun = origin.rows[0];
+
+      // Recover the origin's INPUT before creating anything. Retention
+      // reaps unnamed storages independently of runs, so a long-dead
+      // origin may have no INPUT left — rerunning with a silently-empty
+      // input would "succeed" while scraping nothing. Fail loudly.
+      const { getKVRecord, putKVRecord } = await import('../storage/s3.js');
+      const inputRecord = originRun.default_key_value_store_id
+        ? await getKVRecord(originRun.default_key_value_store_id, 'INPUT')
+        : null;
+
+      if (!inputRecord) {
+        reply.status(409);
+        return {
+          error: {
+            type: 'input-not-found',
+            message:
+              "The origin run's INPUT record no longer exists (storage reaped by retention); start a fresh run from the actor page instead",
+          },
+        };
+      }
+
+      // From here on, mirror the creation flow in actors.ts
+      // POST /acts/:actorId/runs — fresh storages, INPUT, build stamp.
+      const datasetId = nanoid();
+      const kvStoreId = nanoid();
+      const requestQueueId = nanoid();
+      const newRunId = nanoid();
+
+      // origin_run_id collapses chains to the FIRST run (same convention
+      // as the runner's retry path): rerun-of-a-rerun still points at the
+      // original, so lineage is one hop, never a walk.
+      const chainRootId = originRun.origin_run_id ?? originRun.id;
+
+      // Single transaction for storages + run + webhook clones: the
+      // runner's POLL loop claims any READY row independently of the
+      // run:new notify, so a run row committed before its webhooks would
+      // open a window where the rerun executes and finishes silently —
+      // the exact failure mode this endpoint exists to eliminate. All-or-
+      // nothing also means a mid-flight error leaves no orphaned READY
+      // run or storage rows behind.
+      const client = await getClient();
+      try {
+        await client.query('BEGIN');
+
+        // Serialize concurrent reruns of the same chain. Transaction-
+        // scoped (auto-released at COMMIT/ROLLBACK) and keyed per chain
+        // via hashtextextended, so unrelated reruns never contend. See
+        // the lock registry note in db/index.ts.
+        await client.query(`SELECT pg_advisory_xact_lock(hashtextextended('rerun:' || $1, 0))`, [
+          chainRootId,
+        ]);
+
+        // With the lock held, an active-clone check is race-free: a
+        // concurrent rerun either committed before us (visible here) or
+        // is queued behind the lock. The check covers the chain ROOT
+        // itself (id = $1), not just clones — a resurrected root is
+        // active without any origin_run_id pointing at it, and resurrect
+        // can also flip the origin non-terminal between our pre-lock
+        // status read and here. ABORTING counts as active — matches the
+        // actor-delete route's definition — so rerunning right after an
+        // abort waits for the abort to land.
+        const activeClone = await client.query(
+          `SELECT 1 FROM runs
+            WHERE (origin_run_id = $1 OR id = $1) AND user_id = $2
+              AND status IN ('READY', 'RUNNING', 'ABORTING')
+            LIMIT 1`,
+          [chainRootId, request.user!.id]
+        );
+        if (activeClone.rows[0]) {
+          await client.query('ROLLBACK');
+          reply.status(409);
+          return {
+            error: {
+              type: 'rerun-already-active',
+              message:
+                'A rerun (or auto-retry) of this run is already queued or running; wait for it to finish',
+            },
+          };
+        }
+
+        // KEEP-IN-SYNC: storage trio + INPUT + build stamp mirror the
+        // creation flow in actors.ts POST /acts/:actorId/runs.
+        await client.query('INSERT INTO datasets (id, user_id) VALUES ($1, $2)', [
+          datasetId,
+          request.user!.id,
+        ]);
+        await client.query('INSERT INTO key_value_stores (id, user_id) VALUES ($1, $2)', [
+          kvStoreId,
+          request.user!.id,
+        ]);
+        await client.query('INSERT INTO request_queues (id, user_id) VALUES ($1, $2)', [
+          requestQueueId,
+          request.user!.id,
+        ]);
+
+        // Byte-for-byte copy — no parse/re-serialize round-trip that could
+        // reorder keys or lose non-JSON content types. Sits inside the
+        // transaction window on purpose: if a later insert fails, ROLLBACK
+        // removes every row and the S3 object is unreachable garbage at
+        // worst (its kvStoreId was never committed).
+        await putKVRecord(kvStoreId, 'INPUT', inputRecord.value, inputRecord.contentType);
+
+        // Re-resolve the actor's latest SUCCEEDED build rather than copying
+        // the origin's stamp: the runner always executes the current
+        // `:latest` image anyway (it never reads build_id), so copying a
+        // pre-rebuild stamp would make the run row lie about what ran.
+        const buildLookup = await client.query<{ build_id: string; version_number: string | null }>(
+          `SELECT b.id AS build_id, v.version_number
+             FROM actor_builds b
+             LEFT JOIN actor_versions v ON v.id = b.version_id
+            WHERE b.actor_id = $1 AND b.status = 'SUCCEEDED'
+            ORDER BY b.created_at DESC
+            LIMIT 1`,
+          [originRun.actor_id]
+        );
+        const buildId = buildLookup.rows[0]?.build_id ?? null;
+        const buildNumber = buildLookup.rows[0]?.version_number ?? null;
+
+        const result = await client.query<RunRow>(
+          `
+          WITH inserted AS (
+            INSERT INTO runs (id, actor_id, user_id, status, default_dataset_id, default_key_value_store_id, default_request_queue_id, timeout_secs, memory_mbytes, build_id, build_number, origin_run_id)
+            VALUES ($1, $2, $3, 'READY', $4, $5, $6, $7, $8, $9, $10, $11)
+            RETURNING *
+          )
+          SELECT r.*, d.item_count AS default_dataset_item_count
+          FROM inserted r
+          LEFT JOIN datasets d ON d.id = r.default_dataset_id
+        `,
+          [
+            newRunId,
+            originRun.actor_id,
+            request.user!.id,
+            datasetId,
+            kvStoreId,
+            requestQueueId,
+            originRun.timeout_secs,
+            originRun.memory_mbytes,
+            buildId,
+            buildNumber,
+            chainRootId,
+          ]
+        );
+
+        // Copy the origin's per-run webhooks onto the new id — the whole
+        // point of rerun-as-new-run. The runner's webhook match filters
+        // `run_id = <current run>` and never consults origin_run_id, so
+        // without this copy the rerun would finish silently. (The runner's
+        // auto-retry path has exactly that latent bug; see roadmap.)
+        // user_id-scoped for defense in depth: today run-scoped webhooks
+        // always belong to the run's owner, but this SELECT must never
+        // become the query that copies another tenant's webhook (and its
+        // auth headers) if that invariant ever loosens.
+        //
+        // The column list is every user-authored column on the table, not
+        // just the ones reachable today: `description` is always NULL on a
+        // run-scoped row right now (run-start payloads have no description
+        // field, and PUT /v2/webhooks/:id refuses run-scoped rows to keep
+        // them immutable post-dispatch), but the day either of those
+        // loosens, a clone that silently drops it is a bug nobody would
+        // think to look for here. Copying NULL costs nothing.
+        const originWebhooks = await client.query<{
+          user_id: string | null;
+          event_types: string[];
+          request_url: string;
+          payload_template: string | null;
+          headers: Record<string, string> | null;
+          is_enabled: boolean;
+          description: string | null;
+        }>(
+          `SELECT user_id, event_types, request_url, payload_template, headers, is_enabled, description
+             FROM webhooks WHERE run_id = $1 AND user_id = $2`,
+          [runId, request.user!.id]
+        );
+        for (const wh of originWebhooks.rows) {
+          await client.query(
+            `INSERT INTO webhooks (id, user_id, event_types, request_url, payload_template, run_id, headers, is_enabled, description)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            [
+              nanoid(),
+              wh.user_id,
+              wh.event_types,
+              wh.request_url,
+              wh.payload_template,
+              newRunId,
+              wh.headers ? JSON.stringify(wh.headers) : null,
+              wh.is_enabled,
+              wh.description,
+            ]
+          );
+        }
+
+        // Carry runtime env vars over while the origin's Redis key is
+        // still alive (24h TTL, set at creation). Two distinct cases:
+        // key ABSENT (TTL expired) → proceed without env vars, same
+        // behavior the runner has for an expired key; Redis ERROR → let
+        // it throw so the outer catch rolls the clone back. We can't
+        // know whether env vars existed, and a container started without
+        // them (proxy credentials!) fails late instead of loud — the
+        // caller can just retry the POST once Redis is back. That also
+        // matches run creation, where the envVars SET is likewise
+        // unguarded (actors.ts POST /acts/:actorId/runs): a Redis outage
+        // fails the request rather than producing a half-provisioned run.
+        // Copied BEFORE COMMIT on purpose: the runner's poll loop can
+        // claim the READY row the instant it's visible. On ROLLBACK the
+        // stray key is 24h unreachable garbage — same argument as the
+        // S3 INPUT above.
+        const envVars = await redis.get(`run:${runId}:envVars`);
+        if (envVars) {
+          await redis.set(`run:${newRunId}:envVars`, envVars, 'EX', 86400);
+        }
+
+        await client.query('COMMIT');
+
+        // Wake the runners — same signal run creation uses. The webhook
+        // clones are already committed, so a runner claiming instantly
+        // still delivers them.
+        try {
+          await redis.publish('run:new', newRunId);
+        } catch (err) {
+          fastify.log.warn(`Failed to publish run:new for ${newRunId}: ${(err as Error).message}`);
+        }
+
+        reply.status(201);
+        return { data: formatRun(result.rows[0]!) };
+      } catch (err) {
+        try {
+          await client.query('ROLLBACK');
+        } catch {
+          // Ignore rollback errors if transaction was already aborted or connection closed
+        }
+        throw err;
+      } finally {
+        client.release();
+      }
     }
   );
 

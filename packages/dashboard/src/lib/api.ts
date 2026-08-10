@@ -65,6 +65,14 @@ export interface Run {
     timeoutSecs?: number;
     memoryMbytes?: number;
   };
+  /** Automatic-retry attempt number; 0 for original runs and manual reruns. */
+  retryCount: number;
+  /**
+   * First run in this run's retry/rerun chain, null when this run is the
+   * original. Always the FIRST run — chains are collapsed server-side, so
+   * one link renders the full lineage.
+   */
+  originRunId: string | null;
   createdAt: string;
   modifiedAt: string;
 }
@@ -708,6 +716,16 @@ export async function startRun(
 
 export async function abortRun(id: string): Promise<Run> {
   const res = await fetchApi<{ data: Run }>(`/v2/actor-runs/${id}/abort`, { method: 'POST' });
+  return res.data;
+}
+
+/**
+ * Rerun a terminal run as a NEW run (fresh id + storages, copied input,
+ * options and per-run webhooks). Returns the new run — callers should
+ * navigate to it, not refresh the origin.
+ */
+export async function rerunRun(id: string): Promise<Run> {
+  const res = await fetchApi<{ data: Run }>(`/v2/actor-runs/${id}/rerun`, { method: 'POST' });
   return res.data;
 }
 

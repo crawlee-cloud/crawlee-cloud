@@ -593,7 +593,10 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
     const requestQueueId = nanoid();
     const runId = nanoid();
 
-    // Create storages with user ownership
+    // Create storages with user ownership.
+    // KEEP-IN-SYNC: the rerun endpoint (routes/runs.ts POST
+    // /actor-runs/:runId/rerun) clones this creation flow — storage trio,
+    // INPUT write, build stamp. Update both together.
     await query('INSERT INTO datasets (id, user_id) VALUES ($1, $2)', [
       datasetId,
       request.user!.id,

@@ -14,11 +14,69 @@ import {
   type RunJob,
 } from '../src/queue.js';
 
+/**
+ * Pool double. `connect()` hands back a client whose queries share the
+ * same `query` mock, so a test reads ONE ordered call sequence whether a
+ * statement ran on the pool or inside maybeRetryRun's transaction.
+ * BEGIN/COMMIT/ROLLBACK auto-resolve into `txStatements` instead of
+ * consuming queued results, so adding transaction control to the code
+ * under test never shifts a test's result queue.
+ */
 function mockPool(...results: { rows: unknown[] }[]) {
   const query = vi.fn();
   for (const r of results) query.mockResolvedValueOnce(r);
   query.mockResolvedValue({ rows: [] });
-  return { query } as unknown as pg.Pool & { query: ReturnType<typeof vi.fn> };
+  const txStatements: string[] = [];
+  const release = vi.fn();
+  const client = {
+    query: (...args: unknown[]) => {
+      const sql = String(args[0]).trim().toUpperCase();
+      if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') {
+        txStatements.push(sql);
+        return Promise.resolve({ rows: [] });
+      }
+      return query(...args);
+    },
+    release,
+  };
+  return {
+    query,
+    connect: vi.fn().mockResolvedValue(client),
+    txStatements,
+    release,
+  } as unknown as pg.Pool & {
+    query: ReturnType<typeof vi.fn>;
+    connect: ReturnType<typeof vi.fn>;
+    txStatements: string[];
+    release: ReturnType<typeof vi.fn>;
+  };
+}
+
+/** Find a recorded query by SQL fragment — index-independent, so an
+ *  added statement (a lock, a guard) doesn't break every assertion.
+ *  Returns undefined when absent; use it to assert a query did NOT run. */
+function findCall(
+  db: { query: ReturnType<typeof vi.fn> },
+  fragment: string | RegExp
+): [string, unknown[]] | undefined {
+  const match = db.query.mock.calls.find((c) =>
+    typeof fragment === 'string' ? String(c[0]).includes(fragment) : fragment.test(String(c[0]))
+  );
+  return match as [string, unknown[]] | undefined;
+}
+
+/** findCall for the queries a test expects to exist. Throws with the
+ *  fragment named rather than letting a destructure of `undefined` fail
+ *  as an opaque TypeError. (Test files aren't in tsconfig's `include`,
+ *  so a `!` here would be unchecked anyway — and the lint autofixer
+ *  strips it.) */
+function mustFindCall(
+  db: { query: ReturnType<typeof vi.fn> },
+  fragment: string | RegExp
+): [string, unknown[]] {
+  const match = findCall(db, fragment);
+  if (!match) throw new Error(`No query matching ${String(fragment)} was issued`);
+  return match;
 }
 
 const RETRY_DELAYS = [10, 30, 60, 300, 900];
@@ -97,14 +155,15 @@ describe('maybeRetryRun', () => {
 
     await maybeRetryRun(RUN, 'run-1', db, redis);
 
-    const [sql, params] = db.query.mock.calls[1] as [string, unknown[]];
-    expect(sql).toContain('INSERT INTO runs');
+    const [sql, params] = mustFindCall(db, 'INSERT INTO runs');
     expect(sql).toContain("INTERVAL '1 second'");
     const newRunId = params[0] as string;
     expect(params[8]).toBe(1); // retry_count bumped
     expect(params[9]).toBe('run-1'); // origin_run_id defaults to the failed run
     expect(params[10]).toBe(60); // actor's retry delay
     expect(redis.publish).toHaveBeenCalledWith('run:new', newRunId);
+    // The clone is created inside a committed transaction.
+    expect(db.txStatements).toEqual(['BEGIN', 'COMMIT']);
   });
 
   it('preserves the original origin_run_id across chained retries', async () => {
@@ -113,9 +172,69 @@ describe('maybeRetryRun', () => {
 
     await maybeRetryRun({ ...RUN, retry_count: 1, origin_run_id: 'run-0' }, 'run-1', db, redis);
 
-    const [, params] = db.query.mock.calls[1] as [string, unknown[]];
+    const [, params] = mustFindCall(db, 'INSERT INTO runs');
     expect(params[9]).toBe('run-0');
     expect(params[8]).toBe(2);
+  });
+
+  // KEEP-IN-SYNC with the API's rerun endpoint: both take the same
+  // per-chain advisory lock and run the same active-clone check, so a
+  // manual rerun racing an infra auto-retry can't produce two live
+  // clones of one chain.
+  it('takes the per-chain advisory lock before checking for an active clone', async () => {
+    const db = mockPool({ rows: [{ max_retries: 3, retry_delay_secs: 60 }] });
+    const redis = fakeRedis();
+
+    await maybeRetryRun({ ...RUN, retry_count: 1, origin_run_id: 'run-0' }, 'run-1', db, redis);
+
+    const [lockSql, lockParams] = mustFindCall(db, 'pg_advisory_xact_lock');
+    expect(lockSql).toContain("'rerun:'"); // same key namespace as the API
+    expect(lockParams).toEqual(['run-0']); // keyed on the chain ROOT
+    // The check must cover the root row itself, not just its clones.
+    const [checkSql, checkParams] = mustFindCall(db, /origin_run_id = \$1 OR id = \$1/);
+    expect(checkSql).toContain("'READY', 'RUNNING', 'ABORTING'");
+    expect(checkParams).toEqual(['run-0']);
+    // Lock is acquired BEFORE the check, or the check races.
+    const sqls = db.query.mock.calls.map((c) => String(c[0]));
+    expect(sqls.findIndex((s) => s.includes('pg_advisory_xact_lock'))).toBeLessThan(
+      sqls.findIndex((s) => /origin_run_id = \$1 OR id = \$1/.test(s))
+    );
+  });
+
+  it('skips the retry when a rerun of the same chain is already active', async () => {
+    // A manual rerun committed first (or an earlier retry is still
+    // queued): inserting here would give the chain two live clones.
+    const db = mockPool(
+      { rows: [{ max_retries: 3, retry_delay_secs: 60 }] },
+      { rows: [] }, // advisory lock
+      { rows: [{ found: 1 }] } // active clone exists
+    );
+    const redis = fakeRedis();
+
+    await maybeRetryRun(RUN, 'run-1', db, redis);
+
+    expect(findCall(db, 'INSERT INTO runs')).toBeUndefined();
+    expect(redis.publish).not.toHaveBeenCalled();
+    expect(db.txStatements).toEqual(['BEGIN', 'ROLLBACK']);
+    expect(db.release).toHaveBeenCalled();
+  });
+
+  it('rolls back and releases the client when the retry INSERT fails', async () => {
+    const db = mockPool({ rows: [{ max_retries: 3, retry_delay_secs: 60 }] });
+    db.query
+      .mockResolvedValueOnce({ rows: [] }) // advisory lock
+      .mockResolvedValueOnce({ rows: [] }) // active-clone check: none
+      .mockRejectedValueOnce(new Error('INSERT blew up'));
+    const redis = fakeRedis();
+
+    // Contained, like every other failure in this function — a retry
+    // that can't be scheduled must not take down the queue worker.
+    await expect(maybeRetryRun(RUN, 'run-1', db, redis)).resolves.toBeUndefined();
+
+    expect(db.txStatements).toEqual(['BEGIN', 'ROLLBACK']);
+    expect(db.release).toHaveBeenCalled();
+    expect(redis.publish).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalled();
   });
 
   // Infra failures (image pull died: disk full, registry down) are not
@@ -128,8 +247,7 @@ describe('maybeRetryRun', () => {
 
     await maybeRetryRun(RUN, 'run-1', db, redis, { infraFailure: true });
 
-    const [sql, params] = db.query.mock.calls[1] as [string, unknown[]];
-    expect(sql).toContain('INSERT INTO runs');
+    const [, params] = mustFindCall(db, 'INSERT INTO runs');
     expect(params[8]).toBe(1); // retry_count bumped
     expect(params[10]).toBe(60); // delay floored to 60s, not the actor's 0
     expect(redis.publish).toHaveBeenCalled();
@@ -144,8 +262,8 @@ describe('maybeRetryRun', () => {
 
     await maybeRetryRun({ ...RUN, retry_count: 3 }, 'run-1', db, redis, { infraFailure: true });
 
-    const [sql, params] = db.query.mock.calls[1] as [string, unknown[]];
-    expect(sql).toContain('INSERT INTO runs'); // retry_count 3 < 5 still allowed (floor is 2)
+    // retry_count 3 < 5 still allowed (floor is 2)
+    const [, params] = mustFindCall(db, 'INSERT INTO runs');
     expect(params[8]).toBe(4);
     expect(params[10]).toBe(300); // actor's 300s delay kept, not floored down to 60
     expect(redis.publish).toHaveBeenCalled();
