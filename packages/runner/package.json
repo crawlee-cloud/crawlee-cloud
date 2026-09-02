@@ -22,7 +22,7 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "dockerode": "^4.0.4",
+    "dockerode": "^5.0.1",
     "ioredis": "^5.4.1",
     "nanoid": "^3.3.11",
     "pg": "^8.13.1"
