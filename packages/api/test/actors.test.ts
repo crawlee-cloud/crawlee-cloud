@@ -199,6 +199,26 @@ describe('Actor Routes', () => {
       expect(body.data.name).toBe('test-actor');
     });
 
+    it('persists isPriority and returns it on the created actor', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [] }) // no existing
+        .mockResolvedValueOnce({ rows: [createActorRow({ is_priority: true })] });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/acts',
+        payload: { name: 'priority-actor', isPriority: true },
+      });
+
+      expect(response.statusCode).toBe(201);
+      const body = JSON.parse(response.body);
+      expect(body.data.isPriority).toBe(true);
+
+      const insertCall = mockQuery.mock.calls[1] as [string, unknown[]];
+      expect(insertCall[0]).toMatch(/is_priority/);
+      expect(insertCall[1]).toContain(true);
+    });
+
     it('should update existing actor', async () => {
       mockQuery
         .mockResolvedValueOnce({ rows: [createActorRow()] }) // existing
@@ -591,6 +611,45 @@ describe('Actor Routes', () => {
       });
 
       expect(response.statusCode).toBe(404);
+    });
+
+    it("carries the actor's is_priority onto the created run row", async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [createActorRow({ is_priority: true })] }) // get actor
+        .mockResolvedValueOnce({ rows: [] }) // dataset insert
+        .mockResolvedValueOnce({ rows: [] }) // kv store insert
+        .mockResolvedValueOnce({ rows: [] }) // queue insert
+        .mockResolvedValueOnce({ rows: [] }) // build lookup
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              id: 'run-1',
+              actor_id: 'actor-1',
+              status: 'READY',
+              started_at: null,
+              default_dataset_id: 'ds-1',
+              default_key_value_store_id: 'kv-1',
+              default_request_queue_id: 'rq-1',
+              timeout_secs: 3600,
+              memory_mbytes: 1024,
+              is_priority: true,
+              created_at: new Date(),
+            },
+          ],
+        });
+
+      mockRedisPublish.mockResolvedValueOnce(1);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/acts/actor-1/runs',
+        payload: {},
+      });
+
+      expect(response.statusCode).toBe(201);
+      const insertCall = mockQuery.mock.calls[5] as [string, unknown[]];
+      expect(insertCall[0]).toMatch(/is_priority/);
+      expect(insertCall[1]).toContain(true);
     });
 
     it("inherits timeout/memory from actor's default_run_options when request body omits them", async () => {

@@ -102,6 +102,15 @@ describe('claimNextRun', () => {
     );
   });
 
+  it('orders claims by is_priority DESC before created_at ASC (priority actors jump the queue)', async () => {
+    const pool = mockPool([{ id: 'run-1', status: 'RUNNING' }]);
+
+    await claimNextRun(pool as never, null);
+
+    const sql = pool.query.mock.calls[0][0] as string;
+    expect(sql).toMatch(/ORDER BY is_priority DESC, created_at ASC/);
+  });
+
   it('claims without a memory gate when headroom is null (idle host)', async () => {
     // Null (not "usable MB") on an idle host: an oversized run
     // (memory_mbytes > host usable) must still be claimable SOMEWHERE —

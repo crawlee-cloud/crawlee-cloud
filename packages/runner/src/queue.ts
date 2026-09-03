@@ -100,6 +100,7 @@ export interface RunJob {
   retry_count: number;
   origin_run_id: string | null;
   run_after: Date | null;
+  is_priority: boolean;
   // Optional: present on rows fetched after a run has progressed.
   // attemptWebhookDelivery uses these to build the Apify-compatible
   // resource block — null means "not yet" (e.g. run still RUNNING).
@@ -320,7 +321,7 @@ export async function claimNextRun(
                     < NOW() - ($7::int * interval '1 second')
           )
         ))
-      ORDER BY created_at ASC
+      ORDER BY is_priority DESC, created_at ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     ) AND status = 'READY'
@@ -435,8 +436,8 @@ export async function processNextRun(
       return; // No room for even the smallest run — skip the round-trip.
     }
 
-    // Claim the next pending run (FIFO among runs that fit, respecting
-    // delayed retries)
+    // Claim the next pending run (priority actors first, then FIFO among
+    // runs that fit, respecting delayed retries)
     const run = await claimNextRun(db, headroomMb);
 
     if (!run) {
@@ -1061,10 +1062,10 @@ export async function maybeRetryRun(
         );
         await client.query(
           `INSERT INTO runs (id, actor_id, user_id, status, default_dataset_id, default_key_value_store_id,
-            default_request_queue_id, timeout_secs, memory_mbytes, retry_count, origin_run_id, run_after)
+            default_request_queue_id, timeout_secs, memory_mbytes, retry_count, origin_run_id, run_after, is_priority)
            VALUES ($1, $2, (SELECT user_id FROM runs WHERE id = $3), 'READY',
             $4, $5, $6, $7, $8, $9, $10,
-            NOW() + INTERVAL '1 second' * $11)`,
+            NOW() + INTERVAL '1 second' * $11, $12)`,
           [
             newRunId,
             run.actor_id,
@@ -1077,6 +1078,7 @@ export async function maybeRetryRun(
             newRetryCount,
             originRunId,
             delaySecs,
+            run.is_priority,
           ]
         );
         await client.query('COMMIT');

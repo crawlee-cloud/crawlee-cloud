@@ -303,6 +303,16 @@ END $$;
 ALTER TABLE actors ADD COLUMN IF NOT EXISTS max_retries INTEGER DEFAULT 0;
 ALTER TABLE actors ADD COLUMN IF NOT EXISTS retry_delay_secs INTEGER DEFAULT 60;
 
+-- Priority actors: runs of an actor flagged is_priority are claimed by the
+-- runner ahead of every other READY run (see claimNextRun in
+-- packages/runner/src/queue.ts), while still respecting the memory/disk
+-- admission gates and MAX_CONCURRENT_RUNS — not a hard bypass of those.
+-- Copied onto runs.is_priority at insert time (run-create, rerun, and
+-- auto-retry all already have the source row on hand) rather than joined
+-- from actors at claim time, so the hot claim query stays single-table.
+ALTER TABLE actors ADD COLUMN IF NOT EXISTS is_priority BOOLEAN DEFAULT FALSE;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS is_priority BOOLEAN DEFAULT FALSE;
+
 -- Add retry/scheduling columns to runs table
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS origin_run_id VARCHAR(21);
@@ -396,6 +406,11 @@ CREATE INDEX IF NOT EXISTS idx_runs_finished
 -- runs(status) index which would be ~all SUCCEEDED/FAILED rows.
 CREATE INDEX IF NOT EXISTS idx_runs_status_active
   ON runs(status) WHERE status IN ('READY', 'RUNNING');
+
+-- Keeps claimNextRun's ORDER BY is_priority DESC, created_at ASC (over
+-- status='READY' rows) index-backed as the queue grows.
+CREATE INDEX IF NOT EXISTS idx_runs_ready_priority_created
+  ON runs(is_priority DESC, created_at ASC) WHERE status = 'READY';
 
 ALTER TABLE users  ADD COLUMN IF NOT EXISTS proxy_password_encrypted TEXT;
 ALTER TABLE actors ADD COLUMN IF NOT EXISTS proxy_password_encrypted TEXT;

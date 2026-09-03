@@ -447,6 +447,7 @@ function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => 
   );
   const [maxRetries, setMaxRetries] = useState<number | ''>(actor.maxRetries ?? '');
   const [retryDelaySecs, setRetryDelaySecs] = useState<number | ''>(actor.retryDelaySecs ?? '');
+  const [isPriority, setIsPriority] = useState(actor.isPriority ?? false);
   const [envVars, setEnvVars] = useState<{ key: string; value: string }[]>(
     Object.entries(actor.defaultRunOptions?.envVars ?? {}).map(([key, value]) => ({ key, value }))
   );
@@ -515,6 +516,7 @@ function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => 
         },
         maxRetries: maxRetries === '' ? undefined : Number(maxRetries),
         retryDelaySecs: retryDelaySecs === '' ? undefined : Number(retryDelaySecs),
+        isPriority,
       });
       onSaved(updated);
       setSavedAt(Date.now());
@@ -622,6 +624,23 @@ function ConfigPanel({ actor, onSaved }: { actor: Actor; onSaved: (a: Actor) => 
                 placeholder="60"
                 className="w-full h-9 px-3 rounded-sm border border-border bg-background font-mono text-[12px] text-foreground focus:outline-none focus:border-signal/50"
               />
+            </Field>
+            <Field
+              label="Priority"
+              hint="Priority runs are claimed by the runner ahead of every other queued run."
+            >
+              <button
+                type="button"
+                onClick={() => setIsPriority((v) => !v)}
+                className={cn(
+                  'h-9 px-3 rounded-sm border font-mono text-[10px] tracking-widest transition-colors',
+                  isPriority
+                    ? 'text-signal border-signal/40 hover:bg-signal/10'
+                    : 'text-muted-foreground border-border hover:text-foreground'
+                )}
+              >
+                {isPriority ? '[PRIORITY]' : '[NORMAL]'}
+              </button>
             </Field>
           </div>
 
