@@ -52,6 +52,26 @@ interface BuildRow {
   build_tag?: string | null;
 }
 
+/**
+ * Resolve the actor for a version/build route AND verify the authenticated
+ * user owns it. Every handler in this file must call this before touching
+ * actor_versions/actor_builds — without it, any authenticated user who
+ * knows/guesses an actorId can read or mutate another user's versions and
+ * builds (see GH issue #77). Returns null on not-found-or-not-owned; the
+ * caller sends the same 404 record-not-found shape used everywhere else
+ * (actors.ts, runs.ts, datasets.ts) rather than leaking which case it was.
+ */
+async function getOwnedActor(
+  actorId: string,
+  userId: string
+): Promise<{ id: string; name: string } | null> {
+  const result = await query<{ id: string; name: string }>(
+    'SELECT id, name FROM actors WHERE id = $1 AND user_id = $2',
+    [actorId, userId]
+  );
+  return result.rows[0] ?? null;
+}
+
 export const registryRoutes: FastifyPluginAsync = async (fastify) => {
   // All routes require authentication
   fastify.addHook('preHandler', authenticate);
@@ -59,21 +79,30 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
   /**
    * GET /v2/acts/:actorId/versions - List all versions
    */
-  fastify.get<{ Params: { actorId: string } }>('/acts/:actorId/versions', async (request) => {
-    const { actorId } = request.params;
+  fastify.get<{ Params: { actorId: string } }>(
+    '/acts/:actorId/versions',
+    async (request, reply) => {
+      const { actorId } = request.params;
 
-    const result = await query<VersionRow>(
-      `SELECT * FROM actor_versions WHERE actor_id = $1 ORDER BY created_at DESC`,
-      [actorId]
-    );
+      const actor = await getOwnedActor(actorId, request.user!.id);
+      if (!actor) {
+        reply.status(404);
+        return { error: { type: 'record-not-found', message: 'Actor not found' } };
+      }
 
-    return {
-      data: {
-        total: result.rows.length,
-        items: result.rows.map(formatVersion),
-      },
-    };
-  });
+      const result = await query<VersionRow>(
+        `SELECT * FROM actor_versions WHERE actor_id = $1 ORDER BY created_at DESC`,
+        [actorId]
+      );
+
+      return {
+        data: {
+          total: result.rows.length,
+          items: result.rows.map(formatVersion),
+        },
+      };
+    }
+  );
 
   /**
    * POST /v2/acts/:actorId/versions - Create new version
@@ -92,9 +121,8 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
     const { actorId } = request.params;
     const { versionNumber, sourceType, sourceUrl, dockerfile, buildTag, envVars } = request.body;
 
-    // Check actor exists
-    const actor = await query('SELECT id FROM actors WHERE id = $1', [actorId]);
-    if (!actor.rows[0]) {
+    const actor = await getOwnedActor(actorId, request.user!.id);
+    if (!actor) {
       reply.status(404);
       return { error: { type: 'record-not-found', message: 'Actor not found' } };
     }
@@ -140,6 +168,12 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const { actorId, versionId } = request.params;
 
+      const actor = await getOwnedActor(actorId, request.user!.id);
+      if (!actor) {
+        reply.status(404);
+        return { error: { type: 'record-not-found', message: 'Actor not found' } };
+      }
+
       const result = await query<VersionRow>(
         `SELECT * FROM actor_versions WHERE id = $1 AND actor_id = $2`,
         [versionId, actorId]
@@ -162,6 +196,12 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const { actorId, versionId } = request.params;
 
+      const actor = await getOwnedActor(actorId, request.user!.id);
+      if (!actor) {
+        reply.status(404);
+        return { error: { type: 'record-not-found', message: 'Actor not found' } };
+      }
+
       await query(`DELETE FROM actor_versions WHERE id = $1 AND actor_id = $2`, [
         versionId,
         actorId,
@@ -174,8 +214,14 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
   /**
    * GET /v2/acts/:actorId/builds - List all builds
    */
-  fastify.get<{ Params: { actorId: string } }>('/acts/:actorId/builds', async (request) => {
+  fastify.get<{ Params: { actorId: string } }>('/acts/:actorId/builds', async (request, reply) => {
     const { actorId } = request.params;
+
+    const actor = await getOwnedActor(actorId, request.user!.id);
+    if (!actor) {
+      reply.status(404);
+      return { error: { type: 'record-not-found', message: 'Actor not found' } };
+    }
 
     // LEFT JOIN actor_versions so the dashboard can show "0.1 (latest)"
     // alongside the image, without an N+1 lookup per row. LEFT JOIN (not
@@ -183,10 +229,10 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
     // SET NULL when a version was deleted.
     const result = await query<BuildRow>(
       `SELECT b.*, v.version_number, v.build_tag
-         FROM actor_builds b
-         LEFT JOIN actor_versions v ON v.id = b.version_id
-        WHERE b.actor_id = $1
-        ORDER BY b.created_at DESC`,
+           FROM actor_builds b
+           LEFT JOIN actor_versions v ON v.id = b.version_id
+          WHERE b.actor_id = $1
+          ORDER BY b.created_at DESC`,
       [actorId]
     );
 
@@ -212,15 +258,14 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
     const { actorId } = request.params;
     const { versionId, gitBranch, gitCommit } = request.body;
 
-    // Check actor exists
-    const actor = await query('SELECT id, name FROM actors WHERE id = $1', [actorId]);
-    if (!actor.rows[0]) {
+    const actor = await getOwnedActor(actorId, request.user!.id);
+    if (!actor) {
       reply.status(404);
       return { error: { type: 'record-not-found', message: 'Actor not found' } };
     }
 
     const id = nanoid();
-    const imageName = `crawlee-cloud/${actor.rows[0].name}:${id.slice(0, 8)}`;
+    const imageName = `crawlee-cloud/${actor.name}:${id.slice(0, 8)}`;
 
     const result = await query<BuildRow>(
       `INSERT INTO actor_builds 
@@ -255,6 +300,12 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const { actorId, buildId } = request.params;
 
+      const actor = await getOwnedActor(actorId, request.user!.id);
+      if (!actor) {
+        reply.status(404);
+        return { error: { type: 'record-not-found', message: 'Actor not found' } };
+      }
+
       const result = await query<BuildRow>(
         `SELECT * FROM actor_builds WHERE id = $1 AND actor_id = $2`,
         [buildId, actorId]
@@ -277,8 +328,14 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const { actorId, buildId } = request.params;
 
+      const actor = await getOwnedActor(actorId, request.user!.id);
+      if (!actor) {
+        reply.status(404);
+        return { error: { type: 'record-not-found', message: 'Actor not found' } };
+      }
+
       const result = await query<BuildRow>(
-        `UPDATE actor_builds 
+        `UPDATE actor_builds
          SET status = 'ABORTED', finished_at = NOW()
          WHERE id = $1 AND actor_id = $2 AND status = 'RUNNING'
          RETURNING *`,
@@ -300,10 +357,29 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get<{
     Params: { actorId: string; buildId: string };
     Querystring: { offset?: string; limit?: string };
-  }>('/acts/:actorId/builds/:buildId/logs', async (request) => {
-    const { buildId } = request.params;
+  }>('/acts/:actorId/builds/:buildId/logs', async (request, reply) => {
+    const { actorId, buildId } = request.params;
     const offset = parseInt(request.query.offset || '0', 10);
     const limit = parseInt(request.query.limit || '100', 10);
+
+    const actor = await getOwnedActor(actorId, request.user!.id);
+    if (!actor) {
+      reply.status(404);
+      return { error: { type: 'record-not-found', message: 'Actor not found' } };
+    }
+
+    // Confirm the build itself belongs to this actor — the ownership check
+    // above only proves the caller owns actorId, not that buildId (read
+    // straight from Redis by id, with no actor scoping of its own) is
+    // actually one of that actor's builds.
+    const build = await query<{ id: string }>(
+      `SELECT id FROM actor_builds WHERE id = $1 AND actor_id = $2`,
+      [buildId, actorId]
+    );
+    if (!build.rows[0]) {
+      reply.status(404);
+      return { error: { type: 'record-not-found', message: 'Build not found' } };
+    }
 
     const logs = await redis.lrange(`build_logs:${buildId}`, offset, offset + limit - 1);
 
