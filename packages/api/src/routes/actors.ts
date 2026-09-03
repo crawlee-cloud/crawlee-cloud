@@ -237,6 +237,15 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
       proxyPassword,
     } = CreateActorSchema.parse(request.body);
 
+    // is_priority reorders the SHARED runner queue ahead of every other
+    // tenant's runs (see claimNextRun in packages/runner/src/queue.ts) —
+    // letting any user flip it on their own actor would let them starve
+    // everyone else's queue. Only admins may set it.
+    if (isPriority !== undefined && request.user!.role !== 'admin') {
+      reply.status(403);
+      return { error: { type: 'forbidden', message: 'Only admins can set isPriority' } };
+    }
+
     // Three-state proxyPassword semantics matching PUT /v2/acts/:id:
     //   undefined → preserve existing (update) / null on insert
     //   null      → explicit clear
@@ -352,6 +361,13 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
   }>('/acts/:actorId', async (request, reply) => {
     const { actorId } = request.params;
     const updates = UpdateActorSchema.parse(request.body);
+
+    // Same admin-only gate as POST /acts — is_priority reorders the shared
+    // runner queue ahead of every other tenant's runs.
+    if (updates.isPriority !== undefined && request.user!.role !== 'admin') {
+      reply.status(403);
+      return { error: { type: 'forbidden', message: 'Only admins can set isPriority' } };
+    }
 
     const setClauses: string[] = ['modified_at = NOW()'];
     const values: unknown[] = [];

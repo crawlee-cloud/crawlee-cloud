@@ -98,7 +98,7 @@ describe('runSchedulerTick', () => {
     // triggerScheduledRun looks up the actor's default_run_options first;
     // return a row so the function doesn't bail on the missing-actor path.
     mockQuery
-      .mockResolvedValueOnce({ rows: [{ default_run_options: null }] }) // SELECT actor defaults
+      .mockResolvedValueOnce({ rows: [{ default_run_options: null, is_priority: true }] }) // SELECT actor defaults + priority
       .mockResolvedValue({ rows: [] }); // datasets / kv / queues / runs INSERTs
 
     await runSchedulerTick();
@@ -119,6 +119,12 @@ describe('runSchedulerTick', () => {
     expect(runInsertCall[0]).toContain('timeout_secs');
     expect(runInsertCall[1]).toContain(3600);
     expect(runInsertCall[1]).toContain(1024);
+
+    // Scheduled runs of a priority actor must carry is_priority forward —
+    // previously this INSERT omitted the column, silently defeating
+    // priority queue-jumping for every cron-triggered run.
+    expect(runInsertCall[0]).toContain('is_priority');
+    expect(runInsertCall[1]).toContain(true);
 
     const updateCall = mockClientQuery.mock.calls[1];
     expect(updateCall[0]).toMatch(/UPDATE schedules\s+SET last_run_at = NOW\(\),\s+next_run_at/);

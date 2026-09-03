@@ -7,10 +7,12 @@ import type { FastifyInstance } from 'fastify';
 import Fastify from 'fastify';
 import { ZodError } from 'zod';
 
-// Mock authenticate middleware BEFORE importing routes
+// Mock authenticate middleware BEFORE importing routes. Mutable so the
+// isPriority admin-gate tests can request an 'admin' role for a single test.
+const testUserRole = { current: 'user' as 'user' | 'admin' };
 vi.mock('../src/auth/middleware.js', () => ({
   authenticate: async (request: { user?: { id: string; email: string; role: string } }) => {
-    request.user = { id: 'test-user-id', email: 'test@example.com', role: 'user' };
+    request.user = { id: 'test-user-id', email: 'test@example.com', role: testUserRole.current };
   },
 }));
 
@@ -86,6 +88,7 @@ describe('Actor Routes', () => {
   beforeEach(() => {
     mockQuery.mockReset();
     mockRedisPublish.mockReset();
+    testUserRole.current = 'user';
   });
 
   describe('GET /v2/acts', () => {
@@ -199,7 +202,8 @@ describe('Actor Routes', () => {
       expect(body.data.name).toBe('test-actor');
     });
 
-    it('persists isPriority and returns it on the created actor', async () => {
+    it('persists isPriority and returns it on the created actor (admin only)', async () => {
+      testUserRole.current = 'admin';
       mockQuery
         .mockResolvedValueOnce({ rows: [] }) // no existing
         .mockResolvedValueOnce({ rows: [createActorRow({ is_priority: true })] });
@@ -217,6 +221,17 @@ describe('Actor Routes', () => {
       const insertCall = mockQuery.mock.calls[1] as [string, unknown[]];
       expect(insertCall[0]).toMatch(/is_priority/);
       expect(insertCall[1]).toContain(true);
+    });
+
+    it('rejects isPriority from a non-admin user — priority reorders the shared runner queue', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/acts',
+        payload: { name: 'priority-actor', isPriority: true },
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(mockQuery).not.toHaveBeenCalled();
     });
 
     it('should update existing actor', async () => {
@@ -368,6 +383,34 @@ describe('Actor Routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
+    });
+
+    it('allows an admin to set isPriority via PUT', async () => {
+      testUserRole.current = 'admin';
+      mockQuery.mockResolvedValueOnce({ rows: [createActorRow({ is_priority: true })] });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/v2/acts/actor-1',
+        payload: { isPriority: true },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.data.isPriority).toBe(true);
+      const updateCall = mockQuery.mock.calls[0] as [string, unknown[]];
+      expect(updateCall[0]).toMatch(/is_priority/);
+    });
+
+    it('rejects a non-admin PUT setting isPriority', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/v2/acts/actor-1',
+        payload: { isPriority: true },
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(mockQuery).not.toHaveBeenCalled();
     });
 
     it('should persist defaultRunOptions on update', async () => {
