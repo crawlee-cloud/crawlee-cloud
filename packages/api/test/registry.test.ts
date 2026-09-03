@@ -29,6 +29,12 @@ vi.mock('../src/storage/redis.js', () => ({
   },
 }));
 
+// Returned by getOwnedActor (SELECT id, name FROM actors WHERE id = $1 AND
+// user_id = $2) — every handler now issues this as its FIRST query, so
+// every test below prepends this mock before its resource-specific mocks.
+const OWNED_ACTOR = { rows: [{ id: 'actor-1', name: 'test-actor' }] };
+const NOT_OWNED = { rows: [] };
+
 const createVersionRow = (overrides = {}) => ({
   id: 'ver-1',
   actor_id: 'actor-1',
@@ -81,7 +87,9 @@ describe('Registry Routes', () => {
 
   describe('GET /v2/acts/:actorId/versions', () => {
     it('lists versions in camelCase format', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [createVersionRow()] });
+      mockQuery
+        .mockResolvedValueOnce(OWNED_ACTOR)
+        .mockResolvedValueOnce({ rows: [createVersionRow()] });
 
       const response = await app.inject({ method: 'GET', url: '/v2/acts/actor-1/versions' });
 
@@ -97,16 +105,27 @@ describe('Registry Routes', () => {
         envVars: { FOO: 'bar' },
         isDeprecated: false,
       });
-      const [sql, params] = mockQuery.mock.calls[0] as [string, unknown[]];
+      const [sql, params] = mockQuery.mock.calls[1] as [string, unknown[]];
       expect(sql).toContain('FROM actor_versions');
       expect(params).toEqual(['actor-1']);
+    });
+
+    it('returns 404 for an actor owned by another user', async () => {
+      mockQuery.mockResolvedValueOnce(NOT_OWNED);
+
+      const response = await app.inject({ method: 'GET', url: '/v2/acts/actor-1/versions' });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json().error.type).toBe('record-not-found');
+      // The versions query must never run once ownership fails.
+      expect(mockQuery).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('POST /v2/acts/:actorId/versions', () => {
     it('creates a version with defaults and clears sibling build tags', async () => {
       mockQuery
-        .mockResolvedValueOnce({ rows: [{ id: 'actor-1' }] }) // actor exists
+        .mockResolvedValueOnce(OWNED_ACTOR)
         .mockResolvedValueOnce({ rows: [createVersionRow()] }); // insert
 
       const response = await app.inject({
@@ -127,7 +146,7 @@ describe('Registry Routes', () => {
     });
 
     it('returns 404 when the actor does not exist', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockQuery.mockResolvedValueOnce(NOT_OWNED);
 
       const response = await app.inject({
         method: 'POST',
@@ -140,9 +159,22 @@ describe('Registry Routes', () => {
       expect(mockQuery).toHaveBeenCalledTimes(1);
     });
 
+    it('returns 404 when the actor belongs to another user', async () => {
+      mockQuery.mockResolvedValueOnce(NOT_OWNED);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/acts/actor-1/versions',
+        payload: { versionNumber: '0.1' },
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+    });
+
     it('stores null env vars when none are provided', async () => {
       mockQuery
-        .mockResolvedValueOnce({ rows: [{ id: 'actor-1' }] })
+        .mockResolvedValueOnce(OWNED_ACTOR)
         .mockResolvedValueOnce({ rows: [createVersionRow({ env_vars: null })] });
 
       await app.inject({
@@ -158,28 +190,40 @@ describe('Registry Routes', () => {
 
   describe('GET /v2/acts/:actorId/versions/:versionId', () => {
     it('returns the version scoped to the actor', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [createVersionRow()] });
+      mockQuery
+        .mockResolvedValueOnce(OWNED_ACTOR)
+        .mockResolvedValueOnce({ rows: [createVersionRow()] });
 
       const response = await app.inject({ method: 'GET', url: '/v2/acts/actor-1/versions/ver-1' });
 
       expect(response.statusCode).toBe(200);
-      const [, params] = mockQuery.mock.calls[0] as [string, unknown[]];
+      const [, params] = mockQuery.mock.calls[1] as [string, unknown[]];
       expect(params).toEqual(['ver-1', 'actor-1']);
     });
 
     it('returns 404 for a missing version', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockQuery.mockResolvedValueOnce(OWNED_ACTOR).mockResolvedValueOnce({ rows: [] });
 
       const response = await app.inject({ method: 'GET', url: '/v2/acts/actor-1/versions/nope' });
 
       expect(response.statusCode).toBe(404);
       expect(response.json().error.message).toBe('Version not found');
     });
+
+    it('returns 404 (not "Version not found") for an actor owned by another user', async () => {
+      mockQuery.mockResolvedValueOnce(NOT_OWNED);
+
+      const response = await app.inject({ method: 'GET', url: '/v2/acts/actor-1/versions/ver-1' });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json().error.message).toBe('Actor not found');
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('DELETE /v2/acts/:actorId/versions/:versionId', () => {
     it('deletes idempotently and returns 204', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockQuery.mockResolvedValueOnce(OWNED_ACTOR).mockResolvedValueOnce({ rows: [] });
 
       const response = await app.inject({
         method: 'DELETE',
@@ -187,15 +231,30 @@ describe('Registry Routes', () => {
       });
 
       expect(response.statusCode).toBe(204);
-      const [sql, params] = mockQuery.mock.calls[0] as [string, unknown[]];
+      const [sql, params] = mockQuery.mock.calls[1] as [string, unknown[]];
       expect(sql).toContain('DELETE FROM actor_versions');
       expect(params).toEqual(['ver-1', 'actor-1']);
+    });
+
+    it('returns 404 and never deletes when the actor belongs to another user', async () => {
+      mockQuery.mockResolvedValueOnce(NOT_OWNED);
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/v2/acts/actor-1/versions/ver-1',
+      });
+
+      expect(response.statusCode).toBe(404);
+      // The DELETE must never fire once ownership fails — this is the
+      // "any user who knows an actor ID can delete its versions" bug
+      // (GH #77) — regression-locked by asserting no second query ran.
+      expect(mockQuery).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('GET /v2/acts/:actorId/builds', () => {
     it('lists builds with joined version info', async () => {
-      mockQuery.mockResolvedValueOnce({
+      mockQuery.mockResolvedValueOnce(OWNED_ACTOR).mockResolvedValueOnce({
         rows: [createBuildRow({ version_number: '0.1', build_tag: 'latest' })],
       });
 
@@ -212,12 +271,14 @@ describe('Registry Routes', () => {
         status: 'RUNNING',
         imageName: 'crawlee-cloud/test-actor:build-1',
       });
-      const [sql] = mockQuery.mock.calls[0] as [string];
+      const [sql] = mockQuery.mock.calls[1] as [string];
       expect(sql).toContain('LEFT JOIN actor_versions');
     });
 
     it('nulls the joined fields for builds whose version was deleted', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [createBuildRow({ version_id: null })] });
+      mockQuery
+        .mockResolvedValueOnce(OWNED_ACTOR)
+        .mockResolvedValueOnce({ rows: [createBuildRow({ version_id: null })] });
 
       const response = await app.inject({ method: 'GET', url: '/v2/acts/actor-1/builds' });
 
@@ -225,13 +286,22 @@ describe('Registry Routes', () => {
       expect(item.versionNumber).toBeNull();
       expect(item.buildTag).toBeNull();
     });
+
+    it('returns 404 for an actor owned by another user', async () => {
+      mockQuery.mockResolvedValueOnce(NOT_OWNED);
+
+      const response = await app.inject({ method: 'GET', url: '/v2/acts/actor-1/builds' });
+
+      expect(response.statusCode).toBe(404);
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('POST /v2/acts/:actorId/builds', () => {
     it('creates a RUNNING build and queues the job in Redis', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rows: [{ id: 'actor-1', name: 'test-actor' }] })
-        .mockResolvedValueOnce({ rows: [createBuildRow()] });
+      mockQuery.mockResolvedValueOnce(OWNED_ACTOR).mockResolvedValueOnce({
+        rows: [createBuildRow()],
+      });
       mockRedisRpush.mockResolvedValueOnce(1);
 
       const response = await app.inject({
@@ -261,7 +331,7 @@ describe('Registry Routes', () => {
     });
 
     it('returns 404 without queueing when the actor is missing', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockQuery.mockResolvedValueOnce(NOT_OWNED);
 
       const response = await app.inject({
         method: 'POST',
@@ -272,31 +342,55 @@ describe('Registry Routes', () => {
       expect(response.statusCode).toBe(404);
       expect(mockRedisRpush).not.toHaveBeenCalled();
     });
+
+    it('returns 404 without queueing when the actor belongs to another user', async () => {
+      mockQuery.mockResolvedValueOnce(NOT_OWNED);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/acts/actor-1/builds',
+        payload: {},
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(mockRedisRpush).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /v2/acts/:actorId/builds/:buildId', () => {
     it('returns the build scoped to the actor', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [createBuildRow()] });
+      mockQuery.mockResolvedValueOnce(OWNED_ACTOR).mockResolvedValueOnce({
+        rows: [createBuildRow()],
+      });
 
       const response = await app.inject({ method: 'GET', url: '/v2/acts/actor-1/builds/build-1' });
 
       expect(response.statusCode).toBe(200);
-      const [, params] = mockQuery.mock.calls[0] as [string, unknown[]];
+      const [, params] = mockQuery.mock.calls[1] as [string, unknown[]];
       expect(params).toEqual(['build-1', 'actor-1']);
     });
 
     it('returns 404 for a missing build', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockQuery.mockResolvedValueOnce(OWNED_ACTOR).mockResolvedValueOnce({ rows: [] });
 
       const response = await app.inject({ method: 'GET', url: '/v2/acts/actor-1/builds/nope' });
 
       expect(response.statusCode).toBe(404);
     });
+
+    it('returns 404 for an actor owned by another user', async () => {
+      mockQuery.mockResolvedValueOnce(NOT_OWNED);
+
+      const response = await app.inject({ method: 'GET', url: '/v2/acts/actor-1/builds/build-1' });
+
+      expect(response.statusCode).toBe(404);
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('POST /v2/acts/:actorId/builds/:buildId/abort', () => {
     it('aborts a RUNNING build', async () => {
-      mockQuery.mockResolvedValueOnce({
+      mockQuery.mockResolvedValueOnce(OWNED_ACTOR).mockResolvedValueOnce({
         rows: [createBuildRow({ status: 'ABORTED', finished_at: new Date() })],
       });
 
@@ -307,14 +401,14 @@ describe('Registry Routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json().data.status).toBe('ABORTED');
-      const [sql] = mockQuery.mock.calls[0] as [string];
+      const [sql] = mockQuery.mock.calls[1] as [string];
       // Only RUNNING builds are abortable — the guard lives in the WHERE.
       expect(sql).toContain("status = 'RUNNING'");
       expect(sql).toContain("SET status = 'ABORTED'");
     });
 
     it('returns 404 when the build is not running (or missing)', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockQuery.mockResolvedValueOnce(OWNED_ACTOR).mockResolvedValueOnce({ rows: [] });
 
       const response = await app.inject({
         method: 'POST',
@@ -324,10 +418,27 @@ describe('Registry Routes', () => {
       expect(response.statusCode).toBe(404);
       expect(response.json().error.message).toBe('Build not found or not running');
     });
+
+    it('returns 404 and never aborts when the actor belongs to another user', async () => {
+      mockQuery.mockResolvedValueOnce(NOT_OWNED);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/acts/actor-1/builds/build-1/abort',
+      });
+
+      expect(response.statusCode).toBe(404);
+      // The UPDATE must never fire once ownership fails — otherwise any
+      // user who knows an actor ID could abort its running builds.
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('GET /v2/acts/:actorId/builds/:buildId/logs', () => {
     it('reads the requested log window from Redis', async () => {
+      mockQuery
+        .mockResolvedValueOnce(OWNED_ACTOR) // actor ownership
+        .mockResolvedValueOnce({ rows: [{ id: 'build-1' }] }); // build belongs to actor
       mockRedisLrange.mockResolvedValueOnce([
         JSON.stringify({ line: 'step 1' }),
         JSON.stringify({ line: 'step 2' }),
@@ -346,6 +457,9 @@ describe('Registry Routes', () => {
     });
 
     it('defaults to offset 0 and limit 100', async () => {
+      mockQuery
+        .mockResolvedValueOnce(OWNED_ACTOR)
+        .mockResolvedValueOnce({ rows: [{ id: 'build-1' }] });
       mockRedisLrange.mockResolvedValueOnce([]);
 
       const response = await app.inject({
@@ -355,6 +469,32 @@ describe('Registry Routes', () => {
 
       expect(mockRedisLrange).toHaveBeenCalledWith('build_logs:build-1', 0, 99);
       expect(response.json().data.count).toBe(0);
+    });
+
+    it('returns 404 and never reads Redis when the actor belongs to another user', async () => {
+      mockQuery.mockResolvedValueOnce(NOT_OWNED);
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/acts/actor-1/builds/build-1/logs',
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(mockRedisLrange).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 and never reads Redis when the build belongs to a different actor', async () => {
+      // Owns actor-1, but build-1 belongs to some other actor — the
+      // buildId-only Redis read had no scoping at all before this fix.
+      mockQuery.mockResolvedValueOnce(OWNED_ACTOR).mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/acts/actor-1/builds/build-1/logs',
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(mockRedisLrange).not.toHaveBeenCalled();
     });
   });
 });
