@@ -96,6 +96,7 @@ export interface Actor {
   defaultRunOptions?: ActorDefaultRunOptions;
   maxRetries?: number;
   retryDelaySecs?: number;
+  isPriority?: boolean;
   hasProxyOverride: boolean;
   createdAt: string;
   modifiedAt: string;
@@ -950,6 +951,7 @@ export async function updateActor(
     defaultRunOptions: ActorDefaultRunOptions;
     maxRetries: number;
     retryDelaySecs: number;
+    isPriority: boolean;
     proxyPassword: string | null;
   }>
 ): Promise<Actor> {

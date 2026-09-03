@@ -25,6 +25,7 @@ interface ActorRow {
   default_run_options: Record<string, unknown> | null;
   max_retries: number;
   retry_delay_secs: number;
+  is_priority: boolean;
   proxy_password_encrypted: string | null;
   created_at: Date;
   modified_at: Date;
@@ -220,6 +221,7 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
       defaultRunOptions?: Record<string, unknown>;
       maxRetries?: number;
       retryDelaySecs?: number;
+      isPriority?: boolean;
       proxyPassword?: string | null;
     };
   }>('/acts', async (request, reply) => {
@@ -230,9 +232,19 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
       defaultRunOptions,
       maxRetries,
       retryDelaySecs,
+      isPriority,
       version,
       proxyPassword,
     } = CreateActorSchema.parse(request.body);
+
+    // is_priority reorders the SHARED runner queue ahead of every other
+    // tenant's runs (see claimNextRun in packages/runner/src/queue.ts) —
+    // letting any user flip it on their own actor would let them starve
+    // everyone else's queue. Only admins may set it.
+    if (isPriority !== undefined && request.user!.role !== 'admin') {
+      reply.status(403);
+      return { error: { type: 'forbidden', message: 'Only admins can set isPriority' } };
+    }
 
     // Three-state proxyPassword semantics matching PUT /v2/acts/:id:
     //   undefined → preserve existing (update) / null on insert
@@ -254,9 +266,9 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
         `
         UPDATE actors
         SET title = $1, description = $2, default_run_options = $3,
-            max_retries = $4, retry_delay_secs = $5,
-            proxy_password_encrypted = $6, modified_at = NOW()
-        WHERE name = $7 AND user_id = $8
+            max_retries = $4, retry_delay_secs = $5, is_priority = $6,
+            proxy_password_encrypted = $7, modified_at = NOW()
+        WHERE name = $8 AND user_id = $9
         RETURNING *
       `,
         [
@@ -267,6 +279,7 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
             : existing.rows[0].default_run_options,
           maxRetries ?? existing.rows[0].max_retries,
           retryDelaySecs ?? existing.rows[0].retry_delay_secs,
+          isPriority ?? existing.rows[0].is_priority,
           proxyParam === undefined ? existing.rows[0].proxy_password_encrypted : proxyParam,
           name,
           request.user!.id,
@@ -287,8 +300,8 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
     const id = nanoid();
     const result = await query<ActorRow>(
       `
-      INSERT INTO actors (id, name, user_id, title, description, default_run_options, max_retries, retry_delay_secs, proxy_password_encrypted)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      INSERT INTO actors (id, name, user_id, title, description, default_run_options, max_retries, retry_delay_secs, is_priority, proxy_password_encrypted)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       RETURNING *
     `,
       [
@@ -300,6 +313,7 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
         defaultRunOptions ? JSON.stringify(defaultRunOptions) : null,
         maxRetries ?? 0,
         retryDelaySecs ?? 60,
+        isPriority ?? false,
         encryptIfSet(proxyPassword) ?? null,
       ]
     );
@@ -341,11 +355,19 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
       defaultRunOptions?: Record<string, unknown>;
       maxRetries?: number;
       retryDelaySecs?: number;
+      isPriority?: boolean;
       proxyPassword?: string | null;
     };
   }>('/acts/:actorId', async (request, reply) => {
     const { actorId } = request.params;
     const updates = UpdateActorSchema.parse(request.body);
+
+    // Same admin-only gate as POST /acts — is_priority reorders the shared
+    // runner queue ahead of every other tenant's runs.
+    if (updates.isPriority !== undefined && request.user!.role !== 'admin') {
+      reply.status(403);
+      return { error: { type: 'forbidden', message: 'Only admins can set isPriority' } };
+    }
 
     const setClauses: string[] = ['modified_at = NOW()'];
     const values: unknown[] = [];
@@ -374,6 +396,10 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
     if (updates.retryDelaySecs !== undefined) {
       setClauses.push(`retry_delay_secs = $${paramIndex++}`);
       values.push(updates.retryDelaySecs);
+    }
+    if (updates.isPriority !== undefined) {
+      setClauses.push(`is_priority = $${paramIndex++}`);
+      values.push(updates.isPriority);
     }
     if (updates.proxyPassword !== undefined) {
       setClauses.push(`proxy_password_encrypted = $${paramIndex++}`);
@@ -645,8 +671,8 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
       created_at: Date;
     }>(
       `
-      INSERT INTO runs (id, actor_id, user_id, status, default_dataset_id, default_key_value_store_id, default_request_queue_id, timeout_secs, memory_mbytes, build_id, build_number)
-      VALUES ($1, $2, $3, 'READY', $4, $5, $6, $7, $8, $9, $10)
+      INSERT INTO runs (id, actor_id, user_id, status, default_dataset_id, default_key_value_store_id, default_request_queue_id, timeout_secs, memory_mbytes, build_id, build_number, is_priority)
+      VALUES ($1, $2, $3, 'READY', $4, $5, $6, $7, $8, $9, $10, $11)
       RETURNING *
     `,
       [
@@ -660,6 +686,7 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
         memory,
         buildId,
         buildNumber,
+        actor.rows[0].is_priority,
       ]
     );
 
@@ -749,6 +776,7 @@ function formatActor(row: ActorRow) {
     defaultRunOptions: row.default_run_options,
     maxRetries: row.max_retries,
     retryDelaySecs: row.retry_delay_secs,
+    isPriority: row.is_priority,
     hasProxyOverride: row.proxy_password_encrypted !== null,
     createdAt: row.created_at,
     modifiedAt: row.modified_at,

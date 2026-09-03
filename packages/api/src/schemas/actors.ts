@@ -35,6 +35,11 @@ export const CreateActorSchema = z.object({
     .optional(),
   maxRetries: z.number().int().min(0).max(10).optional(),
   retryDelaySecs: z.number().int().min(1).max(3600).optional(),
+  // When true, this actor's runs are claimed by the runner ahead of every
+  // other READY run (still subject to the memory/disk admission gates and
+  // MAX_CONCURRENT_RUNS — not a bypass of those). See claimNextRun in
+  // packages/runner/src/queue.ts.
+  isPriority: z.boolean().optional(),
   proxyPassword: z.string().min(1).max(256).nullable().optional(),
   // Source version string from .actor/actor.json (e.g. "0.0", "1.2").
   // When provided, the API upserts an actor_versions row and links the
