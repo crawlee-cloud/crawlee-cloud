@@ -18,10 +18,13 @@ Apify's MCP surface has three layers:
    - `storage`: `get-dataset`, `get-dataset-items`, `get-dataset-schema`,
      `get-dataset-list`, `get-key-value-store`, `get-key-value-store-record`,
      `get-key-value-store-keys`, `get-key-value-store-list`
-   - `tasks`: create/get/update actor tasks
+   - `tasks`: `create-actor-task`, `get-actor-task`, `update-actor-task`,
+     `publish-actor-task`, `unpublish-actor-task`
    - `schedules`: create/get/update/delete schedules
    - Named actors loadable as individual tools (`?tools=apify/rag-web-browser`),
      with input-schema-derived tool schemas and inferred **output schemas**.
+   - Default when no `?tools=` given: the `actors` and `docs` categories **plus**
+     two flagship actor tools (`apify/rag-web-browser`, `apify/web-fetch`).
    - Auto-injection: when `call-actor` or an actor tool is present, `get-actor-run`,
      `get-dataset-items`, `get-key-value-store-record`, `abort-actor-run` load too.
    - Tool annotations (`readOnlyHint`, `openWorldHint`, titles) on every tool.
@@ -48,9 +51,12 @@ widget rendering, Apify Store rental actors.
   (`routes/datasets.ts:178`, `runs.ts:1076`), KV keys/records
   (`routes/key-value-stores.ts:171/:207`), schedules (`routes/schedules.ts`).
 - Gaps vs. Apify:
-  - Run-start logic is inlined in `actors.ts:590-710` and duplicated in
-    `runs.ts` rerun — no shared service to call from MCP tools.
-  - `run-sync` (`actors.ts:732`) does not actually wait; no
+  - Run-start logic is inlined in `actors.ts:560-723` and duplicated twice:
+    the rerun endpoint (`runs.ts:716`, flagged KEEP-IN-SYNC) and the scheduler
+    (`scheduler.ts:152-166`, which already diverged — its INSERT skips build
+    stamping and the INPUT KV write). No shared service to call from MCP tools.
+  - `run-sync` (`actors.ts:729-739`) does not wait — it returns the raw
+    `fastify.inject` dispatch of the async endpoint; no
     `run-sync-get-dataset-items`.
   - `actors` / `actor_versions` tables have **no input schema and no README**
     columns — nothing to derive per-actor tool schemas from.
@@ -75,21 +81,30 @@ tool catalog, authenticated by existing API keys.
     structured). Tool names, input shapes, annotations (`readOnlyHint` etc.) and
     result JSON copy Apify's exactly.
   - `tool-selection.ts` — parses `?tools=` (categories, `user/actor-name`
-    selectors, comma-separated; `?actors=` back-compat alias), default set =
-    `actors,docs`, plus Apify's auto-injection rule.
+    selectors, comma-separated; `?actors=` back-compat alias), plus Apify's
+    auto-injection rule. Default set = `actors,docs`; Apify's default also
+    includes two flagship Store actors, which we can't mirror (no store) —
+    instead an operator env var (`MCP_DEFAULT_ACTOR_TOOLS`) may name local
+    actors to preload as tools. Deliberate deviation, documented.
 - New route `packages/api/src/routes/mcp.ts` (`FastifyPluginAsync`):
   - `POST /mcp` → transport.handleRequest; `GET /mcp` → 405 (stateless mode);
     mounted **unprefixed** (like health/metrics) at `index.ts:~150`, since
     Apify's server lives at the host root, not under the REST API version.
-  - `preHandler: authenticate` — Bearer token and `?token=` both already work
-    (`middleware.ts:36`). Unauthenticated requests get discovery-only tools
-    (`search-actors`, docs) mirroring Apify's limited anonymous mode.
-- **Refactor prerequisite:** extract `actors.ts:590-710` into
+  - `preHandler: optionalAuth` (not `authenticate`, which 401s) — Bearer
+    tokens work as-is; unauthenticated requests get discovery-only tools
+    (`search-actors`, docs), mirroring Apify's limited anonymous mode, and
+    every other tool returns an MCP error asking for a token. Note:
+    `optionalAuth` (`middleware.ts:86`) reads only the Authorization header
+    today — extend it with the same `?token=` query fallback `authenticate`
+    has (`middleware.ts:36`) for clients that can only configure a URL.
+- **Refactor prerequisite:** extract `actors.ts:560-723` into
   `packages/api/src/services/start-run.ts#startRun()` (storage-record creation,
   INPUT KV write, build lookup, `runs` INSERT, envVars Redis stash, webhook rows,
-  `redis.publish('run:new', runId)`), and reuse it from the REST route, rerun,
-  the scheduler, and the MCP `call-actor` tool. Removes the existing
-  KEEP-IN-SYNC duplication as a side benefit.
+  `redis.publish('run:new', runId)`), and reuse it from the REST route, rerun
+  (`runs.ts:716`), the scheduler (`scheduler.ts:152`), and the MCP
+  `call-actor` tool. Removes the KEEP-IN-SYNC duplication and fixes the
+  scheduler's existing divergence (no build stamp, no INPUT record) as a
+  side benefit.
 - `docs` category: `search-crawlee-cloud-docs` / `fetch-crawlee-cloud-docs`
   serving the markdown under `docs/` (build a small lunr/minisearch index at
   startup). Keep Apify's tool *shapes* so clients behave identically.
@@ -173,9 +188,14 @@ become MCP servers, reachable through the platform. Biggest lift.
   - Name containers `run-<runId>`, set `ExposedPorts`/`PortBindings` (or rely on
     shared `config.dockerNetwork` DNS), making the existing
     `APIFY_CONTAINER_URL=http://run-<runId>:4321` env var true instead of dead.
-  - Standby launches: set `APIFY_STANDBY_MODE=1`, wait for readiness probe on
-    the container port, then write `runs.container_url`; no timeout kill, idle
-    timeout instead (terminate after N seconds without proxied requests).
+  - Standby launches use Apify's real env contract (verified against
+    `apify-shared-js` consts): `APIFY_META_ORIGIN=STANDBY` (how the SDK
+    detects standby), `ACTOR_STANDBY_PORT` / `ACTOR_STANDBY_URL`,
+    `ACTOR_WEB_SERVER_PORT` / `ACTOR_WEB_SERVER_URL` (modern aliases of the
+    legacy `APIFY_CONTAINER_PORT/URL` the runner already sets — set both,
+    default port 4321). Wait for a readiness probe on the container port,
+    then write `runs.container_url`; no timeout kill, idle timeout instead
+    (terminate after N seconds without proxied requests).
 - API: reverse-proxy route `ALL /v2/acts/:actorId/standby/*` (via
   `@fastify/http-proxy`) → resolve/start a standby run (cold start on first
   request, like Apify), forward with streaming; count in-flight requests for
@@ -190,8 +210,9 @@ become MCP servers, reachable through the platform. Biggest lift.
 - **Actor tasks** (prereq for the `tasks` MCP category): `tasks` table
   (actor_id, name, input JSONB, options), REST CRUD at `/v2/actor-tasks`
   (Apify shapes), `POST /v2/actor-tasks/:id/runs`, then MCP
-  `create/get/update-actor-task` tools. Schedules already exist — only tools
-  needed.
+  `create/get/update-actor-task` tools (`publish/unpublish-actor-task` are
+  Store-coupled — expose as no-op-with-message or omit; deviation documented).
+  Schedules already exist — only tools needed.
 - **OAuth 2.1** (MCP spec authorization) so claude.ai/web clients can connect
   without pasting keys: authorization-code + PKCE endpoints issuing short-lived
   tokens bound to an API key; `.well-known/oauth-protected-resource` metadata.
