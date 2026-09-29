@@ -121,7 +121,7 @@ export const config: Config = {
   redisUrl: env('REDIS_URL', 'redis://localhost:6379'),
 
   dockerSocketPath: env('DOCKER_SOCKET', '/var/run/docker.sock'),
-  dockerNetwork: env('DOCKER_NETWORK', 'crawlee-cloud_default'),
+  dockerNetwork: env('DOCKER_NETWORK', 'crawlee-network'),
 
   imageRegistry: env('IMAGE_REGISTRY', ''),
   imageRegistryUser: env('IMAGE_REGISTRY_USER', ''),

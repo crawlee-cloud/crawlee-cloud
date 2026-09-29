@@ -168,5 +168,5 @@ export const config: Config = {
   schedulerTickSecs: envIntPositive('SCHEDULER_TICK_SECS', 30),
 
   // Run cost analysis — Apify Starter-plan CU rate by default.
-  apifyCuPrice: envFloat('APIFY_CU_PRICE', 0.4),
+  apifyCuPrice: envFloat('APIFY_CU_PRICE', 0.16),
 };

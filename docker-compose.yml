@@ -7,6 +7,9 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.api
+    env_file:
+      - path: .env
+        required: false
     ports:
       - '3000:3000'
     environment:
@@ -24,11 +27,11 @@ services:
       # API secret must be 32+ chars in production
       - API_SECRET=docker-compose-dev-secret-32chars-change-me
       # CORS origins whitelist
-      - CORS_ORIGINS=http://localhost:3000,http://localhost:3001,http://dashboard:3001
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:3001,http://dashboard:3001}
       - RATE_LIMIT_MAX=1000
       - LOG_LEVEL=info
-      - ADMIN_EMAIL=admin@crawlee.cloud
-      - ADMIN_PASSWORD=crawlee.cloud
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@crawlee.cloud}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-crawlee.cloud}
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,6 +47,9 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.runner
+    env_file:
+      - path: .env
+        required: false
     environment:
       - NODE_ENV=development
       - API_BASE_URL=http://api:3000
@@ -51,7 +57,7 @@ services:
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/crawlee_cloud
       - REDIS_URL=redis://redis:6379
       - DOCKER_SOCKET=/var/run/docker.sock
-      - DOCKER_NETWORK=crawlee-platfrom_crawlee-network
+      - DOCKER_NETWORK=crawlee-network
       - MAX_CONCURRENT_RUNS=10
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -67,6 +73,9 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.dashboard
+    env_file:
+      - path: .env
+        required: false
     ports:
       - '3001:3001'
     environment:
@@ -179,6 +188,9 @@ services:
 
 networks:
   crawlee-network:
+    # Fixed name (no project prefix) so the runner can attach Actor
+    # containers to it regardless of the checkout directory name.
+    name: crawlee-network
     driver: bridge
 
 volumes:

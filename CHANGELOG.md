@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **Default docker-compose install runs Actors** — the runner put Actor containers on `crawlee-platfrom_crawlee-network` (a typo'd, project-prefixed name that never existed), so runs failed at container create. The compose network is now pinned with `name: crawlee-network`, the runner's `DOCKER_NETWORK` default changed from `crawlee-cloud_default` to `crawlee-network`, and `.env.example` matches.
+- **API container applies migrations on start** — `docker/Dockerfile.api` runs `node packages/api/dist/db/migrate.js` before the server and fails fast if it errors; the SQL is idempotent, so restarts are safe. Previously a fresh compose install had no schema.
+- **Compose reads `.env`** — api, runner, and dashboard load `.env` via `env_file` (optional, so a missing `.env` still boots). `ADMIN_EMAIL`, `ADMIN_PASSWORD`, and `CORS_ORIGINS` in the api service now interpolate from `.env` with the previous values as fallbacks, and are documented in `.env.example`.
+
+### Changed
+
+- **`APIFY_CU_PRICE` default `0.40` → `0.16`** — the Apify Scale plan per-CU price. Deploy note: "same run on Apify" estimates and savings % drop accordingly; set `APIFY_CU_PRICE=0.40` to keep the old figures.
+
 ## [1.6.0] - 2026-08-05
 
 Disk-pressure protection for the runner fleet plus an Apify-parity fix on dataset reads: a full runner disk can no longer black-hole the READY queue, and `GET /v2/datasets/:id/items` without a `limit` now returns the whole dataset like real Apify does. Also: community feedback funnels, and the npm publish pipeline un-wedged (npm still served 1.0.1 while the repo was at 1.5.0).

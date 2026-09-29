@@ -43,4 +43,8 @@ EXPOSE 3000
 
 ENV NODE_ENV=production
 
-CMD ["node", "packages/api/dist/index.js"]
+# Apply schema migrations before the server starts. The SQL is idempotent
+# (IF NOT EXISTS / ADD COLUMN IF NOT EXISTS), so this is safe on every
+# restart; `&&` fails the container fast if migrations fail. Uses the
+# compiled migrate.js because `npm run db:migrate` needs tsx (a devDependency).
+CMD ["sh", "-c", "node packages/api/dist/db/migrate.js && exec node packages/api/dist/index.js"]

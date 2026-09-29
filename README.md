@@ -227,6 +227,8 @@ See [deploy/](deploy/) for detailed instructions.
 The 1.1–1.5 line that led here covered: the zombie-run reliability overhaul from a live production incident — Redis-blip-proof dead-runner detection, a zombie-run reaper, OOM kills made visible, failed-run logs archived to KV, prebuilt runner images cutting ~4.5 min off scale-up (v1.1.x); memory-aware placement, fast dead-runner reap, and the claim-time cost-attribution stamps (v1.2.0); ingest hot-path performance and runner-key self-healing (v1.2.1/1.2.2); the run-details cost analysis card (v1.3.0); per-run cost across the runs list, backed by the batch cost endpoint `GET /v2/actor-runs/costs` (v1.4.0); and safe actor force-deletion, webhook SSRF loopback fixes, and the first enforced test-coverage floors in CI (v1.5.0).
 
 > **Upgrading from v1.5.0 to v1.6.0** is a drop-in: no schema migration, no required env-var changes — redeploy the API (dataset fix) and runners (disk gate). The new `RUNNER_DISK_*` thresholds only need tuning if the 90/80 defaults don't fit your disk sizes. From v1.0.x or earlier, walk the [CHANGELOG](CHANGELOG.md) forward — deploy notes are flagged inline at each release.
+>
+> **Unreleased (next release):** the Apify cost estimate's `APIFY_CU_PRICE` default drops from `0.40` to `0.16` (Apify Scale plan), so "same run on Apify" figures and savings % on existing runs will read lower — set `APIFY_CU_PRICE` to keep the old rate. docker-compose users: the API container now runs migrations on start, the compose network is pinned to `crawlee-network` (was `<project>_crawlee-network`), and `.env` is loaded into the api/runner/dashboard services. Run `docker compose down` before upgrading so the old project-prefixed network is removed.
 
 ---
 
