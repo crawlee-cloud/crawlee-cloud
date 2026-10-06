@@ -105,11 +105,21 @@ export async function runMigrations(): Promise<void> {
 }
 
 /**
+ * Unique, slug-shaped username for a test user: `test-<user id>`, with
+ * the nanoid lowercased and its `_`/`-` mapped to `0` so it matches the
+ * users.username pattern.
+ */
+export function testUsername(userId: string): string {
+  return `test-${userId.toLowerCase().replace(/[^a-z0-9]/g, '0')}`;
+}
+
+/**
  * Create a test user and return a valid JWT token.
  */
 export async function createTestUser(
   email = 'test@integration.local',
-  password = 'testpassword123'
+  password = 'testpassword123',
+  username?: string
 ): Promise<{ userId: string; token: string }> {
   const { hashPassword, createToken } = await import('../../src/auth/index.js');
   const { pool } = await import('../../src/db/index.js');
@@ -119,9 +129,9 @@ export async function createTestUser(
   const passwordHash = await hashPassword(password);
 
   await pool.query(
-    `INSERT INTO users (id, email, password_hash, role) VALUES ($1, $2, $3, 'user')
-     ON CONFLICT (email) DO UPDATE SET password_hash = $3 RETURNING id`,
-    [userId, email, passwordHash]
+    `INSERT INTO users (id, email, username, password_hash, role) VALUES ($1, $2, $3, $4, 'user')
+     ON CONFLICT (email) DO UPDATE SET password_hash = $4 RETURNING id`,
+    [userId, email, username ?? testUsername(userId), passwordHash]
   );
 
   const token = createToken({ userId, email, role: 'user' });

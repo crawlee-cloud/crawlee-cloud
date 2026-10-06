@@ -280,6 +280,8 @@ export interface Dataset {
 export interface User {
   id: string;
   email: string;
+  /** URL- and tool-name-safe slug; served by /v2/users/me and /v2/auth/me. */
+  username?: string;
   name?: string;
   role: string;
   proxy?: { password: string; groups: unknown[] };
