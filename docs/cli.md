@@ -311,8 +311,8 @@ crawlee-cloud call <actor> [options]
 | `--input, -i`   | Input JSON or path to JSON file             |
 | `--env, -e`     | Environment variable KEY=VALUE (repeatable) |
 | `--wait, -w`    | Wait for run to finish                      |
-| `--timeout, -t` | Timeout in seconds (default: 3600)          |
-| `--memory, -m`  | Memory in MB (default: 1024)                |
+| `--timeout, -t` | Timeout in seconds (default: actor setting) |
+| `--memory, -m`  | Memory in MB (default: actor setting)       |
 
 **Examples:**
 
@@ -328,6 +328,10 @@ crc call my-actor -e KEY1=val1 -e KEY2=val2
 ```
 
 > **Tip:** The `-e` flag can be repeated to pass multiple environment variables in a single call.
+
+Without `--timeout` / `--memory` the run uses the Actor's default run options (`defaultRunOptions` in `actor.json`).
+
+`call` sends the Apify run-start request (the input as the body, options in the query string) to APIs that report version 1.7.0 or later on `GET /health`, and the legacy wrapped body to older ones. Set `CRAWLEE_CLOUD_RUN_BODY=apify` or `legacy` to force one.
 
 ---
 
@@ -419,5 +423,6 @@ If you have a legacy flat config file (just `{ apiBaseUrl, token }` at the top l
 | `CRAWLEE_CLOUD_TOKEN`        | Override the active profile's API token                            |
 | `CRAWLEE_CLOUD_PROFILE`      | Use this profile for the current invocation (overrides active)     |
 | `CRAWLEE_CLOUD_REGISTRY_URL` | Docker registry URL used by `crc push` for image push, optional    |
+| `CRAWLEE_CLOUD_RUN_BODY`     | Force the `call` run-start request shape: `apify` or `legacy`      |
 | `GHCR_TOKEN`                 | GitHub Container Registry token used by the `crc push --ghcr` path |
 | `GHCR_USER`                  | GHCR username for `crc push --ghcr` (default: `github`)            |
