@@ -549,4 +549,196 @@ describe('Dataset Routes', () => {
       expect(JSON.parse(response.body)).toHaveLength(2);
     });
   });
+  describe('GET /v2/datasets/:datasetId/items — fields / omit / desc (Apify parity)', () => {
+    const datasetRow = (itemCount: number) => ({
+      rows: [
+        {
+          id: 'ds-1',
+          name: 'test',
+          user_id: null,
+          created_at: new Date(),
+          modified_at: new Date(),
+          accessed_at: new Date(),
+          item_count: itemCount,
+        },
+      ],
+    });
+    const row = (i: number) => ({ rank: i, title: `t${i}`, price: i * 10 });
+    const rows = (from: number, to: number) =>
+      Array.from({ length: to - from }, (_, i) => row(from + i));
+    const yieldAll = (all: unknown[]) =>
+      mockIterateDatasetItems.mockImplementationOnce(async function* () {
+        for (const item of all) yield item;
+      });
+
+    it('?fields=title keeps only title on the paginated branch', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(3));
+      mockListDatasetItems.mockResolvedValueOnce({ items: rows(0, 3), total: 3 });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/datasets/ds-1/items?limit=10&fields=title',
+      });
+
+      expect(JSON.parse(response.body)).toEqual([
+        { title: 't0' },
+        { title: 't1' },
+        { title: 't2' },
+      ]);
+    });
+
+    it('?fields=title keeps only title on the streaming (no limit) branch', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(2));
+      yieldAll(rows(0, 2));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/datasets/ds-1/items?fields=title',
+      });
+
+      expect(JSON.parse(response.body)).toEqual([{ title: 't0' }, { title: 't1' }]);
+    });
+
+    it('?fields=title keeps only title on the download branch', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(2));
+      yieldAll(rows(0, 2));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/datasets/ds-1/items?download=1&fields=title',
+      });
+
+      expect(response.headers['content-disposition']).toContain('attachment');
+      expect(JSON.parse(response.body)).toEqual([{ title: 't0' }, { title: 't1' }]);
+    });
+
+    it('?fields=price,rank returns keys in the requested order and skips missing ones', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(1));
+      mockListDatasetItems.mockResolvedValueOnce({ items: [row(1)], total: 1 });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/datasets/ds-1/items?limit=1&fields=price,nope,rank',
+      });
+
+      const [item] = JSON.parse(response.body);
+      expect(Object.keys(item)).toEqual(['price', 'rank']);
+    });
+
+    it('?omit=price drops price', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(1));
+      mockListDatasetItems.mockResolvedValueOnce({ items: [row(1)], total: 1 });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/datasets/ds-1/items?limit=1&omit=price',
+      });
+
+      expect(JSON.parse(response.body)).toEqual([{ rank: 1, title: 't1' }]);
+    });
+
+    it('applies omit after fields', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(1));
+      mockListDatasetItems.mockResolvedValueOnce({ items: [row(1)], total: 1 });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/datasets/ds-1/items?limit=1&fields=title,price&omit=price',
+      });
+
+      expect(JSON.parse(response.body)).toEqual([{ title: 't1' }]);
+    });
+
+    it('?fields=&omit=&flatten= (apify-client / MCP empty arrays) returns full items', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(2));
+      mockListDatasetItems.mockResolvedValueOnce({ items: rows(0, 2), total: 2 });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/datasets/ds-1/items?limit=2&fields=&omit=&flatten=',
+      });
+
+      expect(JSON.parse(response.body)).toEqual(rows(0, 2));
+    });
+
+    it('passes non-object items through projection untouched', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(2));
+      mockListDatasetItems.mockResolvedValueOnce({ items: ['plain', null], total: 2 });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/datasets/ds-1/items?limit=2&fields=title',
+      });
+
+      expect(JSON.parse(response.body)).toEqual(['plain', null]);
+    });
+
+    it('?desc=1&limit=2 reads the last two items and returns them newest first', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(5));
+      mockListDatasetItems.mockResolvedValueOnce({ items: rows(3, 5), total: 5 });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/datasets/ds-1/items?desc=1&limit=2',
+      });
+
+      expect(mockListDatasetItems).toHaveBeenCalledWith('ds-1', { offset: 3, limit: 2, total: 5 });
+      expect(JSON.parse(response.body)).toEqual([row(4), row(3)]);
+      // Headers keep their meaning: the requested offset / limit.
+      expect(response.headers['x-apify-pagination-total']).toBe('5');
+      expect(response.headers['x-apify-pagination-offset']).toBe('0');
+      expect(response.headers['x-apify-pagination-limit']).toBe('2');
+    });
+
+    it('desc offset counts from the end, and the first page clamps at item 0', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(5));
+      mockListDatasetItems.mockResolvedValueOnce({ items: rows(0, 1), total: 5 });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/datasets/ds-1/items?desc=true&offset=4&limit=3',
+      });
+
+      // Window [5 - 4 - 3, 5 - 4) = [-2, 1) → clamped to [0, 1).
+      expect(mockListDatasetItems).toHaveBeenCalledWith('ds-1', { offset: 0, limit: 1, total: 5 });
+      expect(JSON.parse(response.body)).toEqual([row(0)]);
+    });
+
+    it('desc offset past the end returns [] without reading S3', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(5));
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/datasets/ds-1/items?desc=1&offset=5&limit=3',
+      });
+
+      expect(JSON.parse(response.body)).toEqual([]);
+      expect(mockListDatasetItems).not.toHaveBeenCalled();
+      expect(response.headers['x-apify-pagination-total']).toBe('5');
+    });
+
+    it('desc on the streaming branch iterates in reverse and skips offset from the end', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(4));
+      // The mock stands in for iterateDatasetItems(…, { reverse: true }).
+      yieldAll(rows(0, 4).reverse());
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/datasets/ds-1/items?desc=1&offset=1',
+      });
+
+      expect(mockIterateDatasetItems).toHaveBeenCalledWith('ds-1', { reverse: true });
+      expect(JSON.parse(response.body)).toEqual([row(2), row(1), row(0)]);
+      expect(response.headers['x-apify-pagination-limit']).toBe('3');
+    });
+
+    it('treats desc values other than 1/true as ascending', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(2));
+      yieldAll(rows(0, 2));
+
+      await app.inject({ method: 'GET', url: '/v2/datasets/ds-1/items?desc=0' });
+
+      expect(mockIterateDatasetItems).toHaveBeenCalledWith('ds-1', { reverse: false });
+    });
+  });
 });

@@ -4,6 +4,8 @@
  * and the processWebhookRetries drain loop.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import type pg from 'pg';
 import type { Redis } from 'ioredis';
 import {
@@ -377,6 +379,41 @@ describe('processWebhookRetries', () => {
     expect(db.query).toHaveBeenCalledTimes(4);
   });
 
+  // Aborting a READY run never reaches a runner: the API inserts a
+  // PENDING ACTOR.RUN.ABORTED row with next_retry_at = NOW() and this
+  // processor is what sends it (api routes/runs.ts → queueAbortedWebhooks).
+  it('delivers an API-queued ACTOR.RUN.ABORTED row for a run that never started', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('ok') });
+    vi.stubGlobal('fetch', fetchMock);
+    const abortedRun: RunJob = {
+      ...RUN,
+      status: 'ABORTED',
+      started_at: null,
+      finished_at: new Date('2026-10-06T10:00:00Z'),
+    };
+    const db = mockPool(
+      { rows: [{ ...CLAIMED, event_type: 'ACTOR.RUN.ABORTED' }] },
+      { rows: [WEBHOOK_ROW] },
+      { rows: [abortedRun] },
+      { rows: [] } // DELIVERED update
+    );
+
+    await processWebhookRetries(db);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, { body: string }];
+    expect(url).toBe(WEBHOOK_ROW.request_url);
+    const body = JSON.parse(init.body);
+    expect(body.eventType).toBe('ACTOR.RUN.ABORTED');
+    expect(body.resource.status).toBe('ABORTED');
+    expect(body.resource.startedAt).toBeNull();
+    expect(body.resource.stats.runTimeSecs).toBe(0);
+    const [deliveredSql] = db.query.mock.calls[3] as [string];
+    expect(deliveredSql).toContain("status = 'DELIVERED'");
+  });
+
   it('contains claim errors instead of crashing the interval loop', async () => {
     const db = { query: vi.fn().mockRejectedValue(new Error('pg reset')) } as unknown as pg.Pool;
     await expect(processWebhookRetries(db)).resolves.toBeUndefined();
@@ -411,5 +448,44 @@ describe('isInfraFailure', () => {
 
   it('does not classify actor errors as infra failures', () => {
     expect(isInfraFailure('Container exited with code 1')).toBe(false);
+  });
+});
+
+// KEEP-IN-SYNC guard: the API queues READY-abort deliveries itself
+// (packages/api/src/routes/runs.ts → queueAbortedWebhooks), so its webhook
+// matching rules and delivery-row columns must stay identical to
+// triggerWebhooks here — otherwise a READY abort notifies a different
+// webhook set than a RUNNING abort. Compared as source text because the
+// two packages can't import each other.
+describe('API READY-abort webhook queueing stays in sync with triggerWebhooks', () => {
+  const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
+  const fnBody = (src: string, name: string) => {
+    const start = src.indexOf(`async function ${name}(`);
+    if (start < 0) throw new Error(`${name} not found`);
+    return src.slice(start, src.indexOf('\n}\n', start));
+  };
+  const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
+  const whereClause = (body: string) => {
+    const m = /SELECT \* FROM webhooks|SELECT id FROM webhooks/.exec(body);
+    if (!m) throw new Error('webhooks SELECT not found');
+    return norm(body.slice(body.indexOf('WHERE', m.index), body.indexOf('`', m.index)));
+  };
+  const insertColumns = (body: string) => {
+    const m = /INSERT INTO webhook_deliveries \(([^)]*)\)/.exec(body);
+    if (!m) throw new Error('webhook_deliveries INSERT not found');
+    return norm(m[1]);
+  };
+
+  const runner = fnBody(read('../src/queue.ts'), 'triggerWebhooks');
+  const api = fnBody(read('../../api/src/routes/runs.ts'), 'queueAbortedWebhooks');
+
+  it('matches webhooks with the same WHERE clause', () => {
+    expect(whereClause(api)).toBe(whereClause(runner));
+  });
+
+  it('writes the same delivery-row columns and defaults', () => {
+    expect(insertColumns(api)).toBe(insertColumns(runner));
+    expect(api).toContain("'PENDING', 0, 5, NOW()");
+    expect(runner).toContain("'PENDING', 0, 5, NULL");
   });
 });

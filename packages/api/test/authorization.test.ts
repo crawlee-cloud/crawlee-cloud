@@ -317,7 +317,10 @@ describe('Authorization Tests', () => {
     });
 
     it("should not allow User B to abort User A's run", async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+      // Abort tries READY, then RUNNING, then looks the run up to tell
+      // "already finished" (200) from "not found" (404) — every step is
+      // user-scoped, so User B matches nothing.
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
 
       currentUser = USER_B;
 
@@ -327,6 +330,10 @@ describe('Authorization Tests', () => {
       });
 
       expect(response.statusCode).toBe(404);
+      expect(mockQuery.mock.calls.length).toBeGreaterThan(0);
+      for (const [, params] of mockQuery.mock.calls as [string, unknown[]][]) {
+        expect(params).toEqual(['run-owned-by-user-a', USER_B.id]);
+      }
     });
   });
 

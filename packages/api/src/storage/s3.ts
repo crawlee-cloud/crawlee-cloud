@@ -280,13 +280,25 @@ export async function getDatasetItemByKey(key: string): Promise<unknown> {
  * iterateDatasetKeys + getDatasetItemByKey are still exported for callers
  * that want raw key-level control (e.g. parallel fetch with custom batching),
  * but those callers must dispatch on the `.batch.json` suffix themselves.
+ *
+ * `reverse: true` yields the same items last-to-first (keys in reverse,
+ * each batch reversed) — still one body in memory at a time.
  */
-export async function* iterateDatasetItems(datasetId: string): AsyncGenerator<unknown> {
-  for await (const key of iterateDatasetKeys(datasetId)) {
+export async function* iterateDatasetItems(
+  datasetId: string,
+  options: { reverse?: boolean } = {}
+): AsyncGenerator<unknown> {
+  for await (const key of options.reverse
+    ? reversedDatasetKeys(datasetId)
+    : iterateDatasetKeys(datasetId)) {
     const body = await getDatasetItemByKey(key);
     if (key.endsWith('.batch.json')) {
       if (Array.isArray(body)) {
-        for (const item of body) yield item;
+        if (options.reverse) {
+          for (let i = body.length - 1; i >= 0; i--) yield body[i];
+        } else {
+          for (const item of body) yield item;
+        }
       } else {
         // Malformed batch object: skip rather than crash a download
         // mid-stream, but emit a server log so operators see the
@@ -301,6 +313,18 @@ export async function* iterateDatasetItems(datasetId: string): AsyncGenerator<un
       yield body;
     }
   }
+}
+
+/**
+ * Every dataset key, newest first. `reverse: true` on iterateDatasetItems
+ * (the `desc=1` read path) needs the last key before the first, so the key
+ * listing is collected up front — it's the cheap part (one LIST per 1000
+ * keys, no bodies); item bodies are still fetched one key at a time.
+ */
+async function* reversedDatasetKeys(datasetId: string): AsyncGenerator<string> {
+  const keys: string[] = [];
+  for await (const key of iterateDatasetKeys(datasetId)) keys.push(key);
+  for (let i = keys.length - 1; i >= 0; i--) yield keys[i]!;
 }
 
 /**
