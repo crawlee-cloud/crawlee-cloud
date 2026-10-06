@@ -33,7 +33,7 @@ Then run the database migrations (they do not run automatically on container sta
 docker compose exec api node packages/api/dist/db/migrate.js
 ```
 
-This brings up the API, Runner, Dashboard, Scheduler, PostgreSQL, Redis, and MinIO, plus a one-shot `minio-init` job that creates the storage bucket and exits.
+This brings up the API, Runner, Dashboard, Scheduler, PostgreSQL, Redis, and MinIO, which creates the storage bucket on first start.
 
 ::: warning Dev admin credentials
 The stock `docker-compose.yml` hard-codes the admin login `admin@crawlee.cloud` / `crawlee.cloud` and does **not** read a `.env` file. `ADMIN_EMAIL` / `ADMIN_PASSWORD` in `.env` only apply to the non-Docker flow and to the production Compose file (`deploy/vps/docker-compose.prod.yml`). Note that `.env.example` does not include these keys — add them if you use those flows.

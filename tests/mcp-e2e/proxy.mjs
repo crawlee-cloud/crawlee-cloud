@@ -9,6 +9,7 @@
  *   PROXY_TARGET=http://localhost:3000 PROXY_PORT=3999 node proxy.mjs
  */
 import http from 'node:http';
+import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +22,10 @@ const ERROR_BODY_MAX = 2000;
  */
 export async function startProxy({ target, logFile, port = 0 }) {
   const targetUrl = new URL(target);
+  const transport = targetUrl.protocol === 'https:' ? https : http;
+  // Keep any path prefix on the target (e.g. http://host/crawlee) so MCP
+  // traffic reaches the same place as run.mjs's direct api() calls.
+  const basePath = targetUrl.pathname.replace(/\/+$/, '');
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
   const log = fs.createWriteStream(logFile, { flags: 'w' });
   const requests = [];
@@ -30,14 +35,31 @@ export async function startProxy({ target, logFile, port = 0 }) {
     const id = ++seq;
     const reqPath = req.url ?? '/';
     const headers = { ...req.headers, host: targetUrl.host };
+    let done = false;
 
-    const upstream = http.request(
+    // Single exit point: an upstream failure can surface as a request error,
+    // a response error, or a premature close, possibly more than one of them.
+    const fail = (message) => {
+      if (done) return;
+      done = true;
+      if (res.headersSent) {
+        // Part of the upstream body is already on the wire; appending a JSON
+        // error would corrupt it, so cut the connection instead.
+        res.destroy();
+      } else {
+        res.writeHead(502, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'proxy-error', message } }));
+      }
+      record(id, req.method, reqPath, 502, Buffer.from(`proxy: ${message}`));
+    };
+
+    const upstream = transport.request(
       {
         protocol: targetUrl.protocol,
         hostname: targetUrl.hostname,
         port: targetUrl.port,
         method: req.method,
-        path: reqPath,
+        path: basePath + reqPath,
         headers,
       },
       (upRes) => {
@@ -53,16 +75,19 @@ export async function startProxy({ target, logFile, port = 0 }) {
           res.write(chunk);
         });
         upRes.on('end', () => {
+          if (done) return;
+          done = true;
           res.end();
           record(id, req.method, reqPath, status, status >= 400 ? Buffer.concat(chunks) : null);
         });
+        upRes.on('error', (err) => fail(err.message));
+        upRes.on('aborted', () => fail('upstream response aborted'));
       }
     );
-    upstream.on('error', (err) => {
-      if (!res.headersSent) res.writeHead(502, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: { type: 'proxy-error', message: err.message } }));
-      record(id, req.method, reqPath, 502, Buffer.from(`proxy: ${err.message}`));
-    });
+    upstream.on('error', (err) => fail(err.message));
+    // The client (MCP server) going away must not crash the harness either.
+    res.on('error', () => upstream.destroy());
+    req.on('error', () => upstream.destroy());
     req.pipe(upstream);
   });
 
