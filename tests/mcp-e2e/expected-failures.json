@@ -1,8 +1,3 @@
 [
-  "tools-list",
-  "search-actors",
-  "fetch-actor-details",
-  "call-actor",
-  "poll-count",
-  "actor-tool"
+  "search-actors"
 ]
