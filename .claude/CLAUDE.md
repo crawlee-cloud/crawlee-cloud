@@ -141,6 +141,7 @@ Built with Fastify, implements Apify v2 API endpoints:
 - **Configuration** (`src/`):
   - `config.ts` - Typed configuration with dev defaults and production enforcement
   - `config-validator.ts` - Security validation at startup (weak secrets, insecure defaults, CORS)
+  - `http-setup.ts` - Shared CORS, compression, content-type parsers, error handler, and body limit (`configureHttp()`; production and the integration test app both use it)
 
 - **Platform Services** (`src/`):
   - `scheduler.ts` - Cron tick loop that dispatches scheduled runs
