@@ -69,6 +69,8 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 Pass `?download=1` to stream the entire dataset as a single JSON array file (attachment disposition) — same zero-materialization path.
 
+`fields=a,b` keeps only those top-level keys, `omit=a,b` drops keys, and `desc=1` returns the newest items first (with `offset` counted from the end), as on Apify. They apply to all three read modes and to `GET /v2/actor-runs/{id}/dataset/items`.
+
 ---
 
 ## Key-Value Stores
@@ -134,15 +136,35 @@ The lock endpoint (`POST .../head/lock`) supports distributed crawling. Paramete
 
 Manage Actor definitions.
 
-| Method   | Endpoint                 | Description                      |
-| -------- | ------------------------ | -------------------------------- |
-| `GET`    | `/v2/acts`               | List all Actors                  |
-| `POST`   | `/v2/acts`               | Create an Actor                  |
-| `GET`    | `/v2/acts/{id}`          | Get Actor details                |
-| `PUT`    | `/v2/acts/{id}`          | Update an Actor                  |
-| `DELETE` | `/v2/acts/{id}`          | Delete an Actor                  |
-| `POST`   | `/v2/acts/{id}/runs`     | Start a new run                  |
-| `POST`   | `/v2/acts/{id}/run-sync` | Run an Actor and wait for finish |
+| Method   | Endpoint                 | Description                     |
+| -------- | ------------------------ | ------------------------------- |
+| `GET`    | `/v2/acts`               | List all Actors                 |
+| `POST`   | `/v2/acts`               | Create an Actor                 |
+| `GET`    | `/v2/acts/{id}`          | Get Actor details               |
+| `PUT`    | `/v2/acts/{id}`          | Update an Actor                 |
+| `DELETE` | `/v2/acts/{id}`          | Delete an Actor                 |
+| `GET`    | `/v2/acts/{id}/runs`     | List the Actor's runs           |
+| `POST`   | `/v2/acts/{id}/runs`     | Start a new run                 |
+| `POST`   | `/v2/acts/{id}/run-sync` | Start a run (does not wait yet) |
+| `GET`    | `/v2/store`              | Search your own Actors          |
+
+Every `/v2/acts/...` route is also served as `/v2/actors/...` (the path `apify-client` 2.23.4+ uses). `{id}` can be the Actor ID, its name, `username~name` or `username/name` (URL-encoded); another user's username is a `404`.
+
+### Starting a run
+
+As on Apify, the request body is the Actor input, and run options go in the query string: `timeout`, `memory`, `waitForFinish` (seconds, at most 60), `webhooks` (base64 JSON array) and `envVars` (base64 JSON object of strings, a Crawlee Cloud extension).
+
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"query": "laptops"}' \
+  "https://your-server.com/v2/acts/alice~my-actor/runs?timeout=600&memory=2048&waitForFinish=60"
+```
+
+The legacy body `{ input, timeout, memory, envVars, webhooks }` is still accepted but deprecated (removed in 1.0). See [Apify API compatibility](./apify-compatibility.md#run-start-contract) for the exact detection rule.
+
+### Store search
+
+`GET /v2/store` is `apify-client`'s `store().list()`, scoped to **your own** Actors: `search` matches name, title and description; `limit` (default 10, max 100, max 10 with `includeInputSchema=1`) and `offset` paginate; `username` other than yours returns an empty list. See [Apify API compatibility](./apify-compatibility.md#store-search).
 
 ### Deleting Actors
 
@@ -161,7 +183,7 @@ Actor create/update bodies are validated with the following constraints:
 - `retryDelaySecs` — 1-3600 seconds
 - `version` — 1-64 chars, alphanumeric with `.` `_` `+` `-`
 
-The run-dispatch body (`POST /v2/acts/{id}/runs`) uses bare `timeout` and `memory` fields instead, with the same 86400-second and 16384-MB caps.
+The run-start query options `timeout` and `memory` have the same 86400-second and 16384-MB caps.
 
 ---
 
@@ -169,17 +191,19 @@ The run-dispatch body (`POST /v2/acts/{id}/runs`) uses bare `timeout` and `memor
 
 Manage source versions and Docker image builds for an Actor.
 
-| Method   | Endpoint                               | Description         |
-| -------- | -------------------------------------- | ------------------- |
-| `GET`    | `/v2/acts/{id}/versions`               | List versions       |
-| `POST`   | `/v2/acts/{id}/versions`               | Create a version    |
-| `GET`    | `/v2/acts/{id}/versions/{versionId}`   | Get version details |
-| `DELETE` | `/v2/acts/{id}/versions/{versionId}`   | Delete a version    |
-| `GET`    | `/v2/acts/{id}/builds`                 | List builds         |
-| `POST`   | `/v2/acts/{id}/builds`                 | Start a build       |
-| `GET`    | `/v2/acts/{id}/builds/{buildId}`       | Get build details   |
-| `POST`   | `/v2/acts/{id}/builds/{buildId}/abort` | Abort a build       |
-| `GET`    | `/v2/acts/{id}/builds/{buildId}/logs`  | Get build logs      |
+| Method   | Endpoint                               | Description                                    |
+| -------- | -------------------------------------- | ---------------------------------------------- |
+| `GET`    | `/v2/acts/{id}/versions`               | List versions                                  |
+| `POST`   | `/v2/acts/{id}/versions`               | Create a version                               |
+| `GET`    | `/v2/acts/{id}/versions/{versionId}`   | Get version details                            |
+| `DELETE` | `/v2/acts/{id}/versions/{versionId}`   | Delete a version                               |
+| `GET`    | `/v2/acts/{id}/builds`                 | List builds                                    |
+| `POST`   | `/v2/acts/{id}/builds`                 | Start a build                                  |
+| `GET`    | `/v2/acts/{id}/builds/default`         | Get the default build (with `actorDefinition`) |
+| `GET`    | `/v2/acts/{id}/builds/{buildId}`       | Get build details                              |
+| `GET`    | `/v2/actor-builds/{buildId}`           | Get a build by ID (with `actorDefinition`)     |
+| `POST`   | `/v2/acts/{id}/builds/{buildId}/abort` | Abort a build                                  |
+| `GET`    | `/v2/acts/{id}/builds/{buildId}/logs`  | Get build logs                                 |
 
 ---
 
@@ -190,9 +214,9 @@ Monitor Actor executions.
 | Method | Endpoint                                            | Description                                           |
 | ------ | --------------------------------------------------- | ----------------------------------------------------- |
 | `GET`  | `/v2/actor-runs`                                    | List all runs                                         |
-| `GET`  | `/v2/actor-runs/{id}`                               | Get run status                                        |
+| `GET`  | `/v2/actor-runs/{id}`                               | Get run status (`?waitForFinish=N` long-polls ≤ 60 s) |
 | `PUT`  | `/v2/actor-runs/{id}`                               | Update run status                                     |
-| `POST` | `/v2/actor-runs/{id}/abort`                         | Abort a running Actor                                 |
+| `POST` | `/v2/actor-runs/{id}/abort`                         | Abort a run (a finished run is returned unchanged)    |
 | `POST` | `/v2/actor-runs/{id}/resurrect`                     | Resurrect a failed run                                |
 | `GET`  | `/v2/actor-runs/{id}/logs`                          | Get run logs                                          |
 | `POST` | `/v2/actor-runs/{id}/logs`                          | Append log entry                                      |
@@ -300,6 +324,8 @@ Run Actors automatically on a cron schedule.
 | `GET`  | `/v2/users/me/limits` | Get account limits                        |
 | `PUT`  | `/v2/users/me`        | Update current user (e.g. proxy password) |
 
+`GET /v2/users/me` returns `username` (a URL-safe slug such as `alice`, used in `username/actor-name`) and `email` as separate fields. Before the MCP release `username` held the email.
+
 `GET /v2/users/me` uses optional authentication: unauthenticated callers receive an anonymous stub instead of a `401`. The Apify SDK calls this endpoint to resolve the proxy password (`data.proxy.password`) when `APIFY_PROXY_PASSWORD` is not set in the container environment.
 
 ---
@@ -360,6 +386,8 @@ Invalid request bodies return a 400 with Zod validation details:
 ```
 
 Error types are lowercase kebab-case (e.g. `record-not-found`, `actor-has-runs`) — this casing is load-bearing for `apify-client` compatibility, whose `catchNotFoundOrThrow` helper matches `record-not-found` exactly. The one exception is Zod validation failures, which use `validation_error` as shown above.
+
+A route that does not exist returns `404` with type `page-not-found` (`"message": "Route GET /v2/nope not found"`), not `record-not-found`, so `apify-client` reports it as an error instead of a missing record.
 
 | HTTP Code | Description                     |
 | --------- | ------------------------------- |
