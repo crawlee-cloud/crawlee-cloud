@@ -243,8 +243,14 @@ function RunDetail() {
     });
     if (!ok) return;
     try {
-      await abortRun(id);
-      toast.success('Run aborted');
+      // Abort returns 200 with the run unchanged when it finished before
+      // the request landed (Apify parity) — say so instead of "aborted".
+      const updated = await abortRun(id);
+      if (updated.status === 'ABORTED') {
+        toast.success('Run aborted');
+      } else {
+        toast.info(`Run already finished (${updated.status})`);
+      }
     } catch (err) {
       toast.error('Failed to abort run', { description: (err as Error).message });
     }

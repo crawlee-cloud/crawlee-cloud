@@ -216,7 +216,7 @@ describe('Runs lifecycle (integration)', () => {
     expect(attempt.json().error?.type).toBe('record-not-found');
   });
 
-  it('aborts a RUNNING run and rejects abort on terminal runs', async () => {
+  it('aborts a RUNNING run and returns terminal runs unchanged on repeat aborts', async () => {
     ({ token } = await createTestUser('aborter@test.local', 'pw-aborter-1'));
 
     const actor = await app.inject({
@@ -234,7 +234,7 @@ describe('Runs lifecycle (integration)', () => {
     });
     const runId = run.json().data.id;
 
-    // Move to RUNNING (abort endpoint requires RUNNING status)
+    // Fake-runner claims the run
     await app.inject({
       method: 'PUT',
       url: `/v2/actor-runs/${runId}`,
@@ -249,14 +249,157 @@ describe('Runs lifecycle (integration)', () => {
     });
     expect(abort.statusCode).toBe(200);
     expect(abort.json().data.status).toBe('ABORTED');
+    const finishedAt = abort.json().data.finishedAt;
 
-    // Aborting again is a no-op 404 (Apify-compat: record-not-found shape)
+    // Aborting again returns the run unchanged (Apify behaviour —
+    // apify-client's abort() throws on 404).
     const abortAgain = await app.inject({
       method: 'POST',
       url: `/v2/actor-runs/${runId}/abort`,
       headers: authHeaders(),
     });
-    expect(abortAgain.statusCode).toBe(404);
-    expect(abortAgain.json().error?.type).toBe('record-not-found');
+    expect(abortAgain.statusCode).toBe(200);
+    expect(abortAgain.json().data.status).toBe('ABORTED');
+    expect(abortAgain.json().data.finishedAt).toBe(finishedAt);
+  });
+
+  it('returns a SUCCEEDED run unchanged on abort, and 404 for an unknown or foreign run', async () => {
+    ({ token } = await createTestUser('abort-done@test.local', 'pw-abort-done-1'));
+    const actor = await app.inject({
+      method: 'POST',
+      url: '/v2/acts',
+      headers: authHeaders(),
+      payload: { name: 'abort-done-actor' },
+    });
+    const run = await app.inject({
+      method: 'POST',
+      url: `/v2/acts/${actor.json().data.id}/runs`,
+      headers: authHeaders(),
+    });
+    const runId = run.json().data.id;
+    for (const status of ['RUNNING', 'SUCCEEDED']) {
+      await app.inject({
+        method: 'PUT',
+        url: `/v2/actor-runs/${runId}`,
+        headers: authHeaders(),
+        payload: { status },
+      });
+    }
+
+    const abort = await app.inject({
+      method: 'POST',
+      url: `/v2/actor-runs/${runId}/abort`,
+      headers: authHeaders(),
+    });
+    expect(abort.statusCode).toBe(200);
+    expect(abort.json().data.status).toBe('SUCCEEDED');
+
+    const unknown = await app.inject({
+      method: 'POST',
+      url: '/v2/actor-runs/does-not-exist/abort',
+      headers: authHeaders(),
+    });
+    expect(unknown.statusCode).toBe(404);
+    expect(unknown.json().error?.type).toBe('record-not-found');
+
+    // Another user can't abort (or even observe) this run.
+    const other = await createTestUser('abort-other@test.local', 'pw-abort-other-1');
+    const foreign = await app.inject({
+      method: 'POST',
+      url: `/v2/actor-runs/${runId}/abort`,
+      headers: { authorization: `Bearer ${other.token}` },
+    });
+    expect(foreign.statusCode).toBe(404);
+  });
+
+  it('aborts a READY run so no runner claims it, and queues its ACTOR.RUN.ABORTED webhooks', async () => {
+    ({ token } = await createTestUser('abort-ready@test.local', 'pw-abort-ready-1'));
+    const { query } = await import('../../src/db/index.js');
+
+    const actor = await app.inject({
+      method: 'POST',
+      url: '/v2/acts',
+      headers: authHeaders(),
+      payload: { name: 'abort-ready-actor' },
+    });
+    const actorId = actor.json().data.id;
+
+    // Actor-scoped webhook on ABORTED (should fire), one on SUCCEEDED
+    // only (should not), and a disabled ABORTED one (should not).
+    const hook = async (payload: Record<string, unknown>) => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v2/webhooks',
+        headers: authHeaders(),
+        payload: { requestUrl: 'https://consumer.test.local/hook', actorId, ...payload },
+      });
+      expect(res.statusCode).toBe(201);
+      return res.json().data.id as string;
+    };
+    const abortedHookId = await hook({ eventTypes: ['ACTOR.RUN.ABORTED'] });
+    await hook({ eventTypes: ['ACTOR.RUN.SUCCEEDED'] });
+    await hook({ eventTypes: ['ACTOR.RUN.ABORTED'], isEnabled: false });
+
+    const run = await app.inject({
+      method: 'POST',
+      url: `/v2/acts/${actorId}/runs`,
+      headers: authHeaders(),
+    });
+    const runId = run.json().data.id;
+    expect(run.json().data.status).toBe('READY');
+
+    const abort = await app.inject({
+      method: 'POST',
+      url: `/v2/actor-runs/${runId}/abort`,
+      headers: authHeaders(),
+    });
+    expect(abort.statusCode).toBe(200);
+    expect(abort.json().data.status).toBe('ABORTED');
+    expect(abort.json().data.finishedAt).toBeTruthy();
+
+    // The runner's claim query only takes READY rows — this one is gone.
+    const claimable = await query(`SELECT id FROM runs WHERE id = $1 AND status = 'READY'`, [
+      runId,
+    ]);
+    expect(claimable.rows).toHaveLength(0);
+
+    // Exactly one delivery, shaped the way the runner's
+    // processWebhookRetries claims it: PENDING with next_retry_at due.
+    const deliveries = await query<{
+      webhook_id: string;
+      run_id: string;
+      event_type: string;
+      status: string;
+      attempt_count: number;
+      max_attempts: number;
+      due: boolean;
+    }>(
+      `SELECT webhook_id, run_id, event_type, status, attempt_count, max_attempts,
+              next_retry_at <= NOW() AS due
+       FROM webhook_deliveries WHERE run_id = $1`,
+      [runId]
+    );
+    expect(deliveries.rows).toEqual([
+      {
+        webhook_id: abortedHookId,
+        run_id: runId,
+        event_type: 'ACTOR.RUN.ABORTED',
+        status: 'PENDING',
+        attempt_count: 0,
+        max_attempts: 5,
+        due: true,
+      },
+    ]);
+
+    // A repeat abort returns the run unchanged and queues nothing new.
+    const again = await app.inject({
+      method: 'POST',
+      url: `/v2/actor-runs/${runId}/abort`,
+      headers: authHeaders(),
+    });
+    expect(again.statusCode).toBe(200);
+    expect(again.json().data.status).toBe('ABORTED');
+    const after = await query('SELECT id FROM webhook_deliveries WHERE run_id = $1', [runId]);
+    expect(after.rows).toHaveLength(1);
   });
 });

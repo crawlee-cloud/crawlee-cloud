@@ -8,12 +8,8 @@ import type { FastifyPluginAsync } from 'fastify';
 import { nanoid } from 'nanoid';
 import { query } from '../db/index.js';
 import { appendSearchCondition } from '../db/search.js';
-import {
-  putDatasetBatch,
-  listDatasetItems,
-  iterateDatasetItems,
-  deleteDatasetS3Prefix,
-} from '../storage/s3.js';
+import { putDatasetBatch, deleteDatasetS3Prefix } from '../storage/s3.js';
+import { sendDatasetItems, type DatasetItemsQuery } from '../lib/dataset-items.js';
 import { authenticate } from '../auth/middleware.js';
 import { config } from '../config.js';
 import { CreateDatasetSchema } from '../schemas/datasets.js';
@@ -174,10 +170,13 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
 
   /**
    * GET /v2/datasets/:datasetId/items - List items
+   *
+   * Pagination, desc, download and fields/omit projection live in
+   * sendDatasetItems, shared with GET /v2/actor-runs/:runId/dataset/items.
    */
   fastify.get<{
     Params: { datasetId: string };
-    Querystring: { offset?: string; limit?: string; desc?: string; download?: string };
+    Querystring: DatasetItemsQuery;
   }>('/datasets/:datasetId/items', async (request, reply) => {
     const { datasetId } = request.params;
 
@@ -192,98 +191,11 @@ export const datasetsRoutes: FastifyPluginAsync = async (fastify) => {
       return { error: { type: 'record-not-found', message: 'Dataset not found' } };
     }
 
-    // ?download=1 — stream the FULL dataset as a single JSON array file.
-    // Browser opens it as a download; no in-memory materialization on either
-    // server (sequential streaming via iterateDatasetItems) or client. This
-    // sidesteps the silent ~1000-item cap in the legacy listDatasetItems and
-    // the browser-blob memory pressure on the dashboard side.
-    //
-    // iterateDatasetItems handles both legacy per-item keys and the newer
-    // batched keys transparently; one yielded item == one comma-separated
-    // entry in the output array.
-    if (request.query.download === '1' || request.query.download === 'true') {
-      const dsId = dataset.rows[0].id;
-      // setHeader on the raw response — reply.header() needs Fastify's
-      // lifecycle to flush, but streaming via reply.raw bypasses that.
-      // First propagate Fastify-prepared headers (CORS from @fastify/cors,
-      // etc.) so the browser doesn't reject the response.
-      const stream = reply.raw;
-      for (const [k, v] of Object.entries(reply.getHeaders())) {
-        if (v !== undefined) stream.setHeader(k, v);
-      }
-      stream.setHeader('content-type', 'application/json; charset=utf-8');
-      stream.setHeader('content-disposition', `attachment; filename="dataset-${dsId}.json"`);
-      stream.write('[');
-
-      let firstWritten = false;
-      for await (const item of iterateDatasetItems(dsId)) {
-        stream.write((firstWritten ? ',' : '') + JSON.stringify(item));
-        firstWritten = true;
-      }
-
-      stream.write(']');
-      stream.end();
-      return reply;
-    }
-
-    // Apify parity: when `limit` is omitted, return the FULL dataset — real
-    // Apify has no implicit page size, and clients built against it assume
-    // that (a consumer paginating "like Apify" without an explicit limit got
-    // silently capped at 100 items here). Streams via iterateDatasetItems
-    // like the download branch — no in-memory materialization — but as a
-    // plain JSON response: no attachment disposition, and Apify-style
-    // pagination headers so clients can verify completeness.
-    if (request.query.limit === undefined) {
-      const dsId = dataset.rows[0].id;
-      const total = dataset.rows[0].item_count;
-      const fullOffset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
-
-      const stream = reply.raw;
-      for (const [k, v] of Object.entries(reply.getHeaders())) {
-        if (v !== undefined) stream.setHeader(k, v);
-      }
-      stream.setHeader('content-type', 'application/json; charset=utf-8');
-      stream.setHeader('x-apify-pagination-total', String(total));
-      stream.setHeader('x-apify-pagination-offset', String(fullOffset));
-      stream.setHeader('x-apify-pagination-limit', String(Math.max(0, total - fullOffset)));
-      stream.write('[');
-
-      let skipped = 0;
-      let firstWritten = false;
-      for await (const item of iterateDatasetItems(dsId)) {
-        if (skipped < fullOffset) {
-          skipped++;
-          continue;
-        }
-        stream.write((firstWritten ? ',' : '') + JSON.stringify(item));
-        firstWritten = true;
-      }
-
-      stream.write(']');
-      stream.end();
-      return reply;
-    }
-
-    const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
-    const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
-
-    // Pass total = dataset.item_count so listDatasetItems can short-circuit
-    // iteration once `limit` items have been collected. The DB row is the
-    // authoritative count (incremented atomically on each push); deriving
-    // total from S3 listing is what gave the legacy implementation its
-    // silent 1000-item cap.
-    const { items, total } = await listDatasetItems(dataset.rows[0].id, {
-      offset,
-      limit,
-      total: dataset.rows[0].item_count,
-    });
-
-    // Set pagination headers (Apify style)
-    reply.header('x-apify-pagination-total', total);
-    reply.header('x-apify-pagination-offset', offset);
-    reply.header('x-apify-pagination-limit', limit);
-
-    return items;
+    return sendDatasetItems(
+      reply,
+      { id: dataset.rows[0].id, itemCount: dataset.rows[0].item_count },
+      request.query
+    );
   });
 
   /**
