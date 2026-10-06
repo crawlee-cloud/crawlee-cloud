@@ -6,8 +6,6 @@
  *   import { createTestApp, runMigrations, createTestUser } from './setup.js';
  */
 import Fastify, { type FastifyInstance } from 'fastify';
-import { ZodError } from 'zod';
-import compress from '@fastify/compress';
 import { MAX_PARAM_LENGTH } from '../../src/lib/resolve-actor.js';
 import { S3Client, CreateBucketCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
 
@@ -46,6 +44,7 @@ export async function createTestApp(): Promise<FastifyInstance> {
   const { initRedis } = await import('../../src/storage/redis.js');
   const { authRoutes } = await import('../../src/routes/auth.js');
   const { registerV2Routes } = await import('../../src/routes/index.js');
+  const { API_BODY_LIMIT, configureHttp } = await import('../../src/http-setup.js');
 
   await initDatabase();
   await initS3();
@@ -53,44 +52,14 @@ export async function createTestApp(): Promise<FastifyInstance> {
 
   // Mirror production's maxParamLength (src/index.ts) so long
   // `username~name` actor IDs route the same way in tests.
-  const app = Fastify({ logger: false, maxParamLength: MAX_PARAM_LENGTH });
-
-  // Mirror production's request decompression (src/index.ts). apify-client
-  // >= 2.25 brotli-compresses request bodies of 1 KB or more.
-  await app.register(compress, { global: true });
-
-  // Mirror the content-type parsers registered in src/index.ts so the test
-  // app accepts the same payloads as production (binary uploads, form bodies).
-  app.addContentTypeParser(
-    'application/x-www-form-urlencoded',
-    { parseAs: 'string' },
-    (_req, body, done) => done(null, body || {})
-  );
-  app.addContentTypeParser('text/plain', { parseAs: 'buffer' }, (_req, body, done) => {
-    done(null, body);
+  const app = Fastify({
+    logger: false,
+    bodyLimit: API_BODY_LIMIT,
+    maxParamLength: MAX_PARAM_LENGTH,
   });
-  app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (_req, body, done) =>
-    done(null, body)
-  );
 
-  // Mirror production's ZodError → 400 handler (src/index.ts). Without this,
-  // validation failures bubble up as 500s and tests can't tell a real bug from
-  // a malformed request.
-  app.setErrorHandler((error, _request, reply) => {
-    if (error instanceof ZodError) {
-      return reply.status(400).send({
-        error: {
-          type: 'validation_error',
-          message: 'Validation failed',
-          details: error.errors,
-        },
-      });
-    }
-    const statusCode = error.statusCode ?? 500;
-    return reply.status(statusCode).send({
-      error: { type: error.name, message: error.message },
-    });
-  });
+  // Same plugins, parsers, and error handler as production (src/index.ts).
+  await configureHttp(app);
 
   await authRoutes(app);
   await registerV2Routes(app);

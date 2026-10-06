@@ -32,7 +32,7 @@ docker compose exec api node packages/api/dist/db/migrate.js
 
 > **Note:** The stock compose file sets `DOCKER_NETWORK=crawlee-platfrom_crawlee-network` for the Runner, which only matches if the checkout directory is named `crawlee-platfrom`. If you cloned into a differently named directory, adjust that value to `<your-directory>_crawlee-network`.
 
-This brings up the full stack — API, Runner, Dashboard, Scheduler, PostgreSQL, Redis, and MinIO (plus a one-shot `minio-init` job that creates the storage bucket and exits). Once running:
+This brings up the full stack — API, Runner, Dashboard, Scheduler, PostgreSQL, Redis, and MinIO (which creates the storage bucket on first start). Once running:
 
 - **Dashboard:** `http://localhost:3001` — monitor runs, view datasets, manage Actors
 - **API:** `http://localhost:3000`
@@ -78,7 +78,7 @@ This starts:
 - Scheduler
 - PostgreSQL
 - Redis
-- MinIO (plus a one-shot `minio-init` job that creates the storage bucket and exits)
+- MinIO (which creates the storage bucket on first start)
 
 Database migrations do **not** run automatically on startup — run them once after the containers are up:
 
