@@ -151,6 +151,8 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
       MINIO_DEFAULT_BUCKETS: crawlee-cloud
+      # Bitnami turns the web console off by default; keep it on :9001 as before.
+      MINIO_BROWSER: 'on'
     ports:
       - '9000:9000' # S3 API
       - '9001:9001' # Console

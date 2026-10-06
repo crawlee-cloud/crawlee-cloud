@@ -67,7 +67,8 @@
       "variables": {
         "MINIO_ROOT_USER": "minioadmin",
         "MINIO_ROOT_PASSWORD": "${{api.S3_SECRET_KEY}}",
-        "MINIO_DEFAULT_BUCKETS": "crawlee-cloud"
+        "MINIO_DEFAULT_BUCKETS": "crawlee-cloud",
+        "RAILWAY_RUN_UID": "0"
       }
     }
   }
