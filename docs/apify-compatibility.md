@@ -108,15 +108,18 @@ against a live deployment.
 
 - `search` matches `name`, `title` and `description` case-insensitively, as a
   literal substring (`%`, `_` and `\` are not wildcards).
-- `limit` is 1–100, default 10, and capped at **10** when `includeInputSchema=1`
-  (as on Apify); `offset` defaults to 0.
+- `limit` defaults to 10 and is clamped to 1–100, or to 1–10 when
+  `includeInputSchema=1` (as on Apify); `offset` defaults to 0. A negative or
+  non-numeric `limit`/`offset` is a 400.
 - `username` other than the caller's own returns an empty list.
 - Ordering: exact name match first, then most recently modified.
 - Response: `{ data: { total, count, offset, limit, desc: false, items } }`. Each
-  item has `id`, `name`, `username`, `title`, `description`,
-  `stats: { totalRuns, lastRunStartedAt }`, `currentPricingInfo: { pricingModel: "FREE" }`,
-  `url: null`, and, only with `includeInputSchema=1`, `inputSchema` (the default
-  build's input schema, or `null`).
+  item has `id`, `name`, `username`, `title` (falls back to `name`),
+  `description`, `stats: { totalRuns, lastRunStartedAt }`,
+  `currentPricingInfo: { pricingModel: "FREE" }`, `url: null`,
+  `pictureUrl: null`, `userPictureUrl: null`, `categories: []`, and, only with
+  `includeInputSchema=1`, `inputSchema` (the default build's input schema, or
+  `null` when there is none or it has no `properties` object).
 
 ## Builds
 
