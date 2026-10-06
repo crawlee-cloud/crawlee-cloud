@@ -62,28 +62,31 @@ async function findOrCreateActorVersion(
   // this in test/integration/runs-list and the codex review on PR #18
   // both flagged it.
   //
-  // We claim-and-clear in a single statement so the tag is never on
-  // zero versions or two simultaneously.
+  // Clear first, then claim, as two statements. A single statement (the
+  // clear in a data-modifying CTE) can't be used here: both UPDATEs run on
+  // the same snapshot in an unspecified order, and when the claim runs
+  // first it violates the unique (actor_id, build_tag) index, so the
+  // rollback re-push silently recorded no build (#117). In between, the
+  // tag is on no version; the default-build lookup then falls back to the
+  // actor's newest SUCCEEDED build.
+  await query(
+    `UPDATE actor_versions SET build_tag = NULL
+     WHERE actor_id = $1 AND build_tag = $3 AND version_number <> $2`,
+    [actorId, versionNumber, buildTag]
+  );
   const existing = await query<{ id: string }>(
-    `WITH cleared AS (
-       UPDATE actor_versions SET build_tag = NULL
-       WHERE actor_id = $1 AND build_tag = $3 AND version_number <> $2
-     )
-     UPDATE actor_versions SET build_tag = $3
+    `UPDATE actor_versions SET build_tag = $3
      WHERE actor_id = $1 AND version_number = $2
      RETURNING id`,
     [actorId, versionNumber, buildTag]
   );
   if (existing.rows[0]) return existing.rows[0].id;
 
-  // Version doesn't exist yet — insert claiming the tag, clearing siblings.
+  // Version doesn't exist yet — insert claiming the tag (siblings were
+  // cleared above).
   const id = nanoid();
   const inserted = await query<{ id: string }>(
-    `WITH cleared AS (
-       UPDATE actor_versions SET build_tag = NULL
-       WHERE actor_id = $2 AND build_tag = $4 AND version_number <> $3
-     )
-     INSERT INTO actor_versions (id, actor_id, version_number, build_tag)
+    `INSERT INTO actor_versions (id, actor_id, version_number, build_tag)
      VALUES ($1, $2, $3, $4)
      ON CONFLICT (actor_id, version_number) DO UPDATE SET version_number = EXCLUDED.version_number
      RETURNING id`,

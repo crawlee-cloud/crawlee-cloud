@@ -193,6 +193,20 @@ describe('apify-client round-trip (integration)', () => {
       expect(fetched?.description).toBe(description);
     });
 
+    it('defaultBuild().get() returns the pushed actorDefinition (#117)', async () => {
+      const input = { title: 'Input', type: 'object', schemaVersion: 1, properties: {} };
+      const actor = await client.actors().create({
+        name: 'compat-default-build',
+        defaultRunOptions: { image: 'ghcr.io/acme/compat-default-build:1' },
+        version: '0.1',
+        actorDefinition: { actorSpecification: 1, name: 'compat-default-build', input },
+      } as Parameters<ReturnType<ApifyClient['actors']>['create']>[0]);
+
+      const build = await (await client.actor(actor.id).defaultBuild()).get();
+      expect(build?.status).toBe('SUCCEEDED');
+      expect(build?.actorDefinition?.input).toEqual(input);
+    });
+
     it('unknown routes return the platform envelope with page-not-found', async () => {
       const res = await fetch(`${baseUrl}/v2/no-such-route`);
       expect(res.status).toBe(404);
