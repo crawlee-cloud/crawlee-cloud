@@ -9,6 +9,7 @@ import {
   UpdateActorSchema,
   ActorRunSchema,
   DeleteActorQuerySchema,
+  type ActorDefinition,
 } from '../schemas/actors.js';
 import { ListRunsQuerySchema } from '../schemas/runs.js';
 import { listRuns } from './runs.js';
@@ -102,6 +103,15 @@ async function findOrCreateActorVersion(
  * gets recorded, just with `version_id = NULL`. That keeps backward compat
  * for any caller still on the older payload shape.
  *
+ * actorDefinition (input schema, README — #112) lives on the build row:
+ *   - a new build stores the definition sent with it, or, when none was sent
+ *     (older CLI, plain image re-push), carries over the previous build's so
+ *     MCP tools generated from it don't disappear;
+ *   - a deduped (same image + version) deploy updates the latest build's
+ *     definition in place when one was sent, and leaves it alone otherwise.
+ * The definition is written in the same statement as the insert/update, so a
+ * build can never end up without the definition its request carried.
+ *
  * Best-effort: failures are logged and swallowed. The actor upsert is the
  * user's actual intent; a missing build row is a UI nicety, not a
  * correctness issue.
@@ -110,11 +120,12 @@ async function recordBuildIfNew(
   actorId: string,
   defaultRunOptions: unknown,
   versionNumber: string | undefined,
-  log: (msg: string) => void = () => undefined
+  log: (msg: string) => void = () => undefined,
+  actorDefinition?: ActorDefinition
 ): Promise<void> {
-  if (!defaultRunOptions || typeof defaultRunOptions !== 'object') return;
-  const imageName = (defaultRunOptions as { image?: unknown }).image;
-  if (typeof imageName !== 'string' || imageName.length === 0) return;
+  const imageName = imageOf(defaultRunOptions);
+  if (!imageName) return;
+  const definitionJson = actorDefinition === undefined ? null : JSON.stringify(actorDefinition);
 
   try {
     const versionId = versionNumber ? await findOrCreateActorVersion(actorId, versionNumber) : null;
@@ -122,23 +133,51 @@ async function recordBuildIfNew(
     // Dedup: skip if the most recent build for this actor already matches
     // both image and version. Older builds (different versions) stay on
     // record so the page shows full history.
-    const existing = await query<{ image_name: string | null; version_id: string | null }>(
-      `SELECT image_name, version_id FROM actor_builds
+    const existing = await query<{
+      id: string;
+      image_name: string | null;
+      version_id: string | null;
+    }>(
+      `SELECT id, image_name, version_id FROM actor_builds
        WHERE actor_id = $1
        ORDER BY created_at DESC
        LIMIT 1`,
       [actorId]
     );
     const last = existing.rows[0];
-    if (last && last.image_name === imageName && (last.version_id ?? null) === versionId) {
+    // A definition-only update (no version sent) targets the latest build
+    // whatever its version — otherwise a PUT of just { actorDefinition }
+    // against a versioned build would mint a duplicate version-less build.
+    const versionMatches =
+      versionNumber === undefined && definitionJson !== null
+        ? true
+        : (last?.version_id ?? null) === versionId;
+    if (last && last.image_name === imageName && versionMatches) {
+      if (definitionJson !== null) {
+        // COALESCE keeps the stored definition if this ever runs without one.
+        await query(
+          `UPDATE actor_builds SET actor_definition = COALESCE($2::jsonb, actor_definition)
+           WHERE id = $1`,
+          [last.id, definitionJson]
+        );
+      }
       return;
     }
 
+    // No definition sent → inherit the previous build's (subquery runs
+    // before the new row exists, so "latest" is the previous build). $2 is
+    // cast in both places so Postgres deduces one type for it.
     await query(
       `INSERT INTO actor_builds
-         (id, actor_id, version_id, status, image_name, started_at, finished_at)
-       VALUES ($1, $2, $3, 'SUCCEEDED', $4, NOW(), NOW())`,
-      [nanoid(), actorId, versionId, imageName]
+         (id, actor_id, version_id, status, image_name, started_at, finished_at, actor_definition)
+       VALUES ($1, $2::varchar, $3, 'SUCCEEDED', $4, NOW(), NOW(),
+         COALESCE($5::jsonb, (
+           SELECT actor_definition FROM actor_builds
+            WHERE actor_id = $2::varchar
+            ORDER BY created_at DESC
+            LIMIT 1
+         )))`,
+      [nanoid(), actorId, versionId, imageName, definitionJson]
     );
 
     // Bubble the most-recent version up to the actor row so consumers
@@ -154,6 +193,19 @@ async function recordBuildIfNew(
     log(`recordBuildIfNew failed for ${actorId}: ${(err as Error).message}`);
   }
 }
+
+/** The image reference from a default_run_options value, if it has one. */
+function imageOf(defaultRunOptions: unknown): string | undefined {
+  if (!defaultRunOptions || typeof defaultRunOptions !== 'object') return undefined;
+  const image = (defaultRunOptions as { image?: unknown }).image;
+  return typeof image === 'string' && image.length > 0 ? image : undefined;
+}
+
+// actorDefinition is stored on a build row, and builds only exist for actors
+// with an image. Reject rather than silently dropping the definition.
+const DEFINITION_REQUIRES_IMAGE = {
+  error: { type: 'validation_error', message: 'actorDefinition requires an image' },
+};
 
 /**
  * Options shared by the actor-scoped plugins (`actorsRoutes`, `registryRoutes`).
@@ -253,6 +305,7 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       retryDelaySecs,
       version,
       proxyPassword,
+      actorDefinition,
     } = CreateActorSchema.parse(request.body);
 
     // Three-state proxyPassword semantics matching PUT /v2/acts/:id:
@@ -267,6 +320,14 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       'SELECT * FROM actors WHERE name = $1 AND user_id = $2',
       [name, request.user!.id]
     );
+
+    if (
+      actorDefinition !== undefined &&
+      !imageOf(defaultRunOptions ?? existing.rows[0]?.default_run_options)
+    ) {
+      reply.status(400);
+      return DEFINITION_REQUIRES_IMAGE;
+    }
 
     if (existing.rows[0]) {
       // Update existing actor (user_id already verified in SELECT)
@@ -299,7 +360,8 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
         result.rows[0]!.id,
         defaultRunOptions ?? existing.rows[0].default_run_options,
         version,
-        (m) => fastify.log.warn(m)
+        (m) => fastify.log.warn(m),
+        actorDefinition
       );
       return { data: formatActor(result.rows[0]!) };
     }
@@ -325,7 +387,13 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       ]
     );
 
-    await recordBuildIfNew(id, defaultRunOptions, version, (m) => fastify.log.warn(m));
+    await recordBuildIfNew(
+      id,
+      defaultRunOptions,
+      version,
+      (m) => fastify.log.warn(m),
+      actorDefinition
+    );
     reply.status(201);
     return { data: formatActor(result.rows[0]!) };
   });
@@ -367,6 +435,27 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
   }>(`/${segment}/:actorId`, async (request, reply) => {
     const { actorId } = request.params;
     const updates = UpdateActorSchema.parse(request.body);
+
+    if (updates.actorDefinition !== undefined) {
+      // A defaultRunOptions in the body replaces the stored one wholesale,
+      // so its image (or lack of one) is what counts.
+      let image = imageOf(updates.defaultRunOptions);
+      if (updates.defaultRunOptions === undefined) {
+        const current = await query<Pick<ActorRow, 'default_run_options'>>(
+          `SELECT default_run_options FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2`,
+          [actorId, request.user!.id]
+        );
+        if (!current.rows[0]) {
+          reply.status(404);
+          return { error: { type: 'record-not-found', message: 'Actor not found' } };
+        }
+        image = imageOf(current.rows[0].default_run_options);
+      }
+      if (!image) {
+        reply.status(400);
+        return DEFINITION_REQUIRES_IMAGE;
+      }
+    }
 
     const setClauses: string[] = ['modified_at = NOW()'];
     const values: unknown[] = [];
@@ -422,12 +511,17 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       return { error: { type: 'record-not-found', message: 'Actor not found' } };
     }
 
-    if (updates.defaultRunOptions !== undefined || updates.version !== undefined) {
+    if (
+      updates.defaultRunOptions !== undefined ||
+      updates.version !== undefined ||
+      updates.actorDefinition !== undefined
+    ) {
       await recordBuildIfNew(
         result.rows[0].id,
         updates.defaultRunOptions ?? result.rows[0].default_run_options,
         updates.version,
-        (m) => fastify.log.warn(m)
+        (m) => fastify.log.warn(m),
+        updates.actorDefinition
       );
     }
 

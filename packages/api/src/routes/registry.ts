@@ -55,6 +55,15 @@ interface BuildRow {
   build_tag?: string | null;
 }
 
+// Explicit build columns. actor_definition (#112) is deliberately left out:
+// it can be ~1.5 MB per row and is served only by the build-detail endpoints
+// that need it, so lists and these routes must never read it via `*`.
+const BUILD_COLUMNS = `id, actor_id, version_id, status, started_at, finished_at, image_name,
+  image_digest, image_size_bytes, log_count, git_branch, git_commit, created_at`;
+const BUILD_COLUMNS_B = `b.id, b.actor_id, b.version_id, b.status, b.started_at, b.finished_at,
+  b.image_name, b.image_digest, b.image_size_bytes, b.log_count, b.git_branch, b.git_commit,
+  b.created_at`;
+
 export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
   fastify,
   opts = {}
@@ -189,7 +198,7 @@ export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
     // inner) to keep historical builds whose version_id may have been
     // SET NULL when a version was deleted.
     const result = await query<BuildRow>(
-      `SELECT b.*, v.version_number, v.build_tag
+      `SELECT ${BUILD_COLUMNS_B}, v.version_number, v.build_tag
          FROM actor_builds b
          LEFT JOIN actor_versions v ON v.id = b.version_id
         WHERE b.actor_id = $1
@@ -233,7 +242,7 @@ export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       `INSERT INTO actor_builds 
        (id, actor_id, version_id, status, image_name, git_branch, git_commit, started_at)
        VALUES ($1, $2, $3, 'RUNNING', $4, $5, $6, NOW())
-       RETURNING *`,
+       RETURNING ${BUILD_COLUMNS}`,
       [id, actorId, versionId, imageName, gitBranch, gitCommit]
     );
 
@@ -263,7 +272,7 @@ export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       const { actorId, buildId } = request.params;
 
       const result = await query<BuildRow>(
-        `SELECT * FROM actor_builds WHERE id = $1 AND actor_id = $2`,
+        `SELECT ${BUILD_COLUMNS} FROM actor_builds WHERE id = $1 AND actor_id = $2`,
         [buildId, actorId]
       );
 
@@ -288,7 +297,7 @@ export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
         `UPDATE actor_builds 
          SET status = 'ABORTED', finished_at = NOW()
          WHERE id = $1 AND actor_id = $2 AND status = 'RUNNING'
-         RETURNING *`,
+         RETURNING ${BUILD_COLUMNS}`,
         [buildId, actorId]
       );
 
