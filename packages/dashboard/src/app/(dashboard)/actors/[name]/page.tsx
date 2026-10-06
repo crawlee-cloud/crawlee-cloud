@@ -311,7 +311,8 @@ function OverviewPanel({ actor, onStarted }: { actor: Actor; onStarted: (run: Ru
   async function handleStart() {
     let parsed: unknown;
     try {
-      parsed = inputJson.trim() ? JSON.parse(inputJson) : undefined;
+      // An empty box means "no input": the run starts with `{}`.
+      parsed = inputJson.trim() ? JSON.parse(inputJson) : {};
       setJsonError(null);
     } catch {
       setJsonError('input is not valid JSON');

@@ -9,6 +9,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import fs from 'fs-extra';
 import { getConfig } from '../utils/config.js';
+import { startRun } from '../utils/runs.js';
 
 /**
  * Collector for -e KEY=VALUE options (can be used multiple times)
@@ -25,6 +26,16 @@ export function collectEnvVars(
   return { ...previous, [key]: valueParts.join('=') };
 }
 
+/** Parser for --timeout / --memory: a positive integer. */
+export function parsePositiveInt(value: string): number {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n <= 0) {
+    console.error(chalk.red(`Invalid number: ${value}. Use a positive integer`));
+    process.exit(1);
+  }
+  return n;
+}
+
 export const callCommand = new Command('call')
   .description('Call a remote Actor')
   .argument('<actor>', 'Actor name or ID')
@@ -36,14 +47,19 @@ export const callCommand = new Command('call')
     {}
   )
   .option('-w, --wait', 'Wait for run to finish', false)
-  .option('-t, --timeout <seconds>', 'Timeout in seconds', '3600')
-  .option('-m, --memory <mb>', 'Memory in MB', '1024')
+  // No defaults: when omitted, the actor's default run options apply.
+  .option(
+    '-t, --timeout <seconds>',
+    'Timeout in seconds (default: actor setting)',
+    parsePositiveInt
+  )
+  .option('-m, --memory <mb>', 'Memory in MB (default: actor setting)', parsePositiveInt)
   .action(async (actor, cmdOptions) => {
     const options = cmdOptions as {
       input?: string;
       wait: boolean;
-      timeout: string;
-      memory: string;
+      timeout?: number;
+      memory?: number;
       env: Record<string, string>;
     };
     console.log(chalk.bold(`\n📞 Calling Actor: ${actor}\n`));
@@ -74,30 +90,13 @@ export const callCommand = new Command('call')
     const spinner = ora('Starting Actor run...').start();
 
     try {
-      // Start the run
-      const response = await fetch(`${config.apiBaseUrl}/v2/acts/${actor}/runs`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${config.token}`,
-        },
-        body: JSON.stringify({
-          input: inputData,
-          timeout: parseInt(options.timeout, 10),
-          memory: parseInt(options.memory, 10),
-          envVars,
-        }),
+      const run = await startRun(config, actor, {
+        input: inputData,
+        timeout: options.timeout,
+        memory: options.memory,
+        envVars,
       });
-
-      if (!response.ok) {
-        const errorData = (await response.json().catch(() => ({}))) as {
-          error?: { message?: string };
-        };
-        throw new Error(errorData.error?.message || `API error: ${response.status}`);
-      }
-
-      const result = (await response.json()) as { data: { id: string; status: string } };
-      const runId = result.data.id;
+      const runId = run.id;
 
       spinner.succeed(`Run started: ${runId}`);
 

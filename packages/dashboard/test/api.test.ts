@@ -15,7 +15,15 @@ vi.hoisted(() => {
   process.env.NEXT_PUBLIC_API_URL = '';
 });
 
-import { getCurrentUser, listRuns, getRun, deleteActor, rerunRun } from '@/lib/api';
+import {
+  getCurrentUser,
+  listRuns,
+  getRun,
+  deleteActor,
+  rerunRun,
+  startRun,
+  utf8ToBase64,
+} from '@/lib/api';
 
 const fetchMock = vi.fn();
 
@@ -145,6 +153,55 @@ describe('rerunRun', () => {
     await expect(rerunRun('old-run')).rejects.toThrow(
       "The origin run's INPUT record no longer exists"
     );
+  });
+});
+
+describe('startRun (Apify run-start contract, #115)', () => {
+  const run = { id: 'run-1', status: 'READY' };
+
+  it('sends the input as the raw body and options in the query', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ data: run }, 201));
+
+    const result = await startRun('actor-1', {
+      input: { query: 'x', timeout: 'not-an-option' },
+      timeout: 60,
+      memory: 512,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://localhost:3000/v2/acts/actor-1/runs?timeout=60&memory=512');
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    // No `{ input: ... }` wrapper: an input key named `timeout` stays input.
+    expect(JSON.parse(init.body as string)).toEqual({ query: 'x', timeout: 'not-an-option' });
+    expect(result).toEqual(run);
+  });
+
+  it('sends `{}` and no query when there is no input or options', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ data: run }, 201));
+
+    await startRun('actor-1');
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://localhost:3000/v2/acts/actor-1/runs');
+    expect(init.body).toBe('{}');
+  });
+
+  it('base64-encodes envVars as UTF-8 JSON', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ data: run }, 201));
+    const envVars = { FOO: 'bar', GREETING: 'héllo ✓ 日本' };
+
+    await startRun('actor-1', { envVars });
+
+    const [url] = fetchMock.mock.calls[0] as [string];
+    const encoded = new URL(url).searchParams.get('envVars');
+    // Decode the way the API does (Buffer, utf8).
+    expect(JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'))).toEqual(envVars);
+  });
+
+  it('utf8ToBase64 matches Buffer for non-Latin-1 text', () => {
+    const text = '{"k":"€ ✓ 😀"}';
+    expect(utf8ToBase64(text)).toBe(Buffer.from(text, 'utf8').toString('base64'));
   });
 });
 

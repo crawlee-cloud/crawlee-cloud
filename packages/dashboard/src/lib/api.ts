@@ -701,17 +701,39 @@ export async function getRunCosts(
   return Object.assign({}, ...pages);
 }
 
+/** Base64 of UTF-8 bytes; `btoa` alone throws on non-Latin-1 characters. */
+export function utf8ToBase64(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+/**
+ * Start a run with the Apify contract (#115): the body is the input itself
+ * (`{}` when none), options go in the query string and only when set, so
+ * the actor's default run options apply otherwise. `envVars` is a Crawlee
+ * Cloud extension, sent as base64-encoded JSON.
+ */
 export async function startRun(
   actorId: string,
-  options?: { input?: unknown; timeout?: number; memory?: number }
+  options?: {
+    input?: unknown;
+    timeout?: number;
+    memory?: number;
+    envVars?: Record<string, string>;
+  }
 ): Promise<Run> {
-  const res = await fetchApi<{ data: Run }>(`/v2/acts/${actorId}/runs`, {
+  const qs = new URLSearchParams();
+  if (options?.timeout !== undefined) qs.set('timeout', String(options.timeout));
+  if (options?.memory !== undefined) qs.set('memory', String(options.memory));
+  if (options?.envVars && Object.keys(options.envVars).length > 0) {
+    qs.set('envVars', utf8ToBase64(JSON.stringify(options.envVars)));
+  }
+  const query = qs.toString();
+  const res = await fetchApi<{ data: Run }>(`/v2/acts/${actorId}/runs${query ? `?${query}` : ''}`, {
     method: 'POST',
-    body: JSON.stringify({
-      input: options?.input,
-      timeout: options?.timeout,
-      memory: options?.memory,
-    }),
+    body: JSON.stringify(options?.input ?? {}),
   });
   return res.data;
 }
