@@ -1,0 +1,11 @@
+[
+  "tools-list",
+  "search-actors",
+  "fetch-actor-details",
+  "get-actor-list",
+  "call-actor",
+  "poll-count",
+  "actor-tool",
+  "get-actor-run-list",
+  "get-dataset-items"
+]

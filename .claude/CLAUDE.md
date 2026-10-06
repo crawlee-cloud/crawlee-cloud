@@ -141,6 +141,7 @@ Built with Fastify, implements Apify v2 API endpoints:
 - **Configuration** (`src/`):
   - `config.ts` - Typed configuration with dev defaults and production enforcement
   - `config-validator.ts` - Security validation at startup (weak secrets, insecure defaults, CORS)
+  - `http-setup.ts` - Shared CORS, compression, content-type parsers, error handler, and body limit (`configureHttp()`; production and the integration test app both use it)
 
 - **Platform Services** (`src/`):
   - `scheduler.ts` - Cron tick loop that dispatches scheduled runs
@@ -240,7 +241,7 @@ Environment variables are defined in `.env.example` (basic) and `.env.secure.exa
 
 1. Create Zod validation schema in `packages/api/src/schemas/`
 2. Create route handler in `packages/api/src/routes/`, importing the schema
-3. Register route in `packages/api/src/index.ts` with `/v2` prefix
+3. Register the route plugin in `registerV2Routes()` (`packages/api/src/routes/index.ts`) with the `/v2` prefix — production and the integration test app both use it
 4. Follow Apify API response format for compatibility
 
 ### Database Changes

@@ -25,6 +25,7 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "test:coverage": "turbo run test:coverage",
+    "test:mcp-e2e": "npm --prefix tests/mcp-e2e ci && npm --prefix tests/mcp-e2e test",
     "clean": "turbo run clean && rm -rf node_modules",
     "db:migrate": "npm run db:migrate --workspace=@crawlee-cloud/api",
     "docker:dev": "docker compose -f docker-compose.dev.yml up -d",

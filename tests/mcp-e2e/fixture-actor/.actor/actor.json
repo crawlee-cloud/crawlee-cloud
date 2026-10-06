@@ -1,0 +1,7 @@
+{
+  "actorSpecification": 1,
+  "name": "echo-scraper",
+  "title": "Echo scraper (MCP e2e fixture)",
+  "version": "0.1",
+  "input": "./input_schema.json"
+}

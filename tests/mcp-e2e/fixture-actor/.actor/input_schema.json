@@ -1,0 +1,28 @@
+{
+  "title": "Echo scraper input",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "query": {
+      "title": "Query",
+      "type": "string",
+      "description": "Text echoed into every item's title.",
+      "editor": "textfield"
+    },
+    "maxItems": {
+      "title": "Max items",
+      "type": "integer",
+      "description": "Number of items to push to the default dataset.",
+      "default": 3,
+      "minimum": 0
+    },
+    "sleepSecs": {
+      "title": "Sleep (seconds)",
+      "type": "integer",
+      "description": "Seconds to sleep after pushing items, before writing OUTPUT.",
+      "default": 0,
+      "minimum": 0
+    }
+  },
+  "required": ["query"]
+}
