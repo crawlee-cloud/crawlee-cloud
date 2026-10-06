@@ -1,0 +1,16 @@
+{
+  "name": "crawlee-cloud-mcp-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Opt-in end-to-end harness: drives the stock @apify/actors-mcp-server against a live Crawlee Cloud stack",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node run.mjs"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0"
+  }
+}

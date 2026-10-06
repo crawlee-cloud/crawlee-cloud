@@ -43,14 +43,7 @@ export async function createTestApp(): Promise<FastifyInstance> {
   const { initS3 } = await import('../../src/storage/s3.js');
   const { initRedis } = await import('../../src/storage/redis.js');
   const { authRoutes } = await import('../../src/routes/auth.js');
-  const { actorsRoutes } = await import('../../src/routes/actors.js');
-  const { runsRoutes } = await import('../../src/routes/runs.js');
-  const { datasetsRoutes } = await import('../../src/routes/datasets.js');
-  const { keyValueStoresRoutes } = await import('../../src/routes/key-value-stores.js');
-  const { requestQueuesRoutes } = await import('../../src/routes/request-queues.js');
-  const { logsRoutes } = await import('../../src/routes/logs.js');
-  const { systemRoutes } = await import('../../src/routes/system.js');
-  const { webhooksRoutes } = await import('../../src/routes/webhooks.js');
+  const { registerV2Routes } = await import('../../src/routes/index.js');
 
   await initDatabase();
   await initS3();
@@ -92,14 +85,7 @@ export async function createTestApp(): Promise<FastifyInstance> {
   });
 
   await authRoutes(app);
-  await app.register(actorsRoutes, { prefix: '/v2' });
-  await app.register(runsRoutes, { prefix: '/v2' });
-  await app.register(datasetsRoutes, { prefix: '/v2' });
-  await app.register(keyValueStoresRoutes, { prefix: '/v2' });
-  await app.register(requestQueuesRoutes, { prefix: '/v2' });
-  await app.register(logsRoutes, { prefix: '/v2' });
-  await app.register(systemRoutes, { prefix: '/v2' });
-  await app.register(webhooksRoutes, { prefix: '/v2' });
+  await registerV2Routes(app);
 
   await app.ready();
   return app;

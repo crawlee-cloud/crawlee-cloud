@@ -1,0 +1,13 @@
+{
+  "name": "echo-scraper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Minimal fixture actor for the MCP e2e harness",
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.js"
+  },
+  "dependencies": {
+    "apify": "^3.2.6"
+  }
+}

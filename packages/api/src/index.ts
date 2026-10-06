@@ -8,18 +8,7 @@ import { initDatabase } from './db/index.js';
 import { initS3 } from './storage/s3.js';
 import { initRedis } from './storage/redis.js';
 import { authRoutes } from './routes/auth.js';
-import { actorsRoutes } from './routes/actors.js';
-import { runsRoutes } from './routes/runs.js';
-import { datasetsRoutes } from './routes/datasets.js';
-import { keyValueStoresRoutes } from './routes/key-value-stores.js';
-import { requestQueuesRoutes } from './routes/request-queues.js';
-import { logsRoutes } from './routes/logs.js';
-import { registryRoutes } from './routes/registry.js';
-import { usersRoutes } from './routes/users.js';
-import { webhooksRoutes } from './routes/webhooks.js';
-import { schedulesRoutes } from './routes/schedules.js';
-import { scalerRoutes } from './routes/scaler.js';
-import { systemRoutes } from './routes/system.js';
+import { registerV2Routes } from './routes/index.js';
 import { requireAdmin } from './auth/middleware.js';
 import { setupAdminUserGated } from './setup-gated.js';
 import { initScheduler } from './scheduler.js';
@@ -134,18 +123,7 @@ app.addHook('onResponse', (request, reply, done) => {
 await authRoutes(app);
 
 // Register v2 API routes
-await app.register(actorsRoutes, { prefix: '/v2' });
-await app.register(runsRoutes, { prefix: '/v2' });
-await app.register(datasetsRoutes, { prefix: '/v2' });
-await app.register(keyValueStoresRoutes, { prefix: '/v2' });
-await app.register(requestQueuesRoutes, { prefix: '/v2' });
-await app.register(logsRoutes, { prefix: '/v2' });
-await app.register(registryRoutes, { prefix: '/v2' });
-await app.register(usersRoutes, { prefix: '/v2' });
-await app.register(webhooksRoutes, { prefix: '/v2' });
-await app.register(schedulesRoutes, { prefix: '/v2' });
-await app.register(scalerRoutes, { prefix: '/v2' });
-await app.register(systemRoutes, { prefix: '/v2' });
+await registerV2Routes(app);
 
 // Health check routes (liveness + readiness)
 registerHealthRoutes(app);
