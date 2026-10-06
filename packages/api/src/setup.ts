@@ -12,6 +12,7 @@ import {
   sha256ApiKey,
   verifyApiKey,
 } from './auth/index.js';
+import { insertWithGeneratedUsername } from './auth/username.js';
 import { config } from './config.js';
 import { redis } from './storage/redis.js';
 
@@ -50,13 +51,16 @@ export async function setupAdminUser(): Promise<void> {
       adminUserId = nanoid();
       const passwordHash = await hashPassword(adminPassword);
 
-      await pool.query(
-        `INSERT INTO users (id, email, password_hash, name, role, created_at)
-         VALUES ($1, $2, $3, $4, $5, NOW())`,
-        [adminUserId, adminEmail, passwordHash, 'Admin', 'admin']
-      );
+      const username = await insertWithGeneratedUsername(pool, adminEmail, async (username) => {
+        await pool.query(
+          `INSERT INTO users (id, email, username, password_hash, name, role, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+          [adminUserId, adminEmail, username, passwordHash, 'Admin', 'admin']
+        );
+        return username;
+      });
 
-      console.log(`[Setup] ✓ Admin user created: ${adminEmail}`);
+      console.log(`[Setup] ✓ Admin user created: ${adminEmail} (username: ${username})`);
     }
 
     // Create runner API key (needs admin user ID)
