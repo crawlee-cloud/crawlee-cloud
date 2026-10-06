@@ -248,6 +248,31 @@ export default function SettingsPage() {
             </div>
           </Field>
 
+          {/* Username — the Apify-style owner slug (`username/actor-name`) */}
+          {user?.username && (
+            <Field
+              label="Username"
+              hint="Actors are addressed as username/actor-name, e.g. in the MCP server's --tools list."
+            >
+              <div className="flex gap-2">
+                <input
+                  value={user.username}
+                  readOnly
+                  onClick={(e) => e.currentTarget.select()}
+                  className="flex-1 h-9 px-3 rounded-sm border border-border bg-input font-mono text-[12px] text-foreground"
+                />
+                <button
+                  type="button"
+                  onClick={() => void copy(user.username ?? '', 'Username')}
+                  title="Copy"
+                  className="h-9 w-9 grid place-items-center border border-border rounded-sm text-muted-foreground hover:text-foreground hover:border-signal/40"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </Field>
+          )}
+
           {/* Newly created key — show ONCE */}
           {newlyCreatedKey && (
             <div className="panel border-l-2 border-l-signal p-4 space-y-3 bg-signal/5">
