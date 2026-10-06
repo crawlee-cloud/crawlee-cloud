@@ -214,6 +214,10 @@ describe('Registry Routes', () => {
       });
       const [sql] = mockQuery.mock.calls[0] as [string];
       expect(sql).toContain('LEFT JOIN actor_versions');
+      // actor_definition can be ~1.5 MB per row (#112) — lists must select
+      // explicit columns and never pull it.
+      expect(sql).not.toMatch(/\bb\.\*|SELECT \*/);
+      expect(sql).not.toContain('actor_definition');
     });
 
     it('nulls the joined fields for builds whose version was deleted', async () => {
@@ -281,8 +285,11 @@ describe('Registry Routes', () => {
       const response = await app.inject({ method: 'GET', url: '/v2/acts/actor-1/builds/build-1' });
 
       expect(response.statusCode).toBe(200);
-      const [, params] = mockQuery.mock.calls[0] as [string, unknown[]];
+      const [sql, params] = mockQuery.mock.calls[0] as [string, unknown[]];
       expect(params).toEqual(['build-1', 'actor-1']);
+      // actor_definition is served only by the build-detail endpoints of #117.
+      expect(sql).not.toContain('*');
+      expect(sql).not.toContain('actor_definition');
     });
 
     it('returns 404 for a missing build', async () => {

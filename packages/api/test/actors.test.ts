@@ -15,6 +15,7 @@ vi.mock('../src/auth/middleware.js', () => ({
 }));
 
 import { actorsRoutes } from '../src/routes/actors.js';
+import { CreateActorSchema, UpdateActorSchema } from '../src/schemas/actors.js';
 
 const mockQuery = vi.fn();
 vi.mock('../src/db/index.js', () => ({
@@ -420,6 +421,185 @@ describe('Actor Routes', () => {
       expect(body.data.hasProxyOverride).toBe(true);
       expect(JSON.stringify(body)).not.toContain('v1:secret-blob');
       expect(JSON.stringify(body)).not.toContain('proxy_password_encrypted');
+    });
+  });
+
+  describe('actorDefinition (#112)', () => {
+    const IMAGE = 'ghcr.io/example/actor-foo:latest';
+    const definition = {
+      actorSpecification: 1,
+      name: 'actor-foo',
+      version: '0.1',
+      input: { type: 'object', properties: { url: { type: 'string' } } },
+      readme: '# Foo',
+      dockerfile: './Dockerfile',
+    };
+
+    it('keeps unknown Apify keys (passthrough)', () => {
+      const parsed = UpdateActorSchema.parse({
+        actorDefinition: { ...definition, storages: { dataset: {} } },
+      });
+      expect(parsed.actorDefinition).toEqual({ ...definition, storages: { dataset: {} } });
+    });
+
+    it('rejects a readme over 1 MB (bytes, not characters)', () => {
+      // 600k two-byte chars = 1.2 MB, under 1M characters.
+      const result = CreateActorSchema.safeParse({
+        name: 'foo',
+        actorDefinition: { readme: 'é'.repeat(600_000) },
+      });
+      expect(result.success).toBe(false);
+      expect(result.error.issues[0].path).toEqual(['actorDefinition', 'readme']);
+      expect(result.error.issues[0].message).toContain('actorDefinition.readme');
+    });
+
+    it('accepts a readme of exactly 1 MB', () => {
+      const result = CreateActorSchema.safeParse({
+        name: 'foo',
+        actorDefinition: { readme: 'a'.repeat(1024 * 1024) },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects an input schema over 500 KB with 400 validation_error', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/v2/acts/actor-1',
+        payload: {
+          actorDefinition: {
+            input: { type: 'object', properties: {}, description: 'x'.repeat(510 * 1024) },
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body = response.json();
+      expect(body.error.type).toBe('validation_error');
+      expect(body.error.details[0].path).toEqual(['actorDefinition', 'input']);
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-object input', () => {
+      const result = UpdateActorSchema.safeParse({
+        actorDefinition: { input: '.actor/input_schema.json' },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('POST create with actorDefinition but no image returns 400 and writes nothing', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] }); // no existing actor
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/acts',
+        payload: { name: 'test-actor', actorDefinition: definition },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toEqual({
+        type: 'validation_error',
+        message: 'actorDefinition requires an image',
+      });
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it('POST upsert with actorDefinition falls back to the stored image', async () => {
+      const row = createActorRow({ default_run_options: { image: IMAGE } });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [row] }) // existing actor
+        .mockResolvedValueOnce({ rows: [row] }) // UPDATE actors
+        .mockResolvedValueOnce({ rows: [{ id: 'build-1', image_name: IMAGE, version_id: null }] })
+        .mockResolvedValueOnce({ rows: [] }); // UPDATE actor_builds
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/acts',
+        payload: { name: 'test-actor', actorDefinition: definition },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const [sql, params] = mockQuery.mock.calls[3] as [string, unknown[]];
+      expect(sql).toContain('UPDATE actor_builds SET actor_definition = COALESCE');
+      expect(params).toEqual(['build-1', JSON.stringify(definition)]);
+    });
+
+    it('PUT with only actorDefinition on an actor without an image returns 400 before updating', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ default_run_options: null }] });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/v2/acts/actor-1',
+        payload: { actorDefinition: definition },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.message).toBe('actorDefinition requires an image');
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it('PUT replacing defaultRunOptions without an image rejects actorDefinition', async () => {
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/v2/acts/actor-1',
+        payload: { defaultRunOptions: { timeoutSecs: 60 }, actorDefinition: definition },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('PUT with only actorDefinition on an unknown actor returns 404', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/v2/acts/nope',
+        payload: { actorDefinition: definition },
+      });
+
+      expect(response.statusCode).toBe(404);
+    });
+
+    it('PUT with only actorDefinition updates the latest build instead of inserting', async () => {
+      const row = createActorRow({ default_run_options: { image: IMAGE } });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ default_run_options: { image: IMAGE } }] })
+        .mockResolvedValueOnce({ rows: [row] }) // UPDATE actors
+        // Latest build carries a version; no version in the body must still match.
+        .mockResolvedValueOnce({ rows: [{ id: 'build-1', image_name: IMAGE, version_id: 'v-1' }] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/v2/acts/actor-1',
+        payload: { actorDefinition: definition },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mockQuery).toHaveBeenCalledTimes(4);
+      const [sql] = mockQuery.mock.calls[3] as [string];
+      expect(sql).toContain('UPDATE actor_builds');
+      expect(sql).not.toContain('INSERT');
+    });
+
+    it('a new image without actorDefinition inserts with a carry-over subquery', async () => {
+      const row = createActorRow({ default_run_options: { image: IMAGE } });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [row] }) // UPDATE actors
+        .mockResolvedValueOnce({ rows: [{ id: 'build-1', image_name: 'old', version_id: null }] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/v2/acts/actor-1',
+        payload: { defaultRunOptions: { image: IMAGE } },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const [sql, params] = mockQuery.mock.calls[2] as [string, unknown[]];
+      expect(sql).toContain('INSERT INTO actor_builds');
+      expect(sql).toMatch(/COALESCE\(\$5::jsonb,\s*\(\s*SELECT actor_definition FROM actor_builds/);
+      expect(params[4]).toBeNull();
     });
   });
 
