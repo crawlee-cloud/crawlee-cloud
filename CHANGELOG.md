@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 
 - **MCP e2e acceptance harness** — new opt-in `npm run test:mcp-e2e` (standalone package in `tests/mcp-e2e/`, outside the npm workspaces, so it does not touch the root install, `npm test` or CI). It pushes a fixture actor, then drives the unmodified `@apify/actors-mcp-server@0.17.3` over stdio through a logging proxy against a live stack and checks 18 tools plus a `poll-count` assertion. Checks that still fail on the current API are listed in `expected-failures.json`; the run exits non-zero on any unlisted failure and on any listed check that passes, so the list can only shrink as the MCP parity epic (#106) lands.
 - **Integration test app registers every `/v2` route** — route registration is extracted into `registerV2Routes()` (`packages/api/src/routes/index.ts`) and shared by `src/index.ts` and the integration test app, which previously hand-copied a subset and lacked the registry, users, schedules and scaler routes. No production behaviour change.
+- **Integration test app shares production's HTTP setup** — CORS, compression (gzip request bodies), the content-type parsers, the global error handler and the 10MB body limit move into `configureHttp()` (`packages/api/src/http-setup.ts`), used by both `src/index.ts` and the integration test app instead of a hand-copied subset. No production behaviour change.
 
 ## [1.6.0] - 2026-08-05
 
