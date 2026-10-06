@@ -111,6 +111,38 @@ describe('Actor Routes', () => {
       expect(body.data.limit).toBe(100);
     });
 
+    it('returns username and stats.lastRunStartedAt on list items and ignores ?my=1', async () => {
+      const lastRun = new Date('2026-10-01T12:00:00Z');
+      mockQuery.mockResolvedValueOnce({ rows: [{ total: '2' }] }).mockResolvedValueOnce({
+        rows: [
+          { ...createActorRow(), username: 'alice', last_run_started_at: lastRun },
+          { ...createActorRow({ id: 'actor-2' }), username: 'alice', last_run_started_at: null },
+        ],
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/v2/acts?my=1' });
+
+      expect(response.statusCode).toBe(200);
+      const items = response.json().data.items;
+      expect(items[0]).toMatchObject({
+        username: 'alice',
+        stats: { lastRunStartedAt: lastRun.toISOString() },
+      });
+      expect(items[1].stats).toEqual({ lastRunStartedAt: null });
+      expect(items[0]).not.toHaveProperty('last_run_started_at');
+
+      // my=1 adds no filter; the latest-run lateral filters on user_id too
+      // so it can use idx_runs_user_actor_created.
+      const [countSql, countParams] = mockQuery.mock.calls[0] as [string, unknown[]];
+      expect(countSql).toContain('WHERE a.user_id = $1');
+      expect(countParams).toEqual(['test-user-id']);
+      const [pageSql] = mockQuery.mock.calls[1] as [string];
+      expect(pageSql).toContain('JOIN users u ON u.id = a.user_id');
+      expect(pageSql).toMatch(
+        /LEFT JOIN LATERAL[\s\S]*r\.user_id = a\.user_id AND r\.actor_id = a\.id/
+      );
+    });
+
     it('honours ?offset and ?limit query params', async () => {
       mockQuery
         .mockResolvedValueOnce({ rows: [{ total: '500' }] })
@@ -187,7 +219,7 @@ describe('Actor Routes', () => {
     it('should create new actor', async () => {
       mockQuery
         .mockResolvedValueOnce({ rows: [] }) // no existing
-        .mockResolvedValueOnce({ rows: [createActorRow()] });
+        .mockResolvedValueOnce({ rows: [{ ...createActorRow(), username: 'alice' }] });
 
       const response = await app.inject({
         method: 'POST',
@@ -198,6 +230,10 @@ describe('Actor Routes', () => {
       expect(response.statusCode).toBe(201);
       const body = JSON.parse(response.body);
       expect(body.data.name).toBe('test-actor');
+      // RETURNING can't join, so the owner's username comes from a subquery.
+      expect(body.data.username).toBe('alice');
+      const [insertSql] = mockQuery.mock.calls[1] as [string];
+      expect(insertSql).toContain('(SELECT username FROM users WHERE users.id = actors.user_id)');
     });
 
     it('should update existing actor', async () => {
@@ -334,13 +370,27 @@ describe('Actor Routes', () => {
 
       expect(response.statusCode).toBe(404);
     });
+
+    it.each([
+      ['username~name', 'alice~test-actor', 'alice~test-actor'],
+      // %2F arrives decoded in request.params.
+      ['username%2Fname', 'alice%2Ftest-actor', 'alice/test-actor'],
+    ])('resolves %s and returns username', async (_label, segment, decoded) => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ ...createActorRow(), username: 'alice' }] });
+
+      const response = await app.inject({ method: 'GET', url: `/v2/acts/${segment}` });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().data).toMatchObject({ id: 'actor-1', username: 'alice' });
+      expect(mockQuery.mock.calls[0][1]).toEqual([decoded, 'test-user-id', 'alice', 'test-actor']);
+    });
   });
 
   describe('PUT /v2/acts/:actorId', () => {
     it('should update actor', async () => {
-      mockQuery.mockResolvedValueOnce({
-        rows: [createActorRow({ title: 'New Title' })],
-      });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ ...createActorRow(), username: 'alice' }] }) // resolveActor
+        .mockResolvedValueOnce({ rows: [createActorRow({ title: 'New Title' })] });
 
       const response = await app.inject({
         method: 'PUT',
@@ -349,6 +399,31 @@ describe('Actor Routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
+      // The update targets the resolved id; username comes from the lookup.
+      const [sql, params] = mockQuery.mock.calls[1] as [string, unknown[]];
+      expect(sql).toContain('WHERE id = $2 AND user_id = $3');
+      expect(params).toEqual(['New Title', 'actor-1', 'test-user-id']);
+      expect(response.json().data).toMatchObject({ title: 'New Title', username: 'alice' });
+    });
+
+    it('resolves username~name and returns 404 without updating for an unknown actor', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/v2/acts/bob~test-actor',
+        payload: { title: 'New Title' },
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json().error.type).toBe('record-not-found');
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(mockQuery.mock.calls[0][1]).toEqual([
+        'bob~test-actor',
+        'test-user-id',
+        'bob',
+        'test-actor',
+      ]);
     });
 
     it('should persist defaultRunOptions on update', async () => {
@@ -356,9 +431,9 @@ describe('Actor Routes', () => {
         image: 'ghcr.io/example/repo/actor-foo:latest',
         envVars: { BASE_URL: 'https://example.com' },
       };
-      mockQuery.mockResolvedValueOnce({
-        rows: [createActorRow({ default_run_options: dro })],
-      });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [createActorRow()] }) // resolveActor
+        .mockResolvedValueOnce({ rows: [createActorRow({ default_run_options: dro })] });
 
       const response = await app.inject({
         method: 'PUT',
@@ -367,7 +442,7 @@ describe('Actor Routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      const updateCall = mockQuery.mock.calls[0] as [string, unknown[]];
+      const updateCall = mockQuery.mock.calls[1] as [string, unknown[]];
       const sql = updateCall[0];
       expect(sql).toMatch(/default_run_options = \$/);
       const storedJson = updateCall[1].find(
@@ -378,9 +453,9 @@ describe('Actor Routes', () => {
 
     it('PUT with proxyPassword stores encrypted blob, never plaintext', async () => {
       process.env.PROXY_ENCRYPTION_KEY = 'a'.repeat(64);
-      mockQuery.mockResolvedValueOnce({
-        rows: [createActorRow({ proxy_password_encrypted: 'v1:x' })],
-      });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [createActorRow()] }) // resolveActor
+        .mockResolvedValueOnce({ rows: [createActorRow({ proxy_password_encrypted: 'v1:x' })] });
       const res = await app.inject({
         method: 'PUT',
         url: '/v2/acts/actor-1',
@@ -388,15 +463,15 @@ describe('Actor Routes', () => {
         payload: { proxyPassword: 'apify_secret_pw' },
       });
       expect(res.statusCode).toBe(200);
-      const args = mockQuery.mock.calls[0][1] as unknown[];
+      const args = mockQuery.mock.calls[1][1] as unknown[];
       expect(args).not.toContain('apify_secret_pw');
       expect(args.some((a) => typeof a === 'string' && /^v1:/.test(a))).toBe(true);
     });
 
     it('PUT with proxyPassword: null clears the column', async () => {
-      mockQuery.mockResolvedValueOnce({
-        rows: [createActorRow({ proxy_password_encrypted: null })],
-      });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [createActorRow()] }) // resolveActor
+        .mockResolvedValueOnce({ rows: [createActorRow({ proxy_password_encrypted: null })] });
       const res = await app.inject({
         method: 'PUT',
         url: '/v2/acts/actor-1',
@@ -404,7 +479,7 @@ describe('Actor Routes', () => {
         payload: { proxyPassword: null },
       });
       expect(res.statusCode).toBe(200);
-      const args = mockQuery.mock.calls[0][1] as unknown[];
+      const args = mockQuery.mock.calls[1][1] as unknown[];
       expect(args).toContain(null);
     });
 
@@ -538,6 +613,10 @@ describe('Actor Routes', () => {
     });
 
     it('PUT replacing defaultRunOptions without an image rejects actorDefinition', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [createActorRow({ default_run_options: { image: IMAGE } })],
+      });
+
       const response = await app.inject({
         method: 'PUT',
         url: '/v2/acts/actor-1',
@@ -545,7 +624,9 @@ describe('Actor Routes', () => {
       });
 
       expect(response.statusCode).toBe(400);
-      expect(mockQuery).not.toHaveBeenCalled();
+      // Only the actor lookup ran — the stored image doesn't count when the
+      // body replaces defaultRunOptions.
+      expect(mockQuery).toHaveBeenCalledTimes(1);
     });
 
     it('PUT with only actorDefinition on an unknown actor returns 404', async () => {
@@ -585,6 +666,7 @@ describe('Actor Routes', () => {
     it('a new image without actorDefinition inserts with a carry-over subquery', async () => {
       const row = createActorRow({ default_run_options: { image: IMAGE } });
       mockQuery
+        .mockResolvedValueOnce({ rows: [row] }) // resolveActor
         .mockResolvedValueOnce({ rows: [row] }) // UPDATE actors
         .mockResolvedValueOnce({ rows: [{ id: 'build-1', image_name: 'old', version_id: null }] })
         .mockResolvedValueOnce({ rows: [] });
@@ -596,7 +678,7 @@ describe('Actor Routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      const [sql, params] = mockQuery.mock.calls[2] as [string, unknown[]];
+      const [sql, params] = mockQuery.mock.calls[3] as [string, unknown[]];
       expect(sql).toContain('INSERT INTO actor_builds');
       expect(sql).toMatch(/COALESCE\(\$5::jsonb,\s*\(\s*SELECT actor_definition FROM actor_builds/);
       expect(params[4]).toBeNull();
@@ -764,10 +846,10 @@ describe('Actor Routes', () => {
       expect(body.data).toMatchObject({ total: 1, count: 1, offset: 0, limit: 10, desc: false });
       expect(body.data.items[0]).toMatchObject({ id: 'run-1', actId: 'actor-1' });
 
-      // Same user-scoped id-or-name lookup as GET /acts/:actorId.
+      // Same user-scoped resolveActor lookup as GET /acts/:actorId.
       const [lookupSql, lookupParams] = mockQuery.mock.calls[0] as [string, unknown[]];
-      expect(lookupSql).toContain('(id = $1 OR name = $1) AND user_id = $2');
-      expect(lookupParams).toEqual(['test-actor', 'test-user-id']);
+      expect(lookupSql).toContain('WHERE a.user_id = $2');
+      expect(lookupParams).toEqual(['test-actor', 'test-user-id', null, null]);
 
       // Runs are filtered by the resolved id, never the raw path param.
       const [countSql, countParams] = mockQuery.mock.calls[1] as [string, unknown[]];

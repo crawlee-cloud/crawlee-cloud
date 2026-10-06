@@ -16,9 +16,23 @@ vi.mock('../src/auth/middleware.js', () => ({
 import { registryRoutes } from '../src/routes/registry.js';
 
 const mockQuery = vi.fn();
+// resolveActor's lookup (actors joined with users) is answered by
+// mockResolveActor, so each test's mockQuery queue covers only the route's
+// own version/build queries.
+const mockResolveActor = vi.fn();
 vi.mock('../src/db/index.js', () => ({
-  query: (...args: unknown[]) => mockQuery(...args),
+  query: (sql: string, params?: unknown[]) =>
+    sql.includes('JOIN users u ON u.id = a.user_id')
+      ? mockResolveActor(sql, params)
+      : mockQuery(sql, params),
 }));
+
+const OWN_ACTOR = {
+  id: 'actor-1',
+  name: 'test-actor',
+  user_id: 'test-user-id',
+  username: 'alice',
+};
 
 const mockRedisRpush = vi.fn();
 const mockRedisLrange = vi.fn();
@@ -75,6 +89,8 @@ describe('Registry Routes', () => {
 
   beforeEach(() => {
     mockQuery.mockReset();
+    mockResolveActor.mockReset();
+    mockResolveActor.mockResolvedValue({ rows: [OWN_ACTOR] });
     mockRedisRpush.mockReset();
     mockRedisLrange.mockReset();
   });
@@ -105,9 +121,7 @@ describe('Registry Routes', () => {
 
   describe('POST /v2/acts/:actorId/versions', () => {
     it('creates a version with defaults and clears sibling build tags', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rows: [{ id: 'actor-1' }] }) // actor exists
-        .mockResolvedValueOnce({ rows: [createVersionRow()] }); // insert
+      mockQuery.mockResolvedValueOnce({ rows: [createVersionRow()] }); // insert
 
       const response = await app.inject({
         method: 'POST',
@@ -117,17 +131,18 @@ describe('Registry Routes', () => {
 
       expect(response.statusCode).toBe(201);
       expect(response.json().data.versionNumber).toBe('0.1');
-      const [sql, params] = mockQuery.mock.calls[1] as [string, unknown[]];
+      const [sql, params] = mockQuery.mock.calls[0] as [string, unknown[]];
       // Sibling versions holding the same tag are cleared in the same statement.
       expect(sql).toContain('UPDATE actor_versions SET build_tag = NULL');
       expect(sql).toContain('INSERT INTO actor_versions');
+      expect(params[1]).toBe('actor-1'); // the resolved actor id
       expect(params[2]).toBe('0.1');
       expect(params[3]).toBe('GIT_REPO'); // sourceType default
       expect(params[7]).toBe(JSON.stringify({ FOO: 'bar' }));
     });
 
     it('returns 404 when the actor does not exist', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockResolveActor.mockResolvedValueOnce({ rows: [] });
 
       const response = await app.inject({
         method: 'POST',
@@ -137,13 +152,11 @@ describe('Registry Routes', () => {
 
       expect(response.statusCode).toBe(404);
       expect(response.json().error.type).toBe('record-not-found');
-      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(mockQuery).not.toHaveBeenCalled();
     });
 
     it('stores null env vars when none are provided', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rows: [{ id: 'actor-1' }] })
-        .mockResolvedValueOnce({ rows: [createVersionRow({ env_vars: null })] });
+      mockQuery.mockResolvedValueOnce({ rows: [createVersionRow({ env_vars: null })] });
 
       await app.inject({
         method: 'POST',
@@ -151,7 +164,7 @@ describe('Registry Routes', () => {
         payload: { versionNumber: '0.2' },
       });
 
-      const [, params] = mockQuery.mock.calls[1] as [string, unknown[]];
+      const [, params] = mockQuery.mock.calls[0] as [string, unknown[]];
       expect(params[7]).toBeNull();
     });
   });
@@ -233,9 +246,7 @@ describe('Registry Routes', () => {
 
   describe('POST /v2/acts/:actorId/builds', () => {
     it('creates a RUNNING build and queues the job in Redis', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rows: [{ id: 'actor-1', name: 'test-actor' }] })
-        .mockResolvedValueOnce({ rows: [createBuildRow()] });
+      mockQuery.mockResolvedValueOnce({ rows: [createBuildRow()] });
       mockRedisRpush.mockResolvedValueOnce(1);
 
       const response = await app.inject({
@@ -245,7 +256,7 @@ describe('Registry Routes', () => {
       });
 
       expect(response.statusCode).toBe(201);
-      const [insertSql, insertParams] = mockQuery.mock.calls[1] as [string, unknown[]];
+      const [insertSql, insertParams] = mockQuery.mock.calls[0] as [string, unknown[]];
       expect(insertSql).toContain("'RUNNING'");
       // Image name derives from the actor name + build id prefix.
       expect(insertParams[3]).toMatch(/^crawlee-cloud\/test-actor:[A-Za-z0-9_-]{8}$/);
@@ -265,7 +276,7 @@ describe('Registry Routes', () => {
     });
 
     it('returns 404 without queueing when the actor is missing', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockResolveActor.mockResolvedValueOnce({ rows: [] });
 
       const response = await app.inject({
         method: 'POST',
@@ -335,6 +346,7 @@ describe('Registry Routes', () => {
 
   describe('GET /v2/acts/:actorId/builds/:buildId/logs', () => {
     it('reads the requested log window from Redis', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ '?column?': 1 }] }); // build is the actor's
       mockRedisLrange.mockResolvedValueOnce([
         JSON.stringify({ line: 'step 1' }),
         JSON.stringify({ line: 'step 2' }),
@@ -347,12 +359,16 @@ describe('Registry Routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(mockRedisLrange).toHaveBeenCalledWith('build_logs:build-1', 10, 11);
+      const [buildSql, buildParams] = mockQuery.mock.calls[0] as [string, unknown[]];
+      expect(buildSql).toContain('FROM actor_builds WHERE id = $1 AND actor_id = $2');
+      expect(buildParams).toEqual(['build-1', 'actor-1']);
       const body = response.json();
       expect(body.data).toMatchObject({ offset: 10, limit: 2, count: 2 });
       expect(body.data.items[1].line).toBe('step 2');
     });
 
     it('defaults to offset 0 and limit 100', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
       mockRedisLrange.mockResolvedValueOnce([]);
 
       const response = await app.inject({
@@ -362,6 +378,79 @@ describe('Registry Routes', () => {
 
       expect(mockRedisLrange).toHaveBeenCalledWith('build_logs:build-1', 0, 99);
       expect(response.json().data.count).toBe(0);
+    });
+  });
+
+  // #77: every registry route resolves :actorId to one of the caller's own
+  // actors first. Another user's actor (or an unknown one) is a 404 before
+  // any version/build query or Redis call runs.
+  describe("another user's actor (#77)", () => {
+    const routes: Array<{ method: 'GET' | 'POST' | 'DELETE'; path: string; payload?: object }> = [
+      { method: 'GET', path: 'versions' },
+      { method: 'POST', path: 'versions', payload: { versionNumber: '0.1' } },
+      { method: 'GET', path: 'versions/ver-1' },
+      { method: 'DELETE', path: 'versions/ver-1' },
+      { method: 'GET', path: 'builds' },
+      { method: 'POST', path: 'builds', payload: {} },
+      { method: 'GET', path: 'builds/build-1' },
+      { method: 'POST', path: 'builds/build-1/abort' },
+      { method: 'GET', path: 'builds/build-1/logs' },
+    ];
+
+    it.each(routes)('$method /v2/acts/:actorId/$path returns 404', async (route) => {
+      mockResolveActor.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({
+        method: route.method,
+        url: `/v2/acts/bobs-actor-id/${route.path}`,
+        ...(route.payload ? { payload: route.payload } : {}),
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json().error.type).toBe('record-not-found');
+      // The lookup is scoped to the caller.
+      const [, params] = mockResolveActor.mock.calls[0] as [string, unknown[]];
+      expect(params.slice(0, 2)).toEqual(['bobs-actor-id', 'test-user-id']);
+      expect(mockQuery).not.toHaveBeenCalled();
+      expect(mockRedisRpush).not.toHaveBeenCalled();
+      expect(mockRedisLrange).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { method: 'GET' as const, path: 'builds/bobs-build' },
+      { method: 'POST' as const, path: 'builds/bobs-build/abort' },
+      { method: 'GET' as const, path: 'builds/bobs-build/logs' },
+    ])("$method /v2/acts/:ownActor/$path returns 404 for another actor's build", async (route) => {
+      // The build query filters on the resolved actor id, so a build of
+      // another (user's) actor matches nothing.
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({
+        method: route.method,
+        url: `/v2/acts/actor-1/${route.path}`,
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json().error.type).toBe('record-not-found');
+      const [, params] = mockQuery.mock.calls[0] as [string, unknown[]];
+      expect(params).toEqual(['bobs-build', 'actor-1']);
+      expect(mockRedisLrange).not.toHaveBeenCalled();
+    });
+
+    it('resolves username~name to the caller’s actor', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [createVersionRow()] });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/acts/alice~test-actor/versions',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const [, resolveParams] = mockResolveActor.mock.calls[0] as [string, unknown[]];
+      expect(resolveParams).toEqual(['alice~test-actor', 'test-user-id', 'alice', 'test-actor']);
+      // Versions are read by the resolved id, never the raw path param.
+      const [, params] = mockQuery.mock.calls[0] as [string, unknown[]];
+      expect(params).toEqual(['actor-1']);
     });
   });
 });
