@@ -216,7 +216,8 @@ describe('Logs Routes', () => {
       expect(body.data.limit).toBe(500);
     });
 
-    it('tail=true returns the LAST `limit` lines', async () => {
+    // apify-client serializes booleans as 1/0, so tail=1 must behave like tail=true.
+    it.each(['true', '1'])('tail=%s returns the LAST `limit` lines', async (tail) => {
       mockQuery.mockResolvedValueOnce({ rows: [{ id: 'run-1' }] });
       // 23,481 lines stored — tail with limit=500 should fetch rows 22981..23480
       vi.mocked(redis.llen).mockResolvedValue(23_481);
@@ -224,7 +225,7 @@ describe('Logs Routes', () => {
 
       const response = await app.inject({
         method: 'GET',
-        url: '/actor-runs/run-1/logs?tail=true&limit=500',
+        url: `/actor-runs/run-1/logs?tail=${tail}&limit=500`,
       });
 
       expect(response.statusCode).toBe(200);

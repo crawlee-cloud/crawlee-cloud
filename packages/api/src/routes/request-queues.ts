@@ -21,6 +21,7 @@ import {
   isLocked as _isLocked,
 } from '../storage/redis.js';
 import { authenticate } from '../auth/middleware.js';
+import { zBoolQuery } from '../schemas/common.js';
 import {
   CreateQueueSchema,
   AddRequestSchema,
@@ -356,7 +357,7 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     Querystring: { forefront?: string };
   }>('/request-queues/:queueId/requests', async (request, reply) => {
     const { queueId } = request.params;
-    const forefront = request.query.forefront === 'true';
+    const forefront = zBoolQuery.parse(request.query.forefront) ?? false;
     const body = AddRequestSchema.parse(request.body);
 
     // Get or create queue (user-scoped)
@@ -383,7 +384,11 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     const uniqueKey =
       body.uniqueKey || computeUniqueKey(body.url, body.method || 'GET', body.payload);
 
-    // For forefront, use negative order_no to put at front
+    // For forefront, use a negative order_no to put it at the front. The
+    // head/listAndLock reads order by `order_no ASC` in Postgres, so the sign
+    // has to land on the row itself, not just on the Redis head score. Taking
+    // the negated next sequence value makes forefront LIFO (the latest
+    // forefront request has the most negative order_no), as on Apify.
     const orderModifier = forefront ? -1 : 1;
 
     // INSERT ... ON CONFLICT DO NOTHING is the race-free shape: under
@@ -397,8 +402,9 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     const id = nanoid();
     const insertResult = await query<RequestRow>(
       `
-      INSERT INTO requests (id, queue_id, unique_key, url, method, payload, headers, user_data, no_retry)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      INSERT INTO requests (id, queue_id, unique_key, url, method, payload, headers, user_data, no_retry, order_no)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+              $10::int * nextval(pg_get_serial_sequence('requests', 'order_no')))
       ON CONFLICT (queue_id, unique_key) DO NOTHING
       RETURNING *
     `,
@@ -412,6 +418,7 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
         body.headers ? JSON.stringify(body.headers) : null,
         body.userData ? JSON.stringify(body.userData) : null,
         body.noRetry || false,
+        orderModifier,
       ]
     );
 
@@ -453,7 +460,7 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     );
 
     // Add to Redis head cache
-    await addToQueueHead(qId, id, result.rows[0]!.order_no * orderModifier);
+    await addToQueueHead(qId, id, Number(result.rows[0]!.order_no));
 
     reply.status(201);
     return {
@@ -474,7 +481,7 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     Querystring: { forefront?: string };
   }>('/request-queues/:queueId/requests/batch', async (request, _reply) => {
     const { queueId } = request.params;
-    const _forefront = request.query.forefront === 'true';
+    const _forefront = zBoolQuery.parse(request.query.forefront) ?? false;
     let body = request.body;
 
     // Handle Buffer body from content-type parser
@@ -677,7 +684,7 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
   }>('/request-queues/:queueId/requests/:requestId', async (request, reply) => {
     const { queueId, requestId } = request.params;
     const updates = UpdateRequestSchema.parse(request.body);
-    const _forefront = request.query.forefront === 'true';
+    const _forefront = zBoolQuery.parse(request.query.forefront) ?? false;
     const clientKey = request.query.clientKey;
 
     const existingResult = await query<RequestRow>(
@@ -823,7 +830,8 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     Querystring: { clientKey?: string; forefront?: string };
   }>('/request-queues/:queueId/requests/:requestId/lock', async (request, reply) => {
     const { queueId, requestId } = request.params;
-    const { clientKey = '', forefront: _forefront } = request.query;
+    const { clientKey = '' } = request.query;
+    const _forefront = zBoolQuery.parse(request.query.forefront) ?? false;
 
     const queue = await query<QueueRow>(
       'SELECT * FROM request_queues WHERE (id = $1 OR name = $2) AND user_id = $3',

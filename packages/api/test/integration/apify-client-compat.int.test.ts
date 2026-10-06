@@ -23,6 +23,7 @@ describe('apify-client round-trip (integration)', () => {
   let app: FastifyInstance;
   let baseUrl: string;
   let client: ApifyClient;
+  let token: string;
 
   beforeAll(async () => {
     await ensureS3Bucket();
@@ -34,7 +35,7 @@ describe('apify-client round-trip (integration)', () => {
     const address = await app.listen({ port: 0, host: '127.0.0.1' });
     baseUrl = address.replace(/\/$/, '');
 
-    const { token } = await createTestUser('apify-compat@test.local', 'pw-apify-compat-1');
+    ({ token } = await createTestUser('apify-compat@test.local', 'pw-apify-compat-1'));
     // ApifyClient internally appends /v2 to baseUrl (see apify_client.js),
     // so we pass the bare server URL — NOT `${baseUrl}/v2`.
     client = new ApifyClient({ token, baseUrl });
@@ -107,6 +108,44 @@ describe('apify-client round-trip (integration)', () => {
     });
     expect(dup.wasAlreadyPresent).toBe(true);
     expect(dup.requestId).toBe(added.requestId);
+  });
+
+  it('lists runs ascending with desc: false (sent as desc=0)', async () => {
+    // apify-client serializes booleans as 1/0; desc=0 used to be a 400.
+    const actor = await client.actors().create({ name: 'compat-runs-actor' });
+    const r1 = await client.actor(actor.id).start();
+    const r2 = await client.actor(actor.id).start();
+
+    const asc = await client.runs().list({ desc: false });
+    expect(asc.items.map((r) => r.id)).toEqual([r1.id, r2.id]);
+    const desc = await client.runs().list({ desc: true });
+    expect(desc.items.map((r) => r.id)).toEqual([r2.id, r1.id]);
+    const multi = await client.runs().list({ status: ['READY', 'FAILED'], desc: false });
+    expect(multi.items.map((r) => r.id)).toEqual([r1.id, r2.id]);
+
+    // apify-client >= 2.23.4 calls /actors/:id/runs (alias pending, #109),
+    // so the per-actor list is exercised over raw fetch on /acts.
+    const res = await fetch(`${baseUrl}/v2/acts/compat-runs-actor/runs?desc=0`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: { total: number; items: Array<{ id: string }> } };
+    expect(body.data.total).toBe(2);
+    expect(body.data.items.map((r) => r.id)).toEqual([r1.id, r2.id]);
+  });
+
+  it('puts a forefront request at the head of the queue (sent as forefront=1)', async () => {
+    const rq = await client.requestQueues().getOrCreate('compat-rq-forefront');
+    const queue = client.requestQueue(rq.id);
+    await queue.addRequest({ url: 'https://example.com/a', uniqueKey: 'a' });
+    await queue.addRequest({ url: 'https://example.com/b', uniqueKey: 'b' });
+    await queue.addRequest(
+      { url: 'https://example.com/front', uniqueKey: 'front' },
+      { forefront: true }
+    );
+
+    const head = await queue.listHead();
+    expect(head.items.map((r) => r.uniqueKey)).toEqual(['front', 'a', 'b']);
   });
 
   it('treats getOrCreate as idempotent on repeat calls', async () => {

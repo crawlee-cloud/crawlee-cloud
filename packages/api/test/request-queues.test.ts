@@ -424,20 +424,60 @@ describe('Request Queue Routes', () => {
       expect(insertParams[1]).toBeNull();
     });
 
-    it('scores the head entry negatively for forefront requests', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rows: [createQueueRow()] })
-        .mockResolvedValueOnce({ rows: [createRequestRow({ order_no: 7 })] })
-        .mockResolvedValueOnce({ rows: [] });
+    it.each(['true', '1'])(
+      'stores a negative order_no for forefront=%s and scores the head entry with it',
+      async (forefront) => {
+        mockQuery
+          .mockResolvedValueOnce({ rows: [createQueueRow()] })
+          .mockResolvedValueOnce({ rows: [createRequestRow({ order_no: -7 })] })
+          .mockResolvedValueOnce({ rows: [] });
 
-      await app.inject({
+        const response = await app.inject({
+          method: 'POST',
+          url: `/v2/request-queues/queue-1/requests?forefront=${forefront}`,
+          payload: { url: 'https://example.com' },
+        });
+
+        expect(response.statusCode).toBe(201);
+        // The sign lands on the row: head reads order by order_no in Postgres.
+        const [insertSql, insertParams] = mockQuery.mock.calls[1] as [string, unknown[]];
+        expect(insertSql).toContain('INSERT INTO requests');
+        expect(insertParams.at(-1)).toBe(-1);
+        const [, , score] = redisMocks.addToQueueHead.mock.calls[0] as [string, string, number];
+        expect(score).toBe(-7);
+      }
+    );
+
+    it.each(['false', '0', undefined])(
+      'stores a positive order_no for forefront=%s',
+      async (forefront) => {
+        mockQuery
+          .mockResolvedValueOnce({ rows: [createQueueRow()] })
+          .mockResolvedValueOnce({ rows: [createRequestRow({ order_no: 7 })] })
+          .mockResolvedValueOnce({ rows: [] });
+
+        const qs = forefront === undefined ? '' : `?forefront=${forefront}`;
+        await app.inject({
+          method: 'POST',
+          url: `/v2/request-queues/queue-1/requests${qs}`,
+          payload: { url: 'https://example.com' },
+        });
+
+        const [, insertParams] = mockQuery.mock.calls[1] as [string, unknown[]];
+        expect(insertParams.at(-1)).toBe(1);
+        const [, , score] = redisMocks.addToQueueHead.mock.calls[0] as [string, string, number];
+        expect(score).toBe(7);
+      }
+    );
+
+    it('rejects a forefront value that is not a boolean', async () => {
+      const response = await app.inject({
         method: 'POST',
-        url: '/v2/request-queues/queue-1/requests?forefront=true',
+        url: '/v2/request-queues/queue-1/requests?forefront=yes',
         payload: { url: 'https://example.com' },
       });
-
-      const [, , score] = redisMocks.addToQueueHead.mock.calls[0] as [string, string, number];
-      expect(score).toBe(-7);
+      expect(response.statusCode).not.toBe(201);
+      expect(mockQuery).not.toHaveBeenCalled();
     });
 
     it('returns 500 on the vanishing-row race (no insert, no existing)', async () => {

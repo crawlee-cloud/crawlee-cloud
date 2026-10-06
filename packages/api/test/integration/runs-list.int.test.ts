@@ -204,6 +204,90 @@ describe('Runs list / filter / pagination (integration)', () => {
     expect(badStatus.statusCode).toBe(400);
   });
 
+  /** GET a run list and return its item ids (asserting 200). */
+  async function listIds(url: string): Promise<string[]> {
+    const r = await app.inject({ method: 'GET', url, headers: authHeaders() });
+    expect(r.statusCode).toBe(200);
+    return (r.json().data.items as Array<{ id: string }>).map((i) => i.id);
+  }
+
+  it('accepts apify-client 1/0 booleans for desc; absent stays descending', async () => {
+    ({ token } = await createTestUser('runs-desc@test.local', 'pw-runs-desc-1'));
+    const actorId = await makeActor('desc-actor');
+    const a = await startRun(actorId);
+    const b = await startRun(actorId);
+    const c = await startRun(actorId);
+
+    expect(await listIds('/v2/actor-runs?desc=0')).toEqual([a, b, c]);
+    expect(await listIds('/v2/actor-runs?desc=1')).toEqual([c, b, a]);
+    expect(await listIds('/v2/actor-runs')).toEqual([c, b, a]);
+  });
+
+  it('filters by a comma-separated status list and accepts TIMING-OUT', async () => {
+    ({ token } = await createTestUser('runs-multistatus@test.local', 'pw-runs-multistatus-1'));
+    const actorId = await makeActor('multistatus-actor');
+    const a = await startRun(actorId);
+    const b = await startRun(actorId);
+    await startRun(actorId); // stays READY
+    await setStatus(a, 'SUCCEEDED');
+    await setStatus(b, 'FAILED');
+
+    const both = await listIds('/v2/actor-runs?status=SUCCEEDED,FAILED&desc=0');
+    expect(both).toEqual([a, b]);
+
+    expect(await listIds('/v2/actor-runs?status=TIMING-OUT')).toEqual([]);
+  });
+
+  it('treats startedAfter/startedBefore as since/until', async () => {
+    ({ token } = await createTestUser('runs-started@test.local', 'pw-runs-started-1'));
+    const actorId = await makeActor('started-actor');
+    const a = await startRun(actorId);
+    const b = await startRun(actorId);
+    const c = await startRun(actorId);
+
+    const get = await app.inject({
+      method: 'GET',
+      url: `/v2/actor-runs/${b}`,
+      headers: authHeaders(),
+    });
+    const bCreatedAt = new Date(get.json().data.createdAt).toISOString();
+
+    expect(await listIds(`/v2/actor-runs?desc=0&startedAfter=${bCreatedAt}`)).toEqual([b, c]);
+    expect(await listIds(`/v2/actor-runs?desc=0&startedBefore=${bCreatedAt}`)).toEqual([a]);
+    expect(await listIds(`/v2/actor-runs?desc=0&since=${bCreatedAt}`)).toEqual([b, c]);
+  });
+
+  it('GET /v2/acts/:actorId/runs lists only that actor, by id or name; 404 for a foreign actor', async () => {
+    ({ token } = await createTestUser('runs-peractor@test.local', 'pw-runs-peractor-1'));
+    const actorA = await makeActor('per-actor-a');
+    const actorB = await makeActor('per-actor-b');
+    const a1 = await startRun(actorA);
+    const a2 = await startRun(actorA);
+    await startRun(actorB);
+
+    expect(await listIds(`/v2/acts/${actorA}/runs`)).toEqual([a2, a1]);
+    expect(await listIds('/v2/acts/per-actor-a/runs?desc=0')).toEqual([a1, a2]);
+
+    const page = await app.inject({
+      method: 'GET',
+      url: '/v2/acts/per-actor-a/runs?limit=1',
+      headers: authHeaders(),
+    });
+    expect(page.json().data).toMatchObject({ total: 2, count: 1, limit: 1, offset: 0, desc: true });
+
+    // Another user can neither see the actor by id nor by name.
+    ({ token } = await createTestUser('runs-peractor-other@test.local', 'pw-runs-peractor-2'));
+    for (const ref of [actorA, 'per-actor-a']) {
+      const r = await app.inject({
+        method: 'GET',
+        url: `/v2/acts/${ref}/runs`,
+        headers: authHeaders(),
+      });
+      expect(r.statusCode).toBe(404);
+      expect(r.json().error.type).toBe('record-not-found');
+    }
+  });
+
   it('does not leak runs across users (IDOR via list)', async () => {
     // User A creates 3 runs
     ({ token } = await createTestUser('runs-owner@test.local', 'pw-runs-owner-1'));

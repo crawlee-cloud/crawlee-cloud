@@ -160,6 +160,65 @@ describe('Actor Runs Routes', () => {
     });
   });
 
+  describe('GET /v2/actor-runs query coercion (apify-client wire format)', () => {
+    const mockEmptyPage = () =>
+      mockQuery.mockResolvedValueOnce({ rows: [{ total: '0' }] }).mockResolvedValueOnce({
+        rows: [],
+      });
+    const pageSql = () => mockQuery.mock.calls[1][0] as string;
+
+    it.each([
+      ['desc=0', 'ASC', false],
+      ['desc=1', 'DESC', true],
+      ['desc=false', 'ASC', false],
+      ['', 'DESC', true],
+    ])('?%s sorts %s', async (qs, order, desc) => {
+      mockEmptyPage();
+      const response = await app.inject({ method: 'GET', url: `/v2/actor-runs?${qs}` });
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).data.desc).toBe(desc);
+      expect(pageSql()).toContain(`ORDER BY r.created_at ${order}, r.id ${order}`);
+    });
+
+    it('filters a comma-separated status list with = ANY', async () => {
+      mockEmptyPage();
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/actor-runs?status=SUCCEEDED,FAILED',
+      });
+      expect(response.statusCode).toBe(200);
+      const [countSql, countParams] = mockQuery.mock.calls[0] as [string, unknown[]];
+      expect(countSql).toContain('r.status = ANY($2)');
+      expect(countParams).toEqual(['test-user-id', ['SUCCEEDED', 'FAILED']]);
+    });
+
+    it('accepts status=TIMING-OUT', async () => {
+      mockEmptyPage();
+      const response = await app.inject({ method: 'GET', url: '/v2/actor-runs?status=TIMING-OUT' });
+      expect(response.statusCode).toBe(200);
+      expect((mockQuery.mock.calls[0] as [string, unknown[]])[1]).toEqual([
+        'test-user-id',
+        ['TIMING-OUT'],
+      ]);
+    });
+
+    it('treats startedAfter/startedBefore as since/until', async () => {
+      mockEmptyPage();
+      await app.inject({
+        method: 'GET',
+        url: '/v2/actor-runs?startedAfter=2026-01-01T00:00:00.000Z&startedBefore=2026-02-01T00:00:00.000Z',
+      });
+      const [countSql, countParams] = mockQuery.mock.calls[0] as [string, unknown[]];
+      expect(countSql).toContain('r.created_at >= $2');
+      expect(countSql).toContain('r.created_at < $3');
+      expect(countParams).toEqual([
+        'test-user-id',
+        '2026-01-01T00:00:00.000Z',
+        '2026-02-01T00:00:00.000Z',
+      ]);
+    });
+  });
+
   describe('GET /v2/actor-runs/stats', () => {
     it('returns aggregate counts parsed from server-side COUNT FILTER', async () => {
       mockQuery.mockResolvedValueOnce({

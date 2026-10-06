@@ -10,6 +10,8 @@ import {
   ActorRunSchema,
   DeleteActorQuerySchema,
 } from '../schemas/actors.js';
+import { ListRunsQuerySchema } from '../schemas/runs.js';
+import { listRuns } from './runs.js';
 import { query, getClient } from '../db/index.js';
 import { encryptProxyPassword } from '../lib/proxy-crypto.js';
 import { appendSearchCondition } from '../db/search.js';
@@ -538,6 +540,31 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
     } finally {
       client.release();
     }
+  });
+
+  /**
+   * GET /v2/acts/:actorId/runs - List one actor's runs (user-scoped).
+   *
+   * Same query params, response shape and ordering as GET /v2/actor-runs —
+   * both go through `listRuns`. The actor is resolved by ID or name with the
+   * same user-scoped lookup as GET /acts/:actorId, and runs are filtered by
+   * the resolved `actors.id` (the path param may be a name).
+   */
+  fastify.get<{ Params: { actorId: string } }>('/acts/:actorId/runs', async (request, reply) => {
+    const { actorId } = request.params;
+    const q = ListRunsQuerySchema.parse(request.query);
+
+    const actor = await query<{ id: string }>(
+      `SELECT id FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2`,
+      [actorId, request.user!.id]
+    );
+
+    if (!actor.rows[0]) {
+      reply.status(404);
+      return { error: { type: 'record-not-found', message: 'Actor not found' } };
+    }
+
+    return { data: await listRuns(request.user!.id, { ...q, actorId: actor.rows[0].id }) };
   });
 
   /**
