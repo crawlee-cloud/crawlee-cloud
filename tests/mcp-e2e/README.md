@@ -78,14 +78,8 @@ to make a run pass; fix the regression or open an issue.
 
 - **Node 22+** for the harness. The MCP server exits on older Node. The rest of
   the repo still targets Node 20.
-- **Infrastructure**: `npm run docker:dev` (see #121 if MinIO cannot be
-  pulled). Then create the `S3_BUCKET` bucket (default `crawlee-cloud`);
-  neither the dev compose nor the API creates it. For example:
-
-  ```bash
-  docker run --rm --network host --entrypoint sh minio/mc -c \
-    'mc alias set local http://localhost:9000 minioadmin minioadmin && mc mb -p local/crawlee-cloud'
-  ```
+- **Infrastructure**: `npm run docker:dev`. It also creates the default
+  `crawlee-cloud` bucket; create it by hand if you set a different `S3_BUCKET`.
 
 - **Build**: `npm run build`. The CLI is run from `packages/cli/dist/`.
 - **API and runner running** (`npm run db:migrate`, then start both). Set the
