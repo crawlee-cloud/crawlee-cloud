@@ -58,18 +58,17 @@
       }
     },
     "minio": {
-      "image": "minio/minio:latest",
-      "deploy": {
-        "startCommand": "server /data --console-address :9001"
-      },
+      "image": "bitnamilegacy/minio:2025.7.23-debian-12-r5",
       "volumes": {
         "minio-data": {
-          "mountPath": "/data"
+          "mountPath": "/bitnami/minio/data"
         }
       },
       "variables": {
         "MINIO_ROOT_USER": "minioadmin",
-        "MINIO_ROOT_PASSWORD": "${{api.S3_SECRET_KEY}}"
+        "MINIO_ROOT_PASSWORD": "${{api.S3_SECRET_KEY}}",
+        "MINIO_DEFAULT_BUCKETS": "crawlee-cloud",
+        "RAILWAY_RUN_UID": "0"
       }
     }
   }

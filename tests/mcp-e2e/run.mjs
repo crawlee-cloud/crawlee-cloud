@@ -140,15 +140,35 @@ async function api(method, urlPath, body) {
   return json?.data ?? json;
 }
 
-async function waitForRunViaApi(runId, timeoutMs) {
+/** Poll until the run's status is in `statuses`; throws on timeout or API error. */
+async function waitForRunStatus(runId, statuses, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let run;
   while (Date.now() < deadline) {
     run = await api('GET', `/v2/actor-runs/${encodeURIComponent(runId)}`);
-    if (TERMINAL.has(run?.status)) return run;
+    if (statuses.has(run?.status)) return run;
     await sleep(2000);
   }
-  throw new Error(`run ${runId} not terminal after ${timeoutMs / 1000}s (status ${run?.status})`);
+  throw new Error(
+    `run ${runId} not ${[...statuses].join('/')} after ${timeoutMs / 1000}s (status ${run?.status})`
+  );
+}
+
+function waitForRunViaApi(runId, timeoutMs) {
+  return waitForRunStatus(runId, TERMINAL, timeoutMs);
+}
+
+/**
+ * Non-terminal runs created since `sinceMs`, excluding `knownIds`. Used to find
+ * a run that call-actor started before it errored, so it can be aborted.
+ */
+async function findNewActiveRuns(sinceMs, knownIds) {
+  // 5 s of slack for clock skew between the harness and the API host.
+  const since = new Date(sinceMs - 5000).toISOString();
+  const list = await api('GET', `/v2/actor-runs?since=${encodeURIComponent(since)}&limit=200`);
+  return (list?.items ?? [])
+    .filter((r) => !TERMINAL.has(r.status) && !knownIds.has(r.id))
+    .map((r) => r.id);
 }
 
 /**
@@ -163,18 +183,43 @@ async function startRunViaApi(input) {
 function runCommand(cmd, args, { cwd, env, timeoutMs, logFile }) {
   return new Promise((resolve) => {
     const out = fs.createWriteStream(logFile, { flags: 'w' });
-    const child = spawn(cmd, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    // Own process group (POSIX), so a timeout also kills grandchildren such as
+    // the `docker build` that `crc push` spawns, not just the CLI itself.
+    const group = process.platform !== 'win32';
+    const child = spawn(cmd, args, {
+      cwd,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: group,
+    });
     child.stdout.pipe(out, { end: false });
     child.stderr.pipe(out, { end: false });
-    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
-    child.on('error', (err) => {
+    const kill = () => {
+      try {
+        if (group) process.kill(-child.pid, 'SIGKILL');
+        else child.kill('SIGKILL');
+      } catch {
+        // already gone
+      }
+    };
+    // A detached group no longer receives the terminal's Ctrl-C, so forward it.
+    const onSigint = () => {
+      kill();
+      process.exit(130);
+    };
+    process.once('SIGINT', onSigint);
+    const timer = setTimeout(kill, timeoutMs);
+    const done = () => {
       clearTimeout(timer);
+      process.off('SIGINT', onSigint);
       out.end();
+    };
+    child.on('error', (err) => {
+      done();
       resolve({ code: -1, error: err.message });
     });
     child.on('close', (code, signal) => {
-      clearTimeout(timer);
-      out.end();
+      done();
       resolve({ code: code ?? -1, error: signal ? `killed by ${signal}` : undefined });
     });
   });
@@ -271,6 +316,7 @@ const ctx = {
   seed: undefined, // { runId, datasetId, kvId, source }
   seedError: undefined,
   abortRunId: undefined,
+  orphanRunIds: [], // runs call-actor started before erroring; aborted in cleanup()
 };
 
 async function setup() {
@@ -338,44 +384,63 @@ async function pushFixture() {
   }
 }
 
-/** Run for the read checks: the waiting call-actor's run, else a REST-started one. */
+function seedFromRun(run, source) {
+  assert(
+    run.defaultDatasetId && run.defaultKeyValueStoreId,
+    `run ${run.id} has no default storage ids`
+  );
+  return {
+    runId: run.id,
+    datasetId: run.defaultDatasetId,
+    kvId: run.defaultKeyValueStoreId,
+    source,
+  };
+}
+
+/**
+ * Run for the read checks. Tries, in order: the waiting call-actor's result,
+ * call-actor's run awaited via REST, then a REST-started run. Any failure falls
+ * through to the next source, and ctx.seed is only set once a seed is complete,
+ * so a broken call-actor never leaves the read checks with undefined ids.
+ */
 async function getSeed() {
   if (ctx.seed) return ctx.seed;
   if (ctx.seedError) throw new CheckFailure(ctx.seedError);
-  try {
-    let run;
-    let source;
-    if (ctx.callRun?.status === 'SUCCEEDED') {
-      ctx.seed = {
-        runId: ctx.callRun.runId,
-        datasetId: ctx.callRun.storages?.datasets?.default?.id,
-        kvId: ctx.callRun.storages?.keyValueStores?.default?.id,
-        source: 'call-actor',
-      };
-      assert(ctx.seed.datasetId && ctx.seed.kvId, 'call-actor returned no storage ids');
+  const problems = [];
+
+  if (ctx.callRun?.status === 'SUCCEEDED') {
+    const datasetId = ctx.callRun.storages?.datasets?.default?.id;
+    const kvId = ctx.callRun.storages?.keyValueStores?.default?.id;
+    if (datasetId && kvId) {
+      ctx.seed = { runId: ctx.callRun.runId, datasetId, kvId, source: 'call-actor' };
       return ctx.seed;
     }
-    if (ctx.callRun?.runId) {
-      run = await waitForRunViaApi(ctx.callRun.runId, RUN_WAIT_MS);
-      source = 'call-actor run, awaited via REST';
+    problems.push('call-actor returned no storage ids');
+  }
+
+  if (ctx.callRun?.runId) {
+    try {
+      const run = await waitForRunViaApi(ctx.callRun.runId, RUN_WAIT_MS);
+      assert(run.status === 'SUCCEEDED', `call-actor run ${run.id} ended ${run.status}`);
+      ctx.seed = seedFromRun(run, 'call-actor run, awaited via REST');
+      return ctx.seed;
+    } catch (err) {
+      problems.push(oneLine(err, 150));
     }
-    if (run?.status !== 'SUCCEEDED') {
-      const started = await startRunViaApi(CALL_INPUT);
-      run = await waitForRunViaApi(started.id, RUN_WAIT_MS);
-      source = 'REST fallback run';
-    }
-    assert(run.status === 'SUCCEEDED', `seed run ${run.id} ended ${run.status}`);
-    ctx.seed = {
-      runId: run.id,
-      datasetId: run.defaultDatasetId,
-      kvId: run.defaultKeyValueStoreId,
-      source,
-    };
+  }
+
+  try {
+    const started = await startRunViaApi(CALL_INPUT);
+    const run = await waitForRunViaApi(started.id, RUN_WAIT_MS);
+    assert(run.status === 'SUCCEEDED', `REST fallback run ${run.id} ended ${run.status}`);
+    ctx.seed = seedFromRun(run, 'REST fallback run');
     return ctx.seed;
   } catch (err) {
-    ctx.seedError = `no seed run: ${oneLine(err)}`;
-    throw new CheckFailure(ctx.seedError);
+    problems.push(oneLine(err, 150));
   }
+
+  ctx.seedError = `no seed run: ${problems.join('; ')}`;
+  throw new CheckFailure(ctx.seedError);
 }
 
 async function runChecks() {
@@ -584,6 +649,7 @@ async function runChecks() {
 
   await check('abort-actor-run', async () => {
     let via = 'call-actor waitSecs:0';
+    const callStartedAt = Date.now();
     try {
       const started = await tool(
         'call-actor',
@@ -593,10 +659,17 @@ async function runChecks() {
       ctx.abortRunId = started.runId;
     } catch (err) {
       via = `REST fallback (call-actor failed: ${oneLine(err, 80)})`;
+      // call-actor may have created the 300 s run before erroring. Remember it
+      // so cleanup() aborts it instead of leaving it to hold a runner slot.
+      const known = new Set([ctx.seed?.runId, ctx.callRun?.runId].filter(Boolean));
+      ctx.orphanRunIds = await findNewActiveRuns(callStartedAt, known).catch(() => []);
       const run = await startRunViaApi(ABORT_INPUT);
       ctx.abortRunId = run.id;
     }
     assert(ctx.abortRunId, 'no run to abort');
+    // Abort a RUNNING run. Aborting before a runner claims it (READY) is a
+    // separate gap (#113); racing the runner here would make this check flaky.
+    await waitForRunStatus(ctx.abortRunId, new Set(['RUNNING', ...TERMINAL]), ABORT_WAIT_MS);
     const sc = await tool('abort-actor-run', { runId: ctx.abortRunId });
     assert(
       sc.status === 'ABORTING' || sc.status === 'ABORTED',
@@ -610,8 +683,10 @@ async function runChecks() {
 
 async function cleanup() {
   // Don't leave the 300 s abort fixture running if abort-actor-run failed.
-  if (ctx.abortRunId && results.get('abort-actor-run')?.ok !== true) {
-    await api('POST', `/v2/actor-runs/${encodeURIComponent(ctx.abortRunId)}/abort`).catch(() => {});
+  const leftovers = [...ctx.orphanRunIds];
+  if (ctx.abortRunId && results.get('abort-actor-run')?.ok !== true) leftovers.push(ctx.abortRunId);
+  for (const runId of leftovers) {
+    await api('POST', `/v2/actor-runs/${encodeURIComponent(runId)}/abort`).catch(() => {});
   }
   await client?.close().catch(() => {});
   await proxy?.close().catch(() => {});
