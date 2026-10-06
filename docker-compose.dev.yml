@@ -21,16 +21,21 @@ services:
       - redis_data:/data
 
   minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
+    # minio/minio and minio/mc can no longer be pulled (#121). This pins the
+    # Bitnami legacy archive as a stopgap; it creates MINIO_DEFAULT_BUCKETS at
+    # startup, so no separate mc init job is needed.
+    image: bitnamilegacy/minio:2025.7.23-debian-12-r5
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_DEFAULT_BUCKETS: crawlee-cloud
+      # Bitnami turns the web console off by default; keep it on :9001 as before.
+      MINIO_BROWSER: 'on'
     ports:
       - '9000:9000'
       - '9001:9001'
     volumes:
-      - minio_data:/data
+      - minio_data:/bitnami/minio/data
 
 volumes:
   postgres_data:
