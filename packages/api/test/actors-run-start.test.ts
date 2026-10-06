@@ -365,7 +365,8 @@ describe('POST /v2/acts/:actorId/runs body contract', () => {
       });
 
       expect(response.statusCode).toBe(404);
-      expect(mockQuery.mock.calls[0][1]).toEqual(['user~my?actor', 'test-user-id']);
+      // resolveActor (#114): $1 = raw param, $2 = user id (then the split username/name).
+      expect(mockQuery.mock.calls[0][1].slice(0, 2)).toEqual(['user~my?actor', 'test-user-id']);
     });
 
     it('re-serializes non-object JSON input', async () => {
