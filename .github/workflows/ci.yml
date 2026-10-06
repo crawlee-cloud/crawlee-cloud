@@ -64,9 +64,9 @@ jobs:
         # bitnami/minio was retired by Bitnami in late 2024; the
         # bitnamilegacy namespace is their drop-in archive of the old
         # catalog (same env vars, same auto-start behavior, same health
-        # endpoint). If even the legacy namespace is removed in the future,
-        # pin a versioned tag like bitnamilegacy/minio:2025.7.23-debian-12-r5.
-        image: bitnamilegacy/minio:latest
+        # endpoint). Pinned to the same tag as the compose files and templates
+        # (#121); moving to SeaweedFS is tracked separately.
+        image: bitnamilegacy/minio:2025.7.23-debian-12-r5
         ports:
           - 9000:9000
         env:

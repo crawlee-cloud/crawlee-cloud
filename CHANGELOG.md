@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Self-hosting
+
+- **MinIO image replaced: `minio/minio` and `minio/mc` can no longer be pulled** (#121) — from Docker Hub or quay.io, so fresh installs failed on first `docker compose up`. `docker-compose.yml`, `docker-compose.dev.yml`, `deploy/vps/docker-compose.prod.yml` and the Render and Railway templates now pin `bitnamilegacy/minio:2025.7.23-debian-12-r5`, the image CI already used. It creates the `crawlee-cloud` bucket at startup (`MINIO_DEFAULT_BUCKETS`), which replaces the `minio-init`/`mc` job; the dev compose now creates the bucket too (it never did), and Render and Railway get it for the first time. The compose healthcheck reports healthy only once the bucket exists. The Render template also now uses `runtime: image` (its `repo:` pointed at a Docker Hub page, which Render can't build from). This is a stopgap: the Bitnami legacy archive is unmaintained, and a move to SeaweedFS is tracked separately.
+  - **Upgrading an existing install:** the Bitnami image runs as uid 1001 and keeps data in `/bitnami/minio/data` (the compose files now mount the existing volume there). Volumes written by the old image are root-owned, so MinIO exits with `Permission denied` until you fix ownership once. Back up the volume first, then run, for example for `docker-compose.yml`: `docker compose run --rm --no-deps --user root --entrypoint chown minio -R 1001:0 /bitnami/minio/data`. On Render or Railway, apply the same ownership change to the attached disk or volume.
+
 ### Tests
 
 - **MCP e2e acceptance harness** — new opt-in `npm run test:mcp-e2e` (standalone package in `tests/mcp-e2e/`, outside the npm workspaces, so it does not touch the root install, `npm test` or CI). It pushes a fixture actor, then drives the unmodified `@apify/actors-mcp-server@0.17.3` over stdio through a logging proxy against a live stack and checks 18 tools plus a `poll-count` assertion. Checks that still fail on the current API are listed in `expected-failures.json`; the run exits non-zero on any unlisted failure and on any listed check that passes, so the list can only shrink as the MCP parity epic (#106) lands.

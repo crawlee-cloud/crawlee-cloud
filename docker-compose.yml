@@ -143,39 +143,33 @@ services:
     restart: unless-stopped
 
   minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
+    # minio/minio and minio/mc can no longer be pulled (#121). This pins the
+    # Bitnami legacy archive as a stopgap; it creates MINIO_DEFAULT_BUCKETS at
+    # startup, so no separate mc init job is needed.
+    image: bitnamilegacy/minio:2025.7.23-debian-12-r5
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_DEFAULT_BUCKETS: crawlee-cloud
     ports:
       - '9000:9000' # S3 API
       - '9001:9001' # Console
     volumes:
-      - minio_data:/data
+      - minio_data:/bitnami/minio/data
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:9000/minio/health/live']
+      # Healthy only once the default bucket exists: Bitnami answers on :9000
+      # during its setup phase, before MINIO_DEFAULT_BUCKETS is created.
+      test:
+        [
+          'CMD-SHELL',
+          'curl -f http://localhost:9000/minio/health/live && test -d /bitnami/minio/data/crawlee-cloud',
+        ]
       interval: 5s
       timeout: 5s
       retries: 5
     networks:
       - crawlee-network
     restart: unless-stopped
-
-  # Create default bucket on startup
-  minio-init:
-    image: minio/mc:latest
-    depends_on:
-      minio:
-        condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      mc alias set myminio http://minio:9000 minioadmin minioadmin;
-      mc mb myminio/crawlee-cloud --ignore-existing;
-      exit 0;
-      "
-    networks:
-      - crawlee-network
 
 networks:
   crawlee-network:
