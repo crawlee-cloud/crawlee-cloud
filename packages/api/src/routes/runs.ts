@@ -15,6 +15,13 @@ import {
 } from '../schemas/runs.js';
 import { config } from '../config.js';
 import { computeYourCostUsd, type CostWindow } from '../lib/run-cost.js';
+import {
+  waitForTerminal,
+  parseWaitForFinish,
+  createWaitAbortFactory,
+  isTerminalStatus,
+  markLongPoll,
+} from '../lib/wait-for-terminal.js';
 
 interface RunRow {
   id: string;
@@ -67,6 +74,7 @@ const RUN_SELECT_WITH_DATASET_COUNT = `
 
 export const runsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.addHook('preHandler', authenticate);
+  const waitAbortSignal = createWaitAbortFactory(fastify);
 
   /**
    * GET /v2/actor-runs - List runs (user-scoped, filterable, paginated).
@@ -207,21 +215,48 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
 
   /**
    * GET /v2/actor-runs/:runId - Get run (user-scoped)
+   *
+   * `waitForFinish=N` (seconds, clamped to 60) long-polls: the request is
+   * held until the run is terminal or N seconds pass, then returns the
+   * current state (terminal or not). Client disconnect and server shutdown
+   * end the wait early. Not-found returns 404 without waiting.
    */
   fastify.get<{ Params: { runId: string } }>('/actor-runs/:runId', async (request, reply) => {
     const { runId } = request.params;
+    const waitSecs = parseWaitForFinish(request.query);
 
-    const result = await query<RunRow>(
-      `${RUN_SELECT_WITH_DATASET_COUNT} WHERE r.id = $1 AND r.user_id = $2`,
-      [runId, request.user!.id]
-    );
+    const load = async () => {
+      const result = await query<RunRow>(
+        `${RUN_SELECT_WITH_DATASET_COUNT} WHERE r.id = $1 AND r.user_id = $2`,
+        [runId, request.user!.id]
+      );
+      return result.rows[0] ?? null;
+    };
 
-    if (!result.rows[0]) {
+    let row: RunRow | null;
+    if (waitSecs > 0) {
+      markLongPoll(request);
+      const abort = waitAbortSignal(reply);
+      try {
+        row = await waitForTerminal({
+          load,
+          isTerminal: (r) => isTerminalStatus(r.status),
+          waitSecs,
+          signal: abort.signal,
+        });
+      } finally {
+        abort.dispose();
+      }
+    } else {
+      row = await load();
+    }
+
+    if (!row) {
       reply.status(404);
       return { error: { type: 'record-not-found', message: 'Run not found' } };
     }
 
-    return { data: formatRun(result.rows[0]) };
+    return { data: formatRun(row) };
   });
 
   /**

@@ -17,6 +17,7 @@ import { initScaler } from './scaler/index.js';
 import { registry, httpRequestsTotal, httpRequestDuration } from './metrics.js';
 import { registerHealthRoutes } from './health.js';
 import { getApiVersion } from './version.js';
+import { isLongPollRequest } from './lib/wait-for-terminal.js';
 
 // Validate security configuration at startup
 enforceSecurityConfig();
@@ -111,7 +112,9 @@ app.addHook('onResponse', (request, reply, done) => {
 
   httpRequestsTotal.inc({ method, route, status_code: statusCode });
 
-  if (startTime) {
+  // Long-polls (`waitForFinish > 0`) are held open on purpose; observing
+  // them would push the latency histogram for the route into the +Inf bucket.
+  if (startTime && !isLongPollRequest(request)) {
     const duration = Number(process.hrtime.bigint() - startTime) / 1e9;
     httpRequestDuration.observe({ method, route }, duration);
   }
