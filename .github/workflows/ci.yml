@@ -72,6 +72,10 @@ jobs:
         env:
           MINIO_ROOT_USER: minioadmin
           MINIO_ROOT_PASSWORD: minioadmin
+          # The Bitnami image creates these at startup, so CI needs no `mc`
+          # client. dl.min.io stopped serving it (HTTP 410, Oct 2026), and
+          # the integration tests also call ensureS3Bucket() themselves.
+          MINIO_DEFAULT_BUCKETS: crawlee-test
         options: >-
           --health-cmd "curl -f http://localhost:9000/minio/health/live || exit 1"
           --health-interval 10s
@@ -85,15 +89,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Create MinIO bucket
-        run: |
-          # -fL: fail loudly on HTTP errors and follow redirects. The
-          # dl.min.io URL now 302s to GitHub releases, so without -L
-          # curl was silently writing the redirect HTML to mc.
-          curl -fL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
-          chmod +x /usr/local/bin/mc
-          mc alias set ci http://localhost:9000 minioadmin minioadmin
-          mc mb ci/crawlee-test --ignore-existing
       - name: Run integration tests
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/crawlee_test
