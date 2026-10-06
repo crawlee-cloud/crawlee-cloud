@@ -69,16 +69,20 @@ services:
 
   - type: pserv
     name: crawlee-minio
-    runtime: docker
-    repo: https://hub.docker.com/r/minio/minio
+    # Prebuilt image (minio/minio can no longer be pulled, see #121).
+    runtime: image
+    image:
+      url: docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5
     plan: starter
     disk:
       name: minio-data
-      mountPath: /data
+      mountPath: /bitnami/minio/data
       sizeGB: 10
     envVars:
       - key: MINIO_ROOT_USER
         value: minioadmin
+      - key: MINIO_DEFAULT_BUCKETS
+        value: crawlee-cloud
       - key: MINIO_ROOT_PASSWORD
         fromService:
           name: crawlee-api
