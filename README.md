@@ -193,14 +193,15 @@ See [deploy/](deploy/) for detailed instructions.
 
 ## Documentation
 
-| Guide                                                                 | Description                  |
-| --------------------------------------------------------------------- | ---------------------------- |
-| [API Reference](https://crawlee.cloud/docs/api)                       | REST API endpoints and usage |
-| [CLI Guide](https://crawlee.cloud/docs/cli)                           | Command-line interface       |
-| [Dashboard](https://crawlee.cloud/docs/dashboard)                     | Web interface overview       |
-| [Deployment](https://crawlee.cloud/docs/deployment)                   | Production deployment guide  |
-| [Runner](https://crawlee.cloud/docs/runner)                           | Actor execution engine       |
-| [SDK Compatibility](https://crawlee.cloud/docs/apify-sdk-environment) | Apify SDK integration        |
+| Guide                                                                 | Description                                  |
+| --------------------------------------------------------------------- | -------------------------------------------- |
+| [API Reference](https://crawlee.cloud/docs/api)                       | REST API endpoints and usage                 |
+| [CLI Guide](https://crawlee.cloud/docs/cli)                           | Command-line interface                       |
+| [Dashboard](https://crawlee.cloud/docs/dashboard)                     | Web interface overview                       |
+| [Deployment](https://crawlee.cloud/docs/deployment)                   | Production deployment guide                  |
+| [Runner](https://crawlee.cloud/docs/runner)                           | Actor execution engine                       |
+| [SDK Compatibility](https://crawlee.cloud/docs/apify-sdk-environment) | Apify SDK integration                        |
+| [MCP (AI agents)](https://crawlee.cloud/docs/mcp)                     | Connect Claude, Cursor and other MCP clients |
 
 ---
 
