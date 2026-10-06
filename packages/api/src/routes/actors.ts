@@ -155,7 +155,26 @@ async function recordBuildIfNew(
   }
 }
 
-export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
+/**
+ * Options shared by the actor-scoped plugins (`actorsRoutes`, `registryRoutes`).
+ *
+ * apify-client >= 2.23.4 addresses actors as `/v2/actors/...`; older clients,
+ * the CLI and the dashboard use `/v2/acts/...`. Both plugins are plain
+ * encapsulated plugins (no decorators, no module state), so
+ * `registerV2Routes` registers each one twice, once per segment, and every
+ * route added here is served under both paths without duplicating handlers.
+ * Defaults to `acts` (and `opts` to `{}`, for callers that invoke the plugin
+ * function directly).
+ */
+export interface ActorsSegmentOptions {
+  actorsSegment?: 'acts' | 'actors';
+}
+
+export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
+  fastify,
+  opts = {}
+) => {
+  const segment = opts.actorsSegment ?? 'acts';
   fastify.addHook('preHandler', authenticate);
 
   /**
@@ -173,7 +192,7 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
    */
   fastify.get<{
     Querystring: { offset?: string; limit?: string; q?: string };
-  }>('/acts', async (request) => {
+  }>(`/${segment}`, async (request) => {
     const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
     const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
 
@@ -224,7 +243,7 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
       retryDelaySecs?: number;
       proxyPassword?: string | null;
     };
-  }>('/acts', async (request, reply) => {
+  }>(`/${segment}`, async (request, reply) => {
     const {
       name,
       title,
@@ -314,7 +333,7 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
   /**
    * GET /v2/acts/:actorId - Get actor (user-scoped)
    */
-  fastify.get<{ Params: { actorId: string } }>('/acts/:actorId', async (request, reply) => {
+  fastify.get<{ Params: { actorId: string } }>(`/${segment}/:actorId`, async (request, reply) => {
     const { actorId } = request.params;
 
     // Get actor by ID or name, scoped to user
@@ -345,7 +364,7 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
       retryDelaySecs?: number;
       proxyPassword?: string | null;
     };
-  }>('/acts/:actorId', async (request, reply) => {
+  }>(`/${segment}/:actorId`, async (request, reply) => {
     const { actorId } = request.params;
     const updates = UpdateActorSchema.parse(request.body);
 
@@ -420,7 +439,7 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
    */
   fastify.delete<{
     Params: { actorId: string };
-  }>('/acts/:actorId', async (request, reply) => {
+  }>(`/${segment}/:actorId`, async (request, reply) => {
     const { actorId } = request.params;
     const { force } = DeleteActorQuerySchema.parse(request.query);
 
@@ -550,22 +569,25 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
    * same user-scoped lookup as GET /acts/:actorId, and runs are filtered by
    * the resolved `actors.id` (the path param may be a name).
    */
-  fastify.get<{ Params: { actorId: string } }>('/acts/:actorId/runs', async (request, reply) => {
-    const { actorId } = request.params;
-    const q = ListRunsQuerySchema.parse(request.query);
+  fastify.get<{ Params: { actorId: string } }>(
+    `/${segment}/:actorId/runs`,
+    async (request, reply) => {
+      const { actorId } = request.params;
+      const q = ListRunsQuerySchema.parse(request.query);
 
-    const actor = await query<{ id: string }>(
-      `SELECT id FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2`,
-      [actorId, request.user!.id]
-    );
+      const actor = await query<{ id: string }>(
+        `SELECT id FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2`,
+        [actorId, request.user!.id]
+      );
 
-    if (!actor.rows[0]) {
-      reply.status(404);
-      return { error: { type: 'record-not-found', message: 'Actor not found' } };
+      if (!actor.rows[0]) {
+        reply.status(404);
+        return { error: { type: 'record-not-found', message: 'Actor not found' } };
+      }
+
+      return { data: await listRuns(request.user!.id, { ...q, actorId: actor.rows[0].id }) };
     }
-
-    return { data: await listRuns(request.user!.id, { ...q, actorId: actor.rows[0].id }) };
-  });
+  );
 
   /**
    * POST /v2/acts/:actorId/runs - Start actor run
@@ -584,7 +606,7 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
         headersTemplate?: string;
       }>;
     };
-  }>('/acts/:actorId/runs', async (request, reply) => {
+  }>(`/${segment}/:actorId/runs`, async (request, reply) => {
     const { actorId } = request.params;
     const parsed = ActorRunSchema.parse(request.body || {});
     const { input, envVars, webhooks } = parsed;
@@ -756,8 +778,9 @@ export const actorsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post<{
     Params: { actorId: string };
     Body: { input?: unknown };
-  }>('/acts/:actorId/run-sync', async (request, _reply) => {
-    // For now, just create the run - actual execution would be handled by runner service
+  }>(`/${segment}/:actorId/run-sync`, async (request, _reply) => {
+    // For now, just create the run - actual execution would be handled by runner service.
+    // Always targets /acts, which stays registered alongside the /actors alias.
     return (fastify as any).inject({
       method: 'POST',
       url: `/v2/acts/${request.params.actorId}/runs`,

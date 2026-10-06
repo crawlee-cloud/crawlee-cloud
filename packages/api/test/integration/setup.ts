@@ -7,6 +7,7 @@
  */
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
+import compress from '@fastify/compress';
 import { S3Client, CreateBucketCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
 
 export const TEST_CONFIG = {
@@ -50,6 +51,10 @@ export async function createTestApp(): Promise<FastifyInstance> {
   await initRedis();
 
   const app = Fastify({ logger: false });
+
+  // Mirror production's request decompression (src/index.ts). apify-client
+  // >= 2.25 brotli-compresses request bodies of 1 KB or more.
+  await app.register(compress, { global: true });
 
   // Mirror the content-type parsers registered in src/index.ts so the test
   // app accepts the same payloads as production (binary uploads, form bodies).

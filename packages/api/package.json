@@ -52,7 +52,7 @@
     "@types/node-cron": "^3.0.11",
     "@types/pg": "^8.11.10",
     "@types/uuid": "^10.0.0",
-    "apify-client": "^2.23.1",
+    "apify-client": "^2.25.0",
     "tsx": "^4.7.0",
     "typescript": "^5.7.2",
     "vitest": "^3.2.6"
