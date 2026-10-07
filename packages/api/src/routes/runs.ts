@@ -3,6 +3,7 @@
  */
 
 import type { FastifyPluginAsync } from 'fastify';
+import type pg from 'pg';
 import { nanoid } from 'nanoid';
 import { query, getClient } from '../db/index.js';
 import { redis } from '../storage/redis.js';
@@ -22,6 +23,7 @@ import {
   isTerminalStatus,
   markLongPoll,
 } from '../lib/wait-for-terminal.js';
+import { sendDatasetItems, type DatasetItemsQuery } from '../lib/dataset-items.js';
 
 interface RunRow {
   id: string;
@@ -551,48 +553,88 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
 
   /**
    * POST /v2/actor-runs/:runId/abort - Abort run (user-scoped)
+   *
+   * Apify parity:
+   *   READY    → ABORTED here; the runner only claims READY rows, so it
+   *              never starts. ACTOR.RUN.ABORTED webhooks are queued for
+   *              the runner's retry processor to deliver.
+   *   RUNNING  → ABORTED + `run:abort` so the owning runner kills the
+   *              container (it fires the webhooks on container exit).
+   *   terminal → 200 with the run unchanged (apify-client's abort() throws
+   *              on 404, so a finished run must not be an error).
+   *   unknown / other user's run → 404.
    */
   fastify.post<{ Params: { runId: string } }>(
     '/actor-runs/:runId/abort',
     async (request, reply) => {
       const { runId } = request.params;
+      const userId = request.user!.id;
 
       // CTE pattern (see PUT handler above for rationale) — keeps the
       // formatRun output shape consistent across endpoints.
-      const result = await query<RunRow>(
-        `
+      const abortWhere = (status: 'READY' | 'RUNNING') => `
       WITH updated AS (
         UPDATE runs
         SET status = 'ABORTED', finished_at = NOW(), modified_at = NOW()
-        WHERE id = $1 AND status = 'RUNNING' AND user_id = $2
+        WHERE id = $1 AND status = '${status}' AND user_id = $2
         RETURNING *
       )
       SELECT r.*, d.item_count AS default_dataset_item_count
       FROM updated r
       LEFT JOIN datasets d ON d.id = r.default_dataset_id
-    `,
-        [runId, request.user!.id]
-      );
+    `;
 
-      if (!result.rows[0]) {
-        reply.status(404);
-        return {
-          error: { type: 'record-not-found', message: 'Run not found or already finished' },
-        };
-      }
-
-      // Tell the owning runner to stop the container. Without this the
-      // container keeps crawling until natural exit or timeout_secs
-      // (default 3600s), and its heartbeat claim blocks scale-down the
-      // whole time. Best-effort: the DB status is already terminal, so a
-      // failed publish only delays the kill (timeout still bounds it).
+      // READY: flip the status and queue the webhook deliveries in one
+      // transaction, so a committed abort always has its deliveries. The
+      // conditional UPDATE races the runner's `FOR UPDATE SKIP LOCKED`
+      // claim safely: whichever commits first wins, and a lost race falls
+      // through to the RUNNING branch below.
+      const client = await getClient();
+      let abortedReady: RunRow | undefined;
       try {
-        await redis.publish('run:abort', runId);
+        await client.query('BEGIN');
+        const ready = await client.query<RunRow>(abortWhere('READY'), [runId, userId]);
+        abortedReady = ready.rows[0];
+        if (abortedReady) await queueAbortedWebhooks(client, abortedReady);
+        await client.query('COMMIT');
       } catch (err) {
-        fastify.log.warn(`Failed to publish run:abort for ${runId}: ${(err as Error).message}`);
+        try {
+          await client.query('ROLLBACK');
+        } catch {
+          // Ignore rollback errors if transaction was already aborted or connection closed
+        }
+        throw err;
+      } finally {
+        client.release();
+      }
+      if (abortedReady) return { data: formatRun(abortedReady) };
+
+      const running = await query<RunRow>(abortWhere('RUNNING'), [runId, userId]);
+      if (running.rows[0]) {
+        // Tell the owning runner to stop the container. Without this the
+        // container keeps crawling until natural exit or timeout_secs
+        // (default 3600s), and its heartbeat claim blocks scale-down the
+        // whole time. Best-effort: the DB status is already terminal, so a
+        // failed publish only delays the kill (timeout still bounds it).
+        try {
+          await redis.publish('run:abort', runId);
+        } catch (err) {
+          fastify.log.warn(`Failed to publish run:abort for ${runId}: ${(err as Error).message}`);
+        }
+        return { data: formatRun(running.rows[0]) };
       }
 
-      return { data: formatRun(result.rows[0]) };
+      // Neither update matched: either the run is already finished
+      // (return it unchanged) or it doesn't exist for this user (404).
+      const existing = await query<RunRow>(
+        `${RUN_SELECT_WITH_DATASET_COUNT} WHERE r.id = $1 AND r.user_id = $2`,
+        [runId, userId]
+      );
+      if (!existing.rows[0]) {
+        reply.status(404);
+        return { error: { type: 'record-not-found', message: 'Run not found' } };
+      }
+      return { data: formatRun(existing.rows[0]) };
     }
   );
 
@@ -1037,15 +1079,14 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
 
   /**
    * GET /v2/actor-runs/:runId/dataset/items - Get run's dataset items
-   * (Convenience endpoint)
+   * (Convenience endpoint — same query semantics as
+   * GET /v2/datasets/:datasetId/items via the shared sendDatasetItems)
    */
   fastify.get<{
     Params: { runId: string };
-    Querystring: { offset?: string; limit?: string };
+    Querystring: DatasetItemsQuery;
   }>('/actor-runs/:runId/dataset/items', async (request, reply) => {
     const { runId } = request.params;
-    const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
-    const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
 
     const run = await query<RunRow>(
       `${RUN_SELECT_WITH_DATASET_COUNT} WHERE r.id = $1 AND r.user_id = $2`,
@@ -1057,18 +1098,14 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       return { error: { type: 'record-not-found', message: 'Run or dataset not found' } };
     }
 
-    // Redirect to dataset items endpoint
-    const { listDatasetItems } = await import('../storage/s3.js');
-    const { items, total } = await listDatasetItems(run.rows[0].default_dataset_id, {
-      offset,
-      limit,
-    });
-
-    reply.header('x-apify-pagination-total', total);
-    reply.header('x-apify-pagination-offset', offset);
-    reply.header('x-apify-pagination-limit', limit);
-
-    return items;
+    // item_count from the LEFT JOIN is the authoritative total — without
+    // it listDatasetItems under-counts the last batch (wrong
+    // X-Apify-Pagination-Total, empty pages past the last batch's start).
+    return sendDatasetItems(
+      reply,
+      { id: run.rows[0].default_dataset_id, itemCount: run.rows[0].default_dataset_item_count },
+      request.query
+    );
   });
 
   /**
@@ -1186,6 +1223,38 @@ export async function listRuns(userId: string, q: ListRunsQuery) {
     desc,
     items: pageResult.rows.map(formatRun),
   };
+}
+
+/**
+ * Queue ACTOR.RUN.ABORTED deliveries for a run the API aborted while it was
+ * still READY. No runner ever claims that run, so no runner calls
+ * triggerWebhooks for it; instead each matching webhook gets a PENDING
+ * webhook_deliveries row with `next_retry_at = NOW()`, which the runner's
+ * processWebhookRetries (10 s interval) picks up and sends. The runner
+ * renders the payload (default Apify shape + payload_template) at send
+ * time from the webhook and run rows, so only the row is written here.
+ *
+ * KEEP IN SYNC with packages/runner/src/queue.ts → triggerWebhooks: the
+ * webhook matching WHERE clause, the event-type spelling and the delivery
+ * row's columns (attempt_count 0, max_attempts 5) must match, or
+ * READY-aborts deliver to a different webhook set than runner-side aborts.
+ */
+async function queueAbortedWebhooks(client: pg.PoolClient, run: RunRow): Promise<void> {
+  const eventType = 'ACTOR.RUN.ABORTED';
+  const webhooks = await client.query<{ id: string }>(
+    `SELECT id FROM webhooks
+     WHERE is_enabled = true AND $1 = ANY(event_types)
+       AND (actor_id IS NULL OR actor_id = $2)
+       AND (run_id IS NULL OR run_id = $3)`,
+    [eventType, run.actor_id, run.id]
+  );
+  for (const webhook of webhooks.rows) {
+    await client.query(
+      `INSERT INTO webhook_deliveries (id, webhook_id, run_id, event_type, status, attempt_count, max_attempts, next_retry_at)
+       VALUES ($1, $2, $3, $4, 'PENDING', 0, 5, NOW())`,
+      [nanoid(), webhook.id, run.id, eventType]
+    );
+  }
 }
 
 function formatRun(row: RunRow) {

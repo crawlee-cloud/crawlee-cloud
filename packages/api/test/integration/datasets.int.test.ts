@@ -107,4 +107,155 @@ describe('Datasets (integration)', () => {
     });
     expect(list.json().data.items).toHaveLength(0);
   });
+  describe('item projection and ordering (fields / omit / desc)', () => {
+    const auth = () => ({ authorization: `Bearer ${token}` });
+    const row = (n: number) => ({ rank: n, title: `t${n}`, price: n * 10 });
+
+    /**
+     * Push items 1..5 in three pushes so they span three S3 batch objects
+     * ([1,2], [3,4], [5]) — desc must reverse across batch boundaries,
+     * not just within one.
+     */
+    async function seed(push: (items: unknown[]) => Promise<void>) {
+      await push([row(1), row(2)]);
+      await push([row(3), row(4)]);
+      await push([row(5)]);
+    }
+
+    async function seededDataset(): Promise<string> {
+      const create = await app.inject({
+        method: 'POST',
+        url: '/v2/datasets',
+        headers: auth(),
+        payload: { name: 'projection' },
+      });
+      const id = create.json().data.id;
+      await seed(async (items) => {
+        const res = await app.inject({
+          method: 'POST',
+          url: `/v2/datasets/${id}/items`,
+          headers: auth(),
+          payload: items,
+        });
+        expect(res.statusCode).toBe(201);
+      });
+      return id;
+    }
+
+    const get = (url: string) => app.inject({ method: 'GET', url, headers: auth() });
+
+    it('?fields=title returns only title on all three branches', async () => {
+      const id = await seededDataset();
+      const titles = [1, 2, 3, 4, 5].map((n) => ({ title: `t${n}` }));
+
+      expect((await get(`/v2/datasets/${id}/items?fields=title`)).json()).toEqual(titles);
+      expect((await get(`/v2/datasets/${id}/items?limit=10&fields=title`)).json()).toEqual(titles);
+      expect((await get(`/v2/datasets/${id}/items?download=1&fields=title`)).json()).toEqual(
+        titles
+      );
+    });
+
+    it('?omit=price drops price; empty fields/omit/flatten return full items', async () => {
+      const id = await seededDataset();
+
+      expect((await get(`/v2/datasets/${id}/items?limit=1&omit=price`)).json()).toEqual([
+        { rank: 1, title: 't1' },
+      ]);
+      expect((await get(`/v2/datasets/${id}/items?limit=1&fields=&omit=&flatten=`)).json()).toEqual(
+        [row(1)]
+      );
+    });
+
+    it('?desc=1&limit=2 returns the last two items newest first, across batches', async () => {
+      const id = await seededDataset();
+
+      const page = await get(`/v2/datasets/${id}/items?desc=1&limit=2`);
+      expect(page.json()).toEqual([row(5), row(4)]);
+      expect(page.headers['x-apify-pagination-total']).toBe('5');
+      expect(page.headers['x-apify-pagination-offset']).toBe('0');
+      expect(page.headers['x-apify-pagination-limit']).toBe('2');
+
+      // offset counts from the end
+      expect((await get(`/v2/datasets/${id}/items?desc=1&offset=2&limit=2`)).json()).toEqual([
+        row(3),
+        row(2),
+      ]);
+      // streaming branch (no limit) and download reverse the whole dataset
+      expect((await get(`/v2/datasets/${id}/items?desc=true&offset=1`)).json()).toEqual([
+        row(4),
+        row(3),
+        row(2),
+        row(1),
+      ]);
+      expect((await get(`/v2/datasets/${id}/items?desc=1&download=1&fields=rank`)).json()).toEqual(
+        [5, 4, 3, 2, 1].map((rank) => ({ rank }))
+      );
+    });
+
+    it('run-scoped items: same projection/desc, and the authoritative pagination total', async () => {
+      const actor = await app.inject({
+        method: 'POST',
+        url: '/v2/acts',
+        headers: auth(),
+        payload: { name: 'items-actor' },
+      });
+      const run = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${actor.json().data.id}/runs`,
+        headers: auth(),
+      });
+      const runId = run.json().data.id;
+      const datasetId = run.json().data.defaultDatasetId;
+      await seed(async (items) => {
+        const res = await app.inject({
+          method: 'POST',
+          url: `/v2/datasets/${datasetId}/items`,
+          headers: auth(),
+          payload: items,
+        });
+        expect(res.statusCode).toBe(201);
+      });
+
+      const base = `/v2/actor-runs/${runId}/dataset/items`;
+      // (The missing-total regression is pinned by the next test, whose
+      // last batch holds more than one item.)
+      const page = await get(`${base}?limit=10&fields=title`);
+      expect(page.headers['x-apify-pagination-total']).toBe('5');
+      expect(page.json()).toEqual([1, 2, 3, 4, 5].map((n) => ({ title: `t${n}` })));
+
+      expect((await get(`${base}?desc=1&limit=2&omit=price`)).json()).toEqual([
+        { rank: 5, title: 't5' },
+        { rank: 4, title: 't4' },
+      ]);
+    });
+
+    it('run-scoped items: offsets past the last batch start still return its tail', async () => {
+      const actor = await app.inject({
+        method: 'POST',
+        url: '/v2/acts',
+        headers: auth(),
+        payload: { name: 'tail-actor' },
+      });
+      const run = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${actor.json().data.id}/runs`,
+        headers: auth(),
+      });
+      const runId = run.json().data.id;
+      const datasetId = run.json().data.defaultDatasetId;
+      // One batch of 4 items starting at index 0.
+      await app.inject({
+        method: 'POST',
+        url: `/v2/datasets/${datasetId}/items`,
+        headers: auth(),
+        payload: [row(1), row(2), row(3), row(4)],
+      });
+
+      // Pre-fix, listDatasetItems got no total and sized the last batch
+      // as 1 item: total read 1 and offset 2 returned [].
+      const page = await get(`/v2/actor-runs/${runId}/dataset/items?offset=2&limit=10`);
+      expect(page.headers['x-apify-pagination-total']).toBe('4');
+      expect(page.json()).toEqual([row(3), row(4)]);
+    });
+  });
 });

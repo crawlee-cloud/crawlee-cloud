@@ -4,6 +4,5 @@
   "fetch-actor-details",
   "call-actor",
   "poll-count",
-  "actor-tool",
-  "get-dataset-items"
+  "actor-tool"
 ]

@@ -42,6 +42,7 @@ vi.mock('../src/db/index.js', () => ({
 
 vi.mock('../src/storage/s3.js', () => ({
   listDatasetItems: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+  iterateDatasetItems: vi.fn(),
   getKVRecord: vi.fn().mockResolvedValue(null),
   putKVRecord: vi.fn().mockResolvedValue(undefined),
 }));
@@ -414,8 +415,13 @@ describe('Actor Runs Routes', () => {
   });
 
   describe('POST /v2/actor-runs/:runId/abort', () => {
+    // Query order: READY update (in a transaction) → [webhook match +
+    // delivery inserts] → RUNNING update → existence SELECT. Each branch
+    // stops at the first statement that returns a row.
+    const NO_ROWS = { rows: [] };
+
     it('should abort running actor', async () => {
-      mockQuery.mockResolvedValueOnce({
+      mockQuery.mockResolvedValueOnce(NO_ROWS).mockResolvedValueOnce({
         rows: [createRunRow({ status: 'ABORTED', finished_at: new Date() })],
       });
 
@@ -427,10 +433,84 @@ describe('Actor Runs Routes', () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body.data.status).toBe('ABORTED');
+      expect(mockQuery.mock.calls[0][0]).toContain("status = 'READY'");
+      expect(mockQuery.mock.calls[1][0]).toContain("status = 'RUNNING'");
     });
 
-    it('should return 404 if run not found or already finished', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+    it('aborts a READY run in one conditional UPDATE and queues ACTOR.RUN.ABORTED deliveries', async () => {
+      mockQuery
+        .mockResolvedValueOnce({
+          rows: [createRunRow({ status: 'ABORTED', started_at: null, finished_at: new Date() })],
+        })
+        .mockResolvedValueOnce({ rows: [{ id: 'wh-1' }, { id: 'wh-2' }] })
+        .mockResolvedValue(NO_ROWS);
+
+      const response = await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/abort' });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).data.status).toBe('ABORTED');
+      const [updateSql, updateParams] = mockQuery.mock.calls[0] as [string, unknown[]];
+      expect(updateSql).toContain("status = 'READY'");
+      expect(updateParams).toEqual(['run-1', 'test-user-id']);
+
+      const [matchSql, matchParams] = mockQuery.mock.calls[1] as [string, unknown[]];
+      expect(matchSql).toContain('FROM webhooks');
+      expect(matchParams).toEqual(['ACTOR.RUN.ABORTED', 'actor-1', 'run-1']);
+
+      // One PENDING row per matching webhook, due now, for the runner's
+      // retry processor to send.
+      const inserts = mockQuery.mock.calls.filter((c) =>
+        String(c[0]).includes('INSERT INTO webhook_deliveries')
+      ) as [string, unknown[]][];
+      expect(inserts).toHaveLength(2);
+      expect(inserts[0][0]).toContain("'PENDING', 0, 5, NOW()");
+      expect(inserts.map((c) => c[1].slice(1))).toEqual([
+        ['wh-1', 'run-1', 'ACTOR.RUN.ABORTED'],
+        ['wh-2', 'run-1', 'ACTOR.RUN.ABORTED'],
+      ]);
+      expect(txStatements).toEqual(['BEGIN', 'COMMIT']);
+      expect(mockRelease).toHaveBeenCalled();
+      // Nothing is running, so there's no container to kill.
+      expect(mockPublish).not.toHaveBeenCalled();
+      expect(mockQuery.mock.calls.some((c) => String(c[0]).includes("status = 'RUNNING'"))).toBe(
+        false
+      );
+    });
+
+    it('rolls back the READY abort when queueing its webhook deliveries fails', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [createRunRow({ status: 'ABORTED' })] })
+        .mockRejectedValueOnce(new Error('webhooks query failed'));
+
+      const response = await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/abort' });
+
+      expect(response.statusCode).toBe(500);
+      expect(txStatements).toEqual(['BEGIN', 'ROLLBACK']);
+      expect(mockRelease).toHaveBeenCalled();
+    });
+
+    it('returns 200 with the unchanged run when it is already finished', async () => {
+      // apify-client's abort() throws on 404, so aborting a finished run
+      // must hand back the run instead (Apify behaviour).
+      mockQuery
+        .mockResolvedValueOnce(NO_ROWS)
+        .mockResolvedValueOnce(NO_ROWS)
+        .mockResolvedValueOnce({
+          rows: [createRunRow({ status: 'SUCCEEDED', finished_at: new Date() })],
+        });
+
+      const response = await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/abort' });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).data.status).toBe('SUCCEEDED');
+      const [selectSql, selectParams] = mockQuery.mock.calls[2] as [string, unknown[]];
+      expect(selectSql).toContain('r.user_id = $2');
+      expect(selectParams).toEqual(['run-1', 'test-user-id']);
+      expect(mockPublish).not.toHaveBeenCalled();
+    });
+
+    it('should return 404 if the run does not exist for this user', async () => {
+      mockQuery.mockResolvedValue(NO_ROWS);
 
       const response = await app.inject({
         method: 'POST',
@@ -438,6 +518,7 @@ describe('Actor Runs Routes', () => {
       });
 
       expect(response.statusCode).toBe(404);
+      expect(JSON.parse(response.body).error.type).toBe('record-not-found');
     });
 
     it('returns defaultDatasetItemCount on the aborted run (C1 regression — CTE preserves the LEFT JOIN)', async () => {
@@ -446,7 +527,7 @@ describe('Actor Runs Routes', () => {
       // `defaultDatasetItemCount: undefined`. The CTE pattern keeps the
       // shape identical to list/GET. Asserting per-endpoint here so the
       // regression class is permanently caught.
-      mockQuery.mockResolvedValueOnce({
+      mockQuery.mockResolvedValueOnce(NO_ROWS).mockResolvedValueOnce({
         rows: [createRunRow({ status: 'ABORTED', default_dataset_item_count: 42 })],
       });
 
@@ -462,7 +543,7 @@ describe('Actor Runs Routes', () => {
       // on its own or hits timeout_secs (default 3600s) — the runner's
       // heartbeat keeps claiming the run and blocks scale-down for up to
       // an extra hour after the operator aborted.
-      mockQuery.mockResolvedValueOnce({
+      mockQuery.mockResolvedValueOnce(NO_ROWS).mockResolvedValueOnce({
         rows: [createRunRow({ status: 'ABORTED', finished_at: new Date() })],
       });
 
@@ -472,7 +553,7 @@ describe('Actor Runs Routes', () => {
     });
 
     it('does not publish run:abort when the run was not found', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockQuery.mockResolvedValue(NO_ROWS);
 
       await app.inject({ method: 'POST', url: '/v2/actor-runs/missing/abort' });
 
@@ -898,25 +979,64 @@ describe('Actor Runs Routes', () => {
   });
 
   describe('GET /v2/actor-runs/:runId/dataset/items', () => {
-    it('should get dataset items for run', async () => {
+    // Shares sendDatasetItems with GET /v2/datasets/:id/items — the
+    // per-branch behaviour is covered in datasets.test.ts; these lock the
+    // run-scoped wiring (dataset id + authoritative total from the run's
+    // LEFT JOIN).
+    it('should get a page of dataset items for run, with the dataset item_count as total', async () => {
       mockQuery.mockResolvedValueOnce({
-        rows: [createRunRow()],
+        rows: [createRunRow({ default_dataset_item_count: 2500 })],
       });
 
       const { listDatasetItems } = await import('../src/storage/s3.js');
-      (listDatasetItems as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-        items: [{ url: 'https://example.com' }],
-        total: 1,
+      const list = listDatasetItems as ReturnType<typeof vi.fn>;
+      list.mockClear();
+      list.mockResolvedValueOnce({
+        items: [{ url: 'https://example.com', title: 'x' }],
+        total: 2500,
       });
 
       const response = await app.inject({
         method: 'GET',
-        url: '/v2/actor-runs/run-1/dataset/items',
+        url: '/v2/actor-runs/run-1/dataset/items?limit=10&fields=url',
       });
 
       expect(response.statusCode).toBe(200);
-      const body = JSON.parse(response.body);
-      expect(body).toHaveLength(1);
+      expect(JSON.parse(response.body)).toEqual([{ url: 'https://example.com' }]);
+      // Without `total`, listDatasetItems under-counts the last batch.
+      expect(list).toHaveBeenCalledWith('ds-1', { offset: 0, limit: 10, total: 2500 });
+      expect(response.headers['x-apify-pagination-total']).toBe('2500');
+    });
+
+    it('streams the full dataset when limit is omitted (same as the dataset route)', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [createRunRow({ default_dataset_item_count: 3 })],
+      });
+      const { iterateDatasetItems } = await import('../src/storage/s3.js');
+      (iterateDatasetItems as ReturnType<typeof vi.fn>).mockImplementationOnce(async function* () {
+        yield { n: 2, price: 1 };
+        yield { n: 1, price: 1 };
+        yield { n: 0, price: 1 };
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/actor-runs/run-1/dataset/items?desc=1&omit=price',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toEqual([{ n: 2 }, { n: 1 }, { n: 0 }]);
+      expect(iterateDatasetItems).toHaveBeenCalledWith('ds-1', { reverse: true });
+      expect(response.headers['x-apify-pagination-total']).toBe('3');
+    });
+
+    it('returns 404 when the run is not found', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/actor-runs/missing/dataset/items',
+      });
+      expect(response.statusCode).toBe(404);
     });
   });
 

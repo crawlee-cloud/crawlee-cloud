@@ -946,6 +946,13 @@ export async function triggerWebhooks(
   if (!run) return;
 
   // Get applicable webhooks (global OR scoped to this actor)
+  //
+  // KEEP IN SYNC with packages/api/src/routes/runs.ts → queueAbortedWebhooks:
+  // aborting a READY run never reaches a runner, so the API queues those
+  // ACTOR.RUN.ABORTED deliveries itself with the same matching WHERE clause,
+  // event-type spelling and delivery-row columns as below (but
+  // next_retry_at = NOW(), since nothing sends them inline — the retry
+  // processor delivers them).
   const webhooks = await db.query<{
     id: string;
     request_url: string;
