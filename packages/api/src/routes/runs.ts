@@ -25,7 +25,7 @@ import {
 } from '../lib/wait-for-terminal.js';
 import { sendDatasetItems, type DatasetItemsQuery } from '../lib/dataset-items.js';
 
-interface RunRow {
+export interface RunRow {
   id: string;
   actor_id: string | null;
   user_id: string | null;
@@ -73,6 +73,19 @@ const RUN_SELECT_WITH_DATASET_COUNT = `
   FROM runs r
   LEFT JOIN datasets d ON d.id = r.default_dataset_id
 `;
+
+/**
+ * Loads one run (with its live dataset item count) scoped to `userId`, or
+ * null. Each call checks out its own pooled connection, so it is safe as a
+ * `waitForTerminal` loader.
+ */
+export async function loadRun(runId: string, userId: string): Promise<RunRow | null> {
+  const result = await query<RunRow>(
+    `${RUN_SELECT_WITH_DATASET_COUNT} WHERE r.id = $1 AND r.user_id = $2`,
+    [runId, userId]
+  );
+  return result.rows[0] ?? null;
+}
 
 export const runsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.addHook('preHandler', authenticate);
@@ -227,13 +240,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     const { runId } = request.params;
     const waitSecs = parseWaitForFinish(request.query);
 
-    const load = async () => {
-      const result = await query<RunRow>(
-        `${RUN_SELECT_WITH_DATASET_COUNT} WHERE r.id = $1 AND r.user_id = $2`,
-        [runId, request.user!.id]
-      );
-      return result.rows[0] ?? null;
-    };
+    const load = () => loadRun(runId, request.user!.id);
 
     let row: RunRow | null;
     if (waitSecs > 0) {
@@ -1257,7 +1264,7 @@ async function queueAbortedWebhooks(client: pg.PoolClient, run: RunRow): Promise
   }
 }
 
-function formatRun(row: RunRow) {
+export function formatRun(row: RunRow) {
   return {
     id: row.id,
     actId: row.actor_id,

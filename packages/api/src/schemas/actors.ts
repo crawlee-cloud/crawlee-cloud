@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { zBoolQuery } from './common.js';
 import { SUPPORTED_WEBHOOK_EVENTS } from './webhooks.js';
 
 // Size caps for the build's actorDefinition (#112). Measured in UTF-8 bytes
@@ -112,6 +113,48 @@ export const ActorRunSchema = z.object({
   envVars: z.record(z.string()).optional(),
   webhooks: z.array(RunWebhookSchema).max(20).optional(),
 });
+
+/**
+ * Base64-encoded JSON query param (Apify's `webhooks` format), decoded and
+ * then validated by `schema`. Undecodable values are a validation error.
+ */
+function zBase64Json<T extends z.ZodTypeAny>(schema: T) {
+  return z
+    .string()
+    .transform((value, ctx) => {
+      try {
+        return JSON.parse(Buffer.from(value, 'base64').toString('utf8')) as unknown;
+      } catch {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Must be base64-encoded JSON' });
+        return z.NEVER;
+      }
+    })
+    .pipe(schema);
+}
+
+/**
+ * Run options for `POST /v2/acts/:actorId/runs` when the body is the actor
+ * input (Apify contract, see lib/run-body.ts). Query values arrive as
+ * strings and are coerced; bounds match ActorRunSchema. Non-strict: unknown
+ * params are dropped, not rejected. `waitForFinish` is read separately with
+ * `parseWaitForFinish` so it clamps like GET /actor-runs/:runId.
+ */
+export const ActorRunQuerySchema = z.object({
+  timeout: z.coerce.number().int().positive().max(86_400).optional(),
+  memory: z.coerce.number().int().positive().max(16_384).optional(),
+  webhooks: zBase64Json(z.array(RunWebhookSchema).max(20)).optional(),
+  // Crawlee Cloud extension (Apify has no per-run env vars): base64 JSON
+  // object of strings, used by the CLI's `-e`.
+  envVars: zBase64Json(z.record(z.string())).optional(),
+  // Accepted for apify-client compatibility; no storage or behaviour yet.
+  build: z.string().optional(),
+  maxItems: z.coerce.number().nonnegative().optional(),
+  maxTotalChargeUsd: z.coerce.number().nonnegative().optional(),
+  restartOnError: zBoolQuery,
+  forcePermissionLevel: z.string().optional(),
+});
+
+export type ActorRunQuery = z.infer<typeof ActorRunQuerySchema>;
 
 export const DeleteActorQuerySchema = z.object({
   force: z

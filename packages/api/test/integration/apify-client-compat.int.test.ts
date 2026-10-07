@@ -201,4 +201,160 @@ describe('apify-client round-trip (integration)', () => {
       expect(body.error.message).toBe('Route GET /v2/no-such-route not found');
     });
   });
+  describe('run start body contract (#115)', () => {
+    let actorId: string;
+    const auth = () => ({ authorization: `Bearer ${token}` });
+
+    const getInput = async (kvStoreId: string) =>
+      (await client.keyValueStore(kvStoreId).getRecord('INPUT'))?.value;
+
+    beforeAll(async () => {
+      const actor = await client.actors().create({ name: 'compat-run-body' });
+      actorId = actor.id;
+    });
+
+    it('client.actor(id).start(input) stores the input as INPUT', async () => {
+      const run = await client.actor(actorId).start({ query: 'x' }, { memory: 512, timeout: 60 });
+      expect(await getInput(run.defaultKeyValueStoreId)).toEqual({ query: 'x' });
+
+      const fetched = await client.run(run.id).get();
+      expect(fetched?.options).toMatchObject({ timeoutSecs: 60, memoryMbytes: 512 });
+    });
+
+    it('raw Apify body with ?timeout&memory sets timeout_secs/memory_mbytes', async () => {
+      const res = await fetch(`${baseUrl}/v2/acts/${actorId}/runs?timeout=60&memory=512`, {
+        method: 'POST',
+        headers: { ...auth(), 'content-type': 'application/json' },
+        body: JSON.stringify({ query: 'x' }),
+      });
+      expect(res.status).toBe(201);
+      const { data } = (await res.json()) as {
+        data: { id: string; defaultKeyValueStoreId: string };
+      };
+      expect(await getInput(data.defaultKeyValueStoreId)).toEqual({ query: 'x' });
+
+      const { query } = await import('../../src/db/index.js');
+      const row = await query<{ timeout_secs: number; memory_mbytes: number }>(
+        'SELECT timeout_secs, memory_mbytes FROM runs WHERE id = $1',
+        [data.id]
+      );
+      expect(row.rows[0]).toEqual({ timeout_secs: 60, memory_mbytes: 512 });
+    });
+
+    it('envVars in an Apify body are input; ?envVars=<base64> sets env vars', async () => {
+      const { redis } = await import('../../src/storage/redis.js');
+
+      const inBody = await client.actor(actorId).start({ query: 'x', envVars: { A: '1' } });
+      expect(await redis.get(`run:${inBody.id}:envVars`)).toBeNull();
+      expect(await getInput(inBody.defaultKeyValueStoreId)).toEqual({
+        query: 'x',
+        envVars: { A: '1' },
+      });
+
+      const envVars = Buffer.from(JSON.stringify({ A: '1' })).toString('base64');
+      const res = await fetch(
+        `${baseUrl}/v2/acts/${actorId}/runs?envVars=${encodeURIComponent(envVars)}`,
+        {
+          method: 'POST',
+          headers: { ...auth(), 'content-type': 'application/json' },
+          body: JSON.stringify({ query: 'x' }),
+        }
+      );
+      expect(res.status).toBe(201);
+      const { data } = (await res.json()) as { data: { id: string } };
+      expect(await redis.get(`run:${data.id}:envVars`)).toBe(JSON.stringify({ A: '1' }));
+    });
+
+    it('dashboard body {timeout, memory} still applies them with input {}', async () => {
+      const res = await fetch(`${baseUrl}/v2/acts/${actorId}/runs`, {
+        method: 'POST',
+        headers: { ...auth(), 'content-type': 'application/json' },
+        body: JSON.stringify({ timeout: 3600, memory: 1024 }),
+      });
+      expect(res.status).toBe(201);
+      const { data } = (await res.json()) as {
+        data: { id: string; defaultKeyValueStoreId: string };
+      };
+      expect(await getInput(data.defaultKeyValueStoreId)).toEqual({});
+      const run = await client.run(data.id).get();
+      expect(run?.options).toMatchObject({ timeoutSecs: 3600, memoryMbytes: 1024 });
+    });
+
+    it('legacy CLI body {input, envVars} still works', async () => {
+      const { redis } = await import('../../src/storage/redis.js');
+      const res = await fetch(`${baseUrl}/v2/acts/${actorId}/runs`, {
+        method: 'POST',
+        headers: { ...auth(), 'content-type': 'application/json' },
+        body: JSON.stringify({ input: { query: 'legacy' }, envVars: { B: '2' }, memory: 256 }),
+      });
+      expect(res.status).toBe(201);
+      const { data } = (await res.json()) as {
+        data: { id: string; defaultKeyValueStoreId: string };
+      };
+      expect(await getInput(data.defaultKeyValueStoreId)).toEqual({ query: 'legacy' });
+      expect(await redis.get(`run:${data.id}:envVars`)).toBe(JSON.stringify({ B: '2' }));
+    });
+
+    it('run-sync forwards an Apify body and ?memory', async () => {
+      const res = await fetch(`${baseUrl}/v2/actors/compat-run-body/run-sync?memory=512`, {
+        method: 'POST',
+        headers: { ...auth(), 'content-type': 'application/json' },
+        body: JSON.stringify({ query: 'sync' }),
+      });
+      expect(res.status).toBe(201);
+      const { data } = (await res.json()) as {
+        data: { id: string; defaultKeyValueStoreId: string };
+      };
+      expect(await getInput(data.defaultKeyValueStoreId)).toEqual({ query: 'sync' });
+      const run = await client.run(data.id).get();
+      expect(run?.options).toMatchObject({ memoryMbytes: 512 });
+    });
+
+    it('rejects text/plain with 415; text/plain KV records still upload', async () => {
+      const res = await fetch(`${baseUrl}/v2/acts/${actorId}/runs`, {
+        method: 'POST',
+        headers: { ...auth(), 'content-type': 'text/plain' },
+        body: 'hello',
+      });
+      expect(res.status).toBe(415);
+
+      const kv = await client.keyValueStores().getOrCreate('compat-run-body-kv');
+      await client
+        .keyValueStore(kv.id)
+        .setRecord({ key: 'NOTE', value: 'plain text', contentType: 'text/plain' });
+      const record = await client.keyValueStore(kv.id).getRecord('NOTE');
+      expect(record?.value).toBe('plain text');
+    });
+
+    it('?waitForFinish returns the run once it is terminal', async () => {
+      // No runner in the integration stack: finish the run ~1 s after the
+      // start request was sent, while the start request is still waiting.
+      const started = Date.now();
+      const startPromise = client.actor(actorId).start({ query: 'wait' }, { waitForFinish: 30 });
+
+      let runId: string | undefined;
+      while (!runId && Date.now() - started < 10_000) {
+        await new Promise((r) => setTimeout(r, 200));
+        const list = await client.actor(actorId).runs().list({ desc: true, limit: 1 });
+        const latest = list.items[0];
+        if (latest && latest.status === 'READY') {
+          const input = await getInput(latest.defaultKeyValueStoreId);
+          if ((input as { query?: string } | undefined)?.query === 'wait') runId = latest.id;
+        }
+      }
+      expect(runId).toBeDefined();
+
+      const put = await fetch(`${baseUrl}/v2/actor-runs/${runId}`, {
+        method: 'PUT',
+        headers: { ...auth(), 'content-type': 'application/json' },
+        body: JSON.stringify({ status: 'SUCCEEDED' }),
+      });
+      expect(put.status).toBe(200);
+
+      const run = await startPromise;
+      expect(run.id).toBe(runId);
+      expect(run.status).toBe('SUCCEEDED');
+      expect(Date.now() - started).toBeLessThan(30_000);
+    });
+  });
 });
