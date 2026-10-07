@@ -3,6 +3,7 @@
  */
 
 import type { FastifyPluginAsync } from 'fastify';
+import type pg from 'pg';
 import { nanoid } from 'nanoid';
 import {
   CreateActorSchema,
@@ -54,6 +55,7 @@ const RETURNING_WITH_USERNAME = `RETURNING *, (SELECT username FROM users WHERE 
  * implicitly want when they run an actor without specifying a tag.
  */
 async function findOrCreateActorVersion(
+  db: pg.PoolClient,
   actorId: string,
   versionNumber: string,
   buildTag = 'latest'
@@ -70,15 +72,16 @@ async function findOrCreateActorVersion(
   // clear in a data-modifying CTE) can't be used here: both UPDATEs run on
   // the same snapshot in an unspecified order, and when the claim runs
   // first it violates the unique (actor_id, build_tag) index, so the
-  // rollback re-push silently recorded no build (#117). In between, the
-  // tag is on no version; the default-build lookup then falls back to the
-  // actor's newest SUCCEEDED build.
-  await query(
+  // rollback re-push silently recorded no build (#117). Runs on the
+  // caller's transaction (`db`), which holds the actor row lock, so
+  // concurrent pushes of one actor clear+claim one after the other and
+  // nobody sees the tag on no version.
+  await db.query(
     `UPDATE actor_versions SET build_tag = NULL
      WHERE actor_id = $1 AND build_tag = $3 AND version_number <> $2`,
     [actorId, versionNumber, buildTag]
   );
-  const existing = await query<{ id: string }>(
+  const existing = await db.query<{ id: string }>(
     `UPDATE actor_versions SET build_tag = $3
      WHERE actor_id = $1 AND version_number = $2
      RETURNING id`,
@@ -89,7 +92,7 @@ async function findOrCreateActorVersion(
   // Version doesn't exist yet — insert claiming the tag (siblings were
   // cleared above).
   const id = nanoid();
-  const inserted = await query<{ id: string }>(
+  const inserted = await db.query<{ id: string }>(
     `INSERT INTO actor_versions (id, actor_id, version_number, build_tag)
      VALUES ($1, $2, $3, $4)
      ON CONFLICT (actor_id, version_number) DO UPDATE SET version_number = EXCLUDED.version_number
@@ -124,8 +127,18 @@ async function findOrCreateActorVersion(
  * The carry-over source is chosen by carryOverSourceSql. The definition is
  * written in the same statement as the insert/update.
  *
- * Best-effort when no definition was sent: failures are logged and
- * swallowed — the actor upsert is the user's actual intent and a missing
+ * Atomic: everything (version clear+claim, dedup select, build insert or
+ * update, current_version_id) runs on one transaction that first locks the
+ * actor row, so concurrent pushes of one actor serialize instead of
+ * interleaving (a push whose tag claim lost the race used to hit the unique
+ * (actor_id, build_tag) index and silently record no build). The lock is
+ * FOR NO KEY UPDATE, not FOR UPDATE, so run starts — which insert rows
+ * referencing the actor (FK KEY SHARE) — are not blocked. Nothing inside
+ * may use the pool `query()`: it would wait on this transaction's own
+ * row lock and hang.
+ *
+ * Best-effort when no definition was sent: failures are rolled back, logged
+ * and swallowed — the actor upsert is the user's actual intent and a missing
  * build row is a UI nicety. When a definition was sent the error is
  * rethrown, so the request fails instead of reporting a schema it never
  * stored.
@@ -141,15 +154,23 @@ async function recordBuildIfNew(
   if (!imageName) return;
   const definitionJson = actorDefinition === undefined ? null : JSON.stringify(actorDefinition);
 
+  let client: pg.PoolClient | undefined;
   try {
-    const versionId = versionNumber ? await findOrCreateActorVersion(actorId, versionNumber) : null;
+    client = await getClient();
+    await client.query('BEGIN');
+    // Serializes concurrent recordBuildIfNew calls for this actor (see above).
+    await client.query('SELECT 1 FROM actors WHERE id = $1 FOR NO KEY UPDATE', [actorId]);
+
+    const versionId = versionNumber
+      ? await findOrCreateActorVersion(client, actorId, versionNumber)
+      : null;
 
     // Dedup: skip if the most recent deploy build for this actor already
     // matches both image and version. Older builds (different versions) stay
     // on record so the page shows full history. Only SUCCEEDED builds count:
     // POST /v2/acts/:id/builds inserts RUNNING rows with a generated image
     // name, which would otherwise make every later deploy look new.
-    const existing = await query<{
+    const existing = await client.query<{
       id: string;
       image_name: string | null;
       version_id: string | null;
@@ -172,7 +193,7 @@ async function recordBuildIfNew(
       if (definitionJson !== null) {
         // Keys missing from the request come from the row itself, or, if it
         // has no definition yet, from its carry-over source.
-        await query(
+        await client.query(
           `WITH src AS (${carryOverSourceSql('$3', '$4', '$5')})
            UPDATE actor_builds b
               SET actor_definition = ${definitionWithInheritedKeysSql(
@@ -183,15 +204,21 @@ async function recordBuildIfNew(
           [last.id, definitionJson, actorId, last.version_id, imageName]
         );
       }
+      await client.query('COMMIT');
       return;
     }
 
-    // The source subquery runs before the new row exists.
-    await query(
+    // The source subquery runs before the new row exists. Timestamps use
+    // clock_timestamp(), not NOW(): NOW() is the transaction start, taken
+    // before the actor lock, so a push that waited on the lock could get an
+    // older created_at than the build it waited for and sort below it.
+    await client.query(
       `WITH src AS (${carryOverSourceSql('$2', '$3', '$4')})
        INSERT INTO actor_builds
-         (id, actor_id, version_id, status, image_name, started_at, finished_at, actor_definition)
-       VALUES ($1, $2::varchar, $3::varchar, 'SUCCEEDED', $4::text, NOW(), NOW(),
+         (id, actor_id, version_id, status, image_name, started_at, finished_at, created_at,
+          actor_definition)
+       VALUES ($1, $2::varchar, $3::varchar, 'SUCCEEDED', $4::text, clock_timestamp(), clock_timestamp(),
+         clock_timestamp(),
          CASE WHEN $5::jsonb IS NULL THEN (SELECT actor_definition FROM src)
               ELSE ${definitionWithInheritedKeysSql('(SELECT actor_definition FROM src)', '$5')}
          END)`,
@@ -202,14 +229,27 @@ async function recordBuildIfNew(
     // (dashboard, runner) can find "the current source version" without
     // joining through builds.
     if (versionId) {
-      await query(`UPDATE actors SET current_version_id = $1, modified_at = NOW() WHERE id = $2`, [
-        versionId,
-        actorId,
-      ]);
+      await client.query(
+        `UPDATE actors SET current_version_id = $1, modified_at = NOW() WHERE id = $2`,
+        [versionId, actorId]
+      );
     }
+    await client.query('COMMIT');
   } catch (err) {
+    // A connection whose ROLLBACK failed is destroyed rather than returned
+    // to the pool mid-transaction.
+    let rollbackError: Error | undefined;
+    if (client) {
+      await client.query('ROLLBACK').catch((e: unknown) => {
+        rollbackError = e as Error;
+      });
+    }
     log(`recordBuildIfNew failed for ${actorId}: ${(err as Error).message}`);
+    client?.release(rollbackError);
+    client = undefined;
     if (definitionJson !== null) throw err;
+  } finally {
+    client?.release();
   }
 }
 

@@ -94,7 +94,6 @@ async function loadBuildWithWait(
 ): Promise<BuildRow | null> {
   if (waitSecs <= 0) return load();
 
-  markLongPoll(request);
   const abort = waitAbortSignal(reply);
   try {
     return await waitForTerminal({
@@ -102,6 +101,8 @@ async function loadBuildWithWait(
       isTerminal: (b) => isTerminalStatus(b.status),
       waitSecs,
       signal: abort.signal,
+      // Only a request that actually waits leaves the latency histogram.
+      onWait: () => markLongPoll(request),
     });
   } finally {
     abort.dispose();

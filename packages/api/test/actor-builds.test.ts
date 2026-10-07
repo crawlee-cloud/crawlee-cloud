@@ -31,6 +31,7 @@ vi.mock('../src/storage/redis.js', () => ({ redis: {} }));
 
 import { registryRoutes, actorBuildsRoutes } from '../src/routes/registry.js';
 import { formatBuild, selectDefaultBuilds } from '../src/lib/builds.js';
+import { isLongPollRequest } from '../src/lib/wait-for-terminal.js';
 
 const OWN_ACTOR = { id: 'actor-1', name: 'x', user_id: 'test-user-id', username: 'alice' };
 
@@ -63,8 +64,15 @@ const buildRow = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+/** isLongPollRequest() of each response, as the production metrics hook sees it. */
+const longPollFlags: boolean[] = [];
+
 async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify();
+  app.addHook('onResponse', (request, _reply, done) => {
+    longPollFlags.push(isLongPollRequest(request));
+    done();
+  });
   // Mirror production's ZodError → 400 handler (src/index.ts).
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {
@@ -179,6 +187,8 @@ describe('GET /v2/acts/:actorId/builds/default', () => {
 
     expect(res.statusCode).toBe(200);
     expect(mockQuery).toHaveBeenCalledTimes(1);
+    // Answered without waiting: stays in the latency histogram.
+    expect(longPollFlags.at(-1)).toBe(false);
   });
 });
 
@@ -266,6 +276,8 @@ describe('GET /v2/actor-builds/:buildId?waitForFinish (fake timers)', () => {
     expect(probe.settled).toBe(true);
     expect(probe.value.json().data.status).toBe('FAILED');
     expect(mockQuery).toHaveBeenCalledTimes(4);
+    // It waited, so it is marked as a long-poll.
+    expect(longPollFlags.at(-1)).toBe(true);
   });
 
   it('responds with the RUNNING state after waitForFinish seconds (orphan build)', async () => {

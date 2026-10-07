@@ -142,6 +142,43 @@ describe('default build and /actor-builds (integration)', () => {
     expect(b.actorDefinition.input).toEqual(schema(['maxPages']));
   });
 
+  it('concurrent pushes of different versions both record a build; one version holds latest', async () => {
+    const actorId = await createActor('race', {
+      defaultRunOptions: { image: 'ghcr.io/alice/race:0' },
+      version: '0.0',
+      actorDefinition: definition('0.0', ['url']),
+    });
+    const { pool } = await import('../../src/db/index.js');
+
+    // Several rounds: one pair of concurrent pushes does not reliably land in
+    // the clear→claim window, a handful of them did before the fix.
+    for (let round = 1; round <= 8; round++) {
+      const versions = [`${String(round)}.1`, `${String(round)}.2`];
+      await Promise.all(versions.map((v) => push(actorId, `ghcr.io/alice/race:${v}`, v, ['url'])));
+
+      const builds = await pool.query<{ version_number: string }>(
+        `SELECT v.version_number FROM actor_builds b
+           JOIN actor_versions v ON v.id = b.version_id
+          WHERE b.actor_id = $1 AND v.version_number = ANY($2)`,
+        [actorId, versions]
+      );
+      expect(builds.rows.map((r) => r.version_number).sort()).toEqual(versions);
+
+      const latest = await pool.query<{ id: string; version_number: string }>(
+        `SELECT id, version_number FROM actor_versions WHERE actor_id = $1 AND build_tag = 'latest'`,
+        [actorId]
+      );
+      expect(latest.rows).toHaveLength(1);
+      expect(versions).toContain(latest.rows[0]!.version_number);
+      // The tag and current_version_id move in the same transaction.
+      const actor = await pool.query<{ current_version_id: string }>(
+        'SELECT current_version_id FROM actors WHERE id = $1',
+        [actorId]
+      );
+      expect(actor.rows[0]!.current_version_id).toBe(latest.rows[0]!.id);
+    }
+  });
+
   it('a RUNNING orphan build created after the latest push is not the default', async () => {
     const actorId = await createActor('orphan', {
       defaultRunOptions: { image: 'ghcr.io/alice/orphan:1' },
