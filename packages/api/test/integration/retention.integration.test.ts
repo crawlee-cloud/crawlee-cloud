@@ -648,17 +648,22 @@ describe('GET /v2/system/retention/status', () => {
     // Build app and inline-create an admin user (setup.ts ships
     // createTestUser which only mints role='user'; for the admin role we
     // INSERT directly and call createToken).
-    const { createTestApp } = await import('./setup.js');
+    const { createTestApp, testUsername } = await import('./setup.js');
     const { hashPassword, createToken } = await import('../../src/auth/index.js');
     const { nanoid } = await import('nanoid');
     const app = await createTestApp();
     try {
       const adminId = nanoid();
       await pool.query(
-        `INSERT INTO users (id, email, password_hash, role)
-         VALUES ($1, $2, $3, 'admin')
-         ON CONFLICT (email) DO UPDATE SET role = 'admin', password_hash = $3 RETURNING id`,
-        [adminId, 'retention-status-admin@test.local', await hashPassword('pw')]
+        `INSERT INTO users (id, email, username, password_hash, role)
+         VALUES ($1, $2, $3, $4, 'admin')
+         ON CONFLICT (email) DO UPDATE SET role = 'admin', password_hash = $4 RETURNING id`,
+        [
+          adminId,
+          'retention-status-admin@test.local',
+          testUsername(adminId),
+          await hashPassword('pw'),
+        ]
       );
       const adminToken = createToken({
         userId: adminId,

@@ -7,7 +7,7 @@
 
 import { pool } from './index.js';
 
-const schema = `
+export const schema = `
 -- Datasets
 CREATE TABLE IF NOT EXISTS datasets (
   id VARCHAR(21) PRIMARY KEY,
@@ -410,6 +410,50 @@ ALTER TABLE actors ADD COLUMN IF NOT EXISTS proxy_password_encrypted TEXT;
 ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS key_sha256 TEXT;
 CREATE INDEX IF NOT EXISTS idx_api_keys_sha256
   ON api_keys(key_sha256) WHERE is_active = TRUE;
+
+-- Username slug (#110): Apify identifies actors as username/name and the
+-- Apify MCP server builds tool names from it, so the email cannot serve.
+-- Backfill existing rows oldest-first, then enforce NOT NULL.
+-- KEEP-IN-SYNC with generateUsername() in src/auth/username.ts: local
+-- part, non-[A-Za-z0-9] runs -> '-', lowercase, trim '-', truncate to 26
+-- and trim again, fallback 'user'; reserved names count as taken; on
+-- collision append -2, -3, ... shortening the base to stay within 30.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
+-- Created before the backfill: NULLs don't collide, and the per-candidate
+-- existence check below becomes an index lookup.
+CREATE UNIQUE INDEX IF NOT EXISTS users_username_key ON users(username);
+
+DO $$
+DECLARE
+  r RECORD;
+  base TEXT;
+  suffix TEXT;
+  candidate TEXT;
+  n INTEGER;
+BEGIN
+  FOR r IN SELECT id, email FROM users WHERE username IS NULL ORDER BY created_at, id LOOP
+    base := lower(regexp_replace(regexp_replace(r.email, '@[^@]*$', ''), '[^A-Za-z0-9]+', '-', 'g'));
+    base := rtrim(left(btrim(base, '-'), 26), '-');
+    IF base = '' THEN
+      base := 'user';
+    END IF;
+    n := 1;
+    LOOP
+      IF n = 1 THEN
+        candidate := base;
+      ELSE
+        suffix := '-' || n;
+        candidate := rtrim(left(base, 30 - length(suffix)), '-') || suffix;
+      END IF;
+      EXIT WHEN candidate NOT IN ('me', 'api', 'apify', 'system')
+        AND NOT EXISTS (SELECT 1 FROM users WHERE username = candidate);
+      n := n + 1;
+    END LOOP;
+    UPDATE users SET username = candidate WHERE id = r.id;
+  END LOOP;
+END $$;
+
+ALTER TABLE users ALTER COLUMN username SET NOT NULL;
 `;
 
 export async function migrate(): Promise<void> {

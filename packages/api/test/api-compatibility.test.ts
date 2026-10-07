@@ -364,7 +364,7 @@ describe('/v2/users/me Apify-compat shape', () => {
 
   it('omits proxy field entirely when no password is set (matches non-nullable SDK type)', async () => {
     mockPoolQuery.mockResolvedValueOnce({
-      rows: [{ email: 'a@b.com', proxy_password_encrypted: null }],
+      rows: [{ email: 'a@b.com', username: 'a', proxy_password_encrypted: null }],
     });
     const res = await app.inject({
       method: 'GET',
@@ -383,7 +383,7 @@ describe('/v2/users/me Apify-compat shape', () => {
     const { encryptProxyPassword } = await import('../src/lib/proxy-crypto.js');
     const stored = encryptProxyPassword('apify_pw_xyz');
     mockPoolQuery.mockResolvedValueOnce({
-      rows: [{ email: 'a@b.com', proxy_password_encrypted: stored }],
+      rows: [{ email: 'a@b.com', username: 'a', proxy_password_encrypted: stored }],
     });
     const res = await app.inject({
       method: 'GET',

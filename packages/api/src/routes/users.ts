@@ -49,15 +49,21 @@ export const usersRoutes: FastifyPluginAsync = async (fastify) => {
       };
     }
 
-    const row = await pool.query<{ email: string; proxy_password_encrypted: string | null }>(
-      'SELECT email, proxy_password_encrypted FROM users WHERE id = $1',
-      [request.user.id]
-    );
+    const row = await pool.query<{
+      email: string;
+      username: string;
+      proxy_password_encrypted: string | null;
+    }>('SELECT email, username, proxy_password_encrypted FROM users WHERE id = $1', [
+      request.user.id,
+    ]);
     const u = row.rows[0];
 
+    // `username` is the URL- and tool-name-safe slug (src/auth/username.ts);
+    // before #110 it carried the email, which now has its own field.
     const data: Record<string, unknown> = {
       id: request.user.id,
-      username: u?.email ?? '',
+      username: u?.username ?? '',
+      email: u?.email ?? '',
       profile: {},
       isPaidUser: false,
       plan: 'FREE',

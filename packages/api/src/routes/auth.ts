@@ -92,10 +92,11 @@ export async function authRoutes(app: FastifyInstance) {
       const result = await pool.query<{
         id: string;
         email: string;
+        username: string;
         name: string | null;
         role: string;
         created_at: Date;
-      }>('SELECT id, email, name, role, created_at FROM users WHERE id = $1', [user.id]);
+      }>('SELECT id, email, username, name, role, created_at FROM users WHERE id = $1', [user.id]);
 
       if (result.rows.length === 0) {
         return reply.status(404).send({ error: { message: 'User not found' } });

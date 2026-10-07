@@ -140,6 +140,7 @@ describe('Auth Routes', () => {
           {
             id: 'user-1',
             email: 'test@example.com',
+            username: 'test',
             name: 'Test User',
             role: 'user',
             created_at: new Date(),
@@ -153,6 +154,8 @@ describe('Auth Routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
+      expect(mockPoolQuery.mock.calls.at(-1)?.[0]).toContain('username');
+      expect(response.json().data.username).toBe('test');
     });
   });
 

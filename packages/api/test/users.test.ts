@@ -66,7 +66,7 @@ describe('Users routes — GET /v2/users/me', () => {
 
   it('returns no proxy field when authed user has no password set', async () => {
     mockQuery.mockResolvedValueOnce({
-      rows: [{ email: 'a@b.com', proxy_password_encrypted: null }],
+      rows: [{ email: 'a@b.com', username: 'a', proxy_password_encrypted: null }],
     });
     const res = await app.inject({
       method: 'GET',
@@ -76,14 +76,15 @@ describe('Users routes — GET /v2/users/me', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.data.id).toBe('user-1');
-    expect(body.data.username).toBe('a@b.com');
+    expect(body.data.username).toBe('a');
+    expect(body.data.email).toBe('a@b.com');
     expect(body.data.proxy).toBeUndefined();
   });
 
   it('returns proxy.password (decrypted) when authed user has it set', async () => {
     const stored = encryptProxyPassword('apify_pw_xyz');
     mockQuery.mockResolvedValueOnce({
-      rows: [{ email: 'a@b.com', proxy_password_encrypted: stored }],
+      rows: [{ email: 'a@b.com', username: 'a', proxy_password_encrypted: stored }],
     });
     const res = await app.inject({
       method: 'GET',
