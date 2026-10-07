@@ -18,20 +18,17 @@ import { encryptProxyPassword } from '../lib/proxy-crypto.js';
 import { appendSearchCondition } from '../db/search.js';
 import { redis } from '../storage/redis.js';
 import { authenticate } from '../auth/middleware.js';
+import { resolveActor, ACTOR_NOT_FOUND, type ActorRow } from '../lib/resolve-actor.js';
 
-interface ActorRow {
-  id: string;
-  name: string;
-  user_id: string | null;
-  title: string | null;
-  description: string | null;
-  default_run_options: Record<string, unknown> | null;
-  max_retries: number;
-  retry_delay_secs: number;
-  proxy_password_encrypted: string | null;
-  created_at: Date;
-  modified_at: Date;
-}
+/** ActorRow as returned by the queries below, with the owner's username. */
+type ActorRowWithUsername = ActorRow & { username: string | null };
+
+/** ActorRow plus the list-only columns of GET /v2/acts. */
+type ActorListRow = ActorRowWithUsername & { last_run_started_at: Date | null };
+
+// Appended to RETURNING * so POST/PUT responses carry the owner's username
+// without a second round trip (RETURNING can't join).
+const RETURNING_WITH_USERNAME = `RETURNING *, (SELECT username FROM users WHERE users.id = actors.user_id) AS username`;
 
 /**
  * Find or create the actor_versions row for a given (actor, version) pair.
@@ -243,28 +240,47 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
    * Mirrors the pattern in runs.ts and datasets.ts.
    */
   fastify.get<{
-    Querystring: { offset?: string; limit?: string; q?: string };
+    // `my=1` (sent by the Apify MCP get-actor-list) is accepted and ignored:
+    // lists are always the caller's own actors.
+    Querystring: { offset?: string; limit?: string; q?: string; my?: string };
   }>(`/${segment}`, async (request) => {
     const offset = Math.max(0, parseInt(request.query.offset || '0', 10) || 0);
     const limit = Math.min(1000, Math.max(1, parseInt(request.query.limit || '100', 10) || 100));
 
     const params: unknown[] = [request.user!.id];
-    const where = appendSearchCondition('user_id = $1', params, request.query.q || '', [
-      'id',
-      'name',
-      'title',
-      'description',
+    const where = appendSearchCondition('a.user_id = $1', params, request.query.q || '', [
+      'a.id',
+      'a.name',
+      'a.title',
+      'a.description',
     ]);
 
     // COUNT and SELECT run in parallel. Stable tiebreaker on `id` so
     // LIMIT/OFFSET paging doesn't drop or duplicate rows when two actors
     // share the same created_at (ms-precision ties happen on bulk imports).
+    //
+    // `stats.lastRunStartedAt` is the newest run per actor. The lateral
+    // subquery filters on user_id as well as actor_id so it walks
+    // idx_runs_user_actor_created (user_id, actor_id, created_at DESC) —
+    // there's no index on runs.actor_id alone.
     const [countResult, pageResult] = await Promise.all([
-      query<{ total: string }>(`SELECT COUNT(*)::text AS total FROM actors WHERE ${where}`, params),
-      query<ActorRow>(
-        `SELECT * FROM actors WHERE ${where}
-         ORDER BY created_at DESC, id DESC
-         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      query<{ total: string }>(
+        `SELECT COUNT(*)::text AS total FROM actors a WHERE ${where}`,
+        params
+      ),
+      query<ActorListRow>(
+        `SELECT a.*, u.username, lr.created_at AS last_run_started_at
+           FROM actors a
+           LEFT JOIN users u ON u.id = a.user_id
+           LEFT JOIN LATERAL (
+             SELECT r.created_at FROM runs r
+              WHERE r.user_id = a.user_id AND r.actor_id = a.id
+              ORDER BY r.created_at DESC
+              LIMIT 1
+           ) lr ON true
+          WHERE ${where}
+          ORDER BY a.created_at DESC, a.id DESC
+          LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
         [...params, limit, offset]
       ),
     ]);
@@ -277,7 +293,10 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
         count: pageResult.rows.length,
         offset,
         limit,
-        items: pageResult.rows.map(formatActor),
+        items: pageResult.rows.map((row) => ({
+          ...formatActor(row),
+          stats: { lastRunStartedAt: row.last_run_started_at ?? null },
+        })),
       },
     };
   });
@@ -332,14 +351,14 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
     if (existing.rows[0]) {
       // Update existing actor (user_id already verified in SELECT)
       const proxyParam = encryptIfSet(proxyPassword);
-      const result = await query<ActorRow>(
+      const result = await query<ActorRowWithUsername>(
         `
         UPDATE actors
         SET title = $1, description = $2, default_run_options = $3,
             max_retries = $4, retry_delay_secs = $5,
             proxy_password_encrypted = $6, modified_at = NOW()
         WHERE name = $7 AND user_id = $8
-        RETURNING *
+        ${RETURNING_WITH_USERNAME}
       `,
         [
           title ?? existing.rows[0].title,
@@ -368,11 +387,11 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
 
     // Create new actor with user ownership
     const id = nanoid();
-    const result = await query<ActorRow>(
+    const result = await query<ActorRowWithUsername>(
       `
       INSERT INTO actors (id, name, user_id, title, description, default_run_options, max_retries, retry_delay_secs, proxy_password_encrypted)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      RETURNING *
+      ${RETURNING_WITH_USERNAME}
     `,
       [
         id,
@@ -404,18 +423,15 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
   fastify.get<{ Params: { actorId: string } }>(`/${segment}/:actorId`, async (request, reply) => {
     const { actorId } = request.params;
 
-    // Get actor by ID or name, scoped to user
-    const result = await query<ActorRow>(
-      `SELECT * FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2`,
-      [actorId, request.user!.id]
-    );
+    // Get actor by ID, name or username~name, scoped to user
+    const actor = await resolveActor(actorId, request.user!.id);
 
-    if (!result.rows[0]) {
+    if (!actor) {
       reply.status(404);
-      return { error: { type: 'record-not-found', message: 'Actor not found' } };
+      return ACTOR_NOT_FOUND;
     }
 
-    return { data: formatActor(result.rows[0]) };
+    return { data: formatActor(actor) };
   });
 
   /**
@@ -436,21 +452,16 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
     const { actorId } = request.params;
     const updates = UpdateActorSchema.parse(request.body);
 
+    const current = await resolveActor(actorId, request.user!.id);
+    if (!current) {
+      reply.status(404);
+      return ACTOR_NOT_FOUND;
+    }
+
     if (updates.actorDefinition !== undefined) {
       // A defaultRunOptions in the body replaces the stored one wholesale,
       // so its image (or lack of one) is what counts.
-      let image = imageOf(updates.defaultRunOptions);
-      if (updates.defaultRunOptions === undefined) {
-        const current = await query<Pick<ActorRow, 'default_run_options'>>(
-          `SELECT default_run_options FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2`,
-          [actorId, request.user!.id]
-        );
-        if (!current.rows[0]) {
-          reply.status(404);
-          return { error: { type: 'record-not-found', message: 'Actor not found' } };
-        }
-        image = imageOf(current.rows[0].default_run_options);
-      }
+      const image = imageOf(updates.defaultRunOptions ?? current.default_run_options);
       if (!image) {
         reply.status(400);
         return DEFINITION_REQUIRES_IMAGE;
@@ -492,7 +503,7 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       );
     }
 
-    values.push(actorId);
+    values.push(current.id);
     const actorIdParam = paramIndex++;
     values.push(request.user!.id);
     const userIdParam = paramIndex++;
@@ -500,15 +511,16 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
     const result = await query<ActorRow>(
       `
       UPDATE actors SET ${setClauses.join(', ')}
-      WHERE (id = $${actorIdParam} OR name = $${actorIdParam}) AND user_id = $${userIdParam}
+      WHERE id = $${actorIdParam} AND user_id = $${userIdParam}
       RETURNING *
     `,
       values
     );
 
+    // Deleted between the lookup and the update.
     if (!result.rows[0]) {
       reply.status(404);
-      return { error: { type: 'record-not-found', message: 'Actor not found' } };
+      return ACTOR_NOT_FOUND;
     }
 
     if (
@@ -525,7 +537,7 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       );
     }
 
-    return { data: formatActor(result.rows[0]) };
+    return { data: formatActor({ ...result.rows[0], username: current.username }) };
   });
 
   /**
@@ -543,16 +555,13 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
 
       // Resolve actor to concrete ID once at the top so sub-queries stay clean,
       // unknown actors 404 early, and operations have a stable key.
-      const actorRes = await client.query<{ id: string }>(
-        `SELECT id FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2`,
-        [actorId, request.user!.id]
-      );
-      if (actorRes.rows.length === 0) {
+      const resolved = await resolveActor(actorId, request.user!.id, client);
+      if (!resolved) {
         await client.query('ROLLBACK');
         reply.status(404);
-        return { error: { type: 'record-not-found', message: 'Actor not found' } };
+        return ACTOR_NOT_FOUND;
       }
-      const targetActorId = actorRes.rows[0]!.id;
+      const targetActorId = resolved.id;
 
       // Keep the default delete safe: callers must explicitly opt in before
       // removing the actor's execution history. The count is scoped by user so
@@ -660,7 +669,7 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
    *
    * Same query params, response shape and ordering as GET /v2/actor-runs —
    * both go through `listRuns`. The actor is resolved by ID or name with the
-   * same user-scoped lookup as GET /acts/:actorId, and runs are filtered by
+   * same user-scoped resolveActor lookup as GET /acts/:actorId, and runs are filtered by
    * the resolved `actors.id` (the path param may be a name).
    */
   fastify.get<{ Params: { actorId: string } }>(
@@ -669,17 +678,14 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       const { actorId } = request.params;
       const q = ListRunsQuerySchema.parse(request.query);
 
-      const actor = await query<{ id: string }>(
-        `SELECT id FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2`,
-        [actorId, request.user!.id]
-      );
+      const actor = await resolveActor(actorId, request.user!.id);
 
-      if (!actor.rows[0]) {
+      if (!actor) {
         reply.status(404);
-        return { error: { type: 'record-not-found', message: 'Actor not found' } };
+        return ACTOR_NOT_FOUND;
       }
 
-      return { data: await listRuns(request.user!.id, { ...q, actorId: actor.rows[0].id }) };
+      return { data: await listRuns(request.user!.id, { ...q, actorId: actor.id }) };
     }
   );
 
@@ -705,12 +711,11 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
     const parsed = ActorRunSchema.parse(request.body || {});
     const { input, envVars, webhooks } = parsed;
 
-    // Get actor by ID or name, scoped to user. We need the actor's
+    // Get actor by ID, name or username~name, scoped to user. We need the actor's
     // default_run_options before we can resolve the run's timeout/memory.
-    const actor = await query<ActorRow>(
-      `SELECT * FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2`,
-      [actorId, request.user!.id]
-    );
+    // Kept in the `{ rows }` shape the rest of this handler reads.
+    const resolved = await resolveActor(actorId, request.user!.id);
+    const actor = { rows: resolved ? [resolved] : [] };
 
     if (!actor.rows[0]) {
       reply.status(404);
@@ -883,10 +888,12 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
   });
 };
 
-function formatActor(row: ActorRow) {
+function formatActor(row: ActorRowWithUsername) {
   return {
     id: row.id,
     name: row.name,
+    // apify-client / the Apify MCP server address actors as `username/name`.
+    username: row.username,
     userId: row.user_id,
     title: row.title,
     description: row.description,

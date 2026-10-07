@@ -91,10 +91,6 @@ describe('Actor definition on builds (integration)', () => {
   });
 
   afterEach(async () => {
-    // cleanDatabase deletes actor_versions before actors, but versioned
-    // pushes set actors.current_version_id (a non-cascading FK) — unlink it.
-    const { pool } = await import('../../src/db/index.js');
-    await pool.query('UPDATE actors SET current_version_id = NULL');
     await cleanDatabase();
     const user = await createTestUser();
     token = user.token;

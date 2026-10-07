@@ -16,6 +16,7 @@ import { registry, httpRequestsTotal, httpRequestDuration } from './metrics.js';
 import { registerHealthRoutes } from './health.js';
 import { getApiVersion } from './version.js';
 import { isLongPollRequest } from './lib/wait-for-terminal.js';
+import { MAX_PARAM_LENGTH } from './lib/resolve-actor.js';
 
 // Validate security configuration at startup
 enforceSecurityConfig();
@@ -23,6 +24,9 @@ enforceSecurityConfig();
 const app = Fastify({
   logger: { level: config.logLevel },
   bodyLimit: API_BODY_LIMIT,
+  // Also used by createTestApp (test/integration/setup.ts). Fastify's default
+  // (100) is too short for `username~name` actor IDs.
+  maxParamLength: MAX_PARAM_LENGTH,
 });
 
 // CORS, compression, content-type parsers, global error handler
