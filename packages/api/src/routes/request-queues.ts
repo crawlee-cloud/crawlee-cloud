@@ -481,7 +481,12 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     Querystring: { forefront?: string };
   }>('/request-queues/:queueId/requests/batch', async (request, _reply) => {
     const { queueId } = request.params;
-    const _forefront = zBoolQuery.parse(request.query.forefront) ?? false;
+    const forefront = zBoolQuery.parse(request.query.forefront) ?? false;
+    // Same sign trick as the single-add route: forefront rows take a negated
+    // sequence value so head reads (`ORDER BY order_no ASC`) serve them first.
+    // Chunk elements insert concurrently, so the order *within* a forefront
+    // batch is not guaranteed.
+    const orderModifier = forefront ? -1 : 1;
     let body = request.body;
 
     // Handle Buffer body from content-type parser
@@ -545,8 +550,9 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
             const id = nanoid();
             const inserted = await query<{ id: string }>(
               `
-            INSERT INTO requests (id, queue_id, unique_key, url, method, payload, user_data)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO requests (id, queue_id, unique_key, url, method, payload, user_data, order_no)
+            VALUES ($1, $2, $3, $4, $5, $6, $7,
+                    $8::int * nextval(pg_get_serial_sequence('requests', 'order_no')))
             ON CONFLICT (queue_id, unique_key) DO NOTHING
             RETURNING id
           `,
@@ -558,6 +564,7 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
                 req.method || 'GET',
                 req.payload,
                 req.userData ? JSON.stringify(req.userData) : null,
+                orderModifier,
               ]
             );
 
@@ -684,7 +691,7 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
   }>('/request-queues/:queueId/requests/:requestId', async (request, reply) => {
     const { queueId, requestId } = request.params;
     const updates = UpdateRequestSchema.parse(request.body);
-    const _forefront = zBoolQuery.parse(request.query.forefront) ?? false;
+    const forefront = zBoolQuery.parse(request.query.forefront) ?? false;
     const clientKey = request.query.clientKey;
 
     const existingResult = await query<RequestRow>(
@@ -733,6 +740,13 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     if (updates.userData !== undefined) {
       setClauses.push(`user_data = $${paramIndex++}`);
       values.push(JSON.stringify(updates.userData));
+    }
+
+    // reclaimRequest(req, { forefront: true }) — move the request to the head
+    // by re-stamping order_no with a negated sequence value. Skipped when the
+    // update marks the request handled: it leaves the queue anyway.
+    if (forefront && !updates.handledAt) {
+      setClauses.push(`order_no = -nextval(pg_get_serial_sequence('requests', 'order_no'))`);
     }
 
     // Clear lock when updating
@@ -831,7 +845,7 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
   }>('/request-queues/:queueId/requests/:requestId/lock', async (request, reply) => {
     const { queueId, requestId } = request.params;
     const { clientKey = '' } = request.query;
-    const _forefront = zBoolQuery.parse(request.query.forefront) ?? false;
+    const forefront = zBoolQuery.parse(request.query.forefront) ?? false;
 
     const queue = await query<QueueRow>(
       'SELECT * FROM request_queues WHERE (id = $1 OR name = $2) AND user_id = $3',
@@ -846,11 +860,15 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     // Release in Redis
     await releaseLock(queue.rows[0].id, requestId, clientKey);
 
-    // Clear in DB
+    // Clear in DB. With forefront, also move the request to the head of the
+    // queue (negated sequence value, as on the add routes).
+    const reorder = forefront
+      ? `, order_no = -nextval(pg_get_serial_sequence('requests', 'order_no'))`
+      : '';
     await query(
       `
       UPDATE requests 
-      SET locked_until = NULL, locked_by = NULL
+      SET locked_until = NULL, locked_by = NULL${reorder}
       WHERE id = $1
     `,
       [requestId]

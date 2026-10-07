@@ -143,9 +143,52 @@ describe('apify-client round-trip (integration)', () => {
       { url: 'https://example.com/front', uniqueKey: 'front' },
       { forefront: true }
     );
+    await queue.addRequest(
+      { url: 'https://example.com/front2', uniqueKey: 'front2' },
+      { forefront: true }
+    );
 
+    // LIFO among forefront requests: the latest one is served first.
     const head = await queue.listHead();
-    expect(head.items.map((r) => r.uniqueKey)).toEqual(['front', 'a', 'b']);
+    expect(head.items.map((r) => r.uniqueKey)).toEqual(['front2', 'front', 'a', 'b']);
+  });
+
+  it('honours forefront on batch add, reclaim (PUT) and lock release', async () => {
+    const rq = await client.requestQueues().getOrCreate('compat-rq-forefront-routes');
+    const queue = client.requestQueue(rq.id);
+    await queue.addRequest({ url: 'https://example.com/a', uniqueKey: 'a' });
+    await queue.addRequest({ url: 'https://example.com/b', uniqueKey: 'b' });
+
+    // Batch: both forefront rows land ahead of the tail. Order within the
+    // batch is not asserted (chunk elements insert concurrently).
+    await queue.batchAddRequests(
+      [
+        { url: 'https://example.com/x', uniqueKey: 'x' },
+        { url: 'https://example.com/y', uniqueKey: 'y' },
+      ],
+      { forefront: true }
+    );
+    let head = await queue.listHead();
+    expect(
+      head.items
+        .map((r) => r.uniqueKey)
+        .slice(0, 2)
+        .sort()
+    ).toEqual(['x', 'y']);
+    expect(head.items.map((r) => r.uniqueKey).slice(2)).toEqual(['a', 'b']);
+
+    // Reclaim via PUT with forefront moves 'b' to the head.
+    const b = head.items.find((r) => r.uniqueKey === 'b');
+    const full = await queue.getRequest(b.id);
+    await queue.updateRequest(full, { forefront: true });
+    head = await queue.listHead();
+    expect(head.items[0].uniqueKey).toBe('b');
+
+    // Lock release with forefront moves 'a' to the head.
+    const a = head.items.find((r) => r.uniqueKey === 'a');
+    await queue.deleteRequestLock(a.id, { forefront: true });
+    head = await queue.listHead();
+    expect(head.items[0].uniqueKey).toBe('a');
   });
 
   it('treats getOrCreate as idempotent on repeat calls', async () => {
