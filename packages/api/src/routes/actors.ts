@@ -164,16 +164,18 @@ async function recordBuildIfNew(
       return;
     }
 
-    // No definition sent → inherit the previous build's (subquery runs
-    // before the new row exists, so "latest" is the previous build). $2 is
-    // cast in both places so Postgres deduces one type for it.
+    // No definition sent → inherit the newest previous build that has one
+    // (subquery runs before the new row exists). Builds created through the
+    // registry routes carry no definition, so skip NULLs rather than
+    // inheriting one from them. $2 is cast in both places so Postgres
+    // deduces one type for it.
     await query(
       `INSERT INTO actor_builds
          (id, actor_id, version_id, status, image_name, started_at, finished_at, actor_definition)
        VALUES ($1, $2::varchar, $3, 'SUCCEEDED', $4, NOW(), NOW(),
          COALESCE($5::jsonb, (
            SELECT actor_definition FROM actor_builds
-            WHERE actor_id = $2::varchar
+            WHERE actor_id = $2::varchar AND actor_definition IS NOT NULL
             ORDER BY created_at DESC
             LIMIT 1
          )))`,

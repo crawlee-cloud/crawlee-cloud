@@ -479,6 +479,26 @@ describe('Actor Routes', () => {
       expect(mockQuery).not.toHaveBeenCalled();
     });
 
+    it('rejects a definition over 2 MB serialized even when each field is under its cap', () => {
+      // Unknown keys pass through, so only the whole-definition cap bounds them.
+      const result = CreateActorSchema.safeParse({
+        name: 'foo',
+        actorDefinition: { readme: 'a'.repeat(1000 * 1024), extra: 'b'.repeat(1100 * 1024) },
+      });
+      expect(result.success).toBe(false);
+      expect(result.error.issues).toHaveLength(1);
+      expect(result.error.issues[0].path).toEqual(['actorDefinition']);
+      expect(result.error.issues[0].message).toContain('2097152 bytes');
+    });
+
+    it('accepts a definition just under 2 MB serialized', () => {
+      const result = CreateActorSchema.safeParse({
+        name: 'foo',
+        actorDefinition: { readme: 'a'.repeat(1000 * 1024), extra: 'b'.repeat(1000 * 1024) },
+      });
+      expect(result.success).toBe(true);
+    });
+
     it('rejects a non-object input', () => {
       const result = UpdateActorSchema.safeParse({
         actorDefinition: { input: '.actor/input_schema.json' },
@@ -599,6 +619,8 @@ describe('Actor Routes', () => {
       const [sql, params] = mockQuery.mock.calls[2] as [string, unknown[]];
       expect(sql).toContain('INSERT INTO actor_builds');
       expect(sql).toMatch(/COALESCE\(\$5::jsonb,\s*\(\s*SELECT actor_definition FROM actor_builds/);
+      // Registry-created builds have no definition; skip them, don't inherit NULL.
+      expect(sql).toMatch(/WHERE actor_id = \$2::varchar AND actor_definition IS NOT NULL/);
       expect(params[4]).toBeNull();
     });
   });

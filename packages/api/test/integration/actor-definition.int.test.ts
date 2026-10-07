@@ -194,6 +194,29 @@ describe('Actor definition on builds (integration)', () => {
     expect(rows[1].actor_definition).toEqual(defA);
   });
 
+  it('carry-over skips a newer build without a definition (e.g. registry-created)', async () => {
+    const actorId = await createActor({
+      defaultRunOptions: { image: IMAGE_V1 },
+      version: '0.1',
+      actorDefinition: defA,
+    });
+    // A newer build with NULL actor_definition, as the registry routes create.
+    const { pool } = await import('../../src/db/index.js');
+    await pool.query(
+      `INSERT INTO actor_builds (id, actor_id, status, image_name, started_at, created_at)
+       VALUES ('registry-build', $1, 'SUCCEEDED', 'ghcr.io/acme/actor-def:registry', NOW(),
+               NOW() + INTERVAL '1 second')`,
+      [actorId]
+    );
+
+    const res = await put(actorId, { defaultRunOptions: { image: IMAGE_V2 }, version: '0.1' });
+    expect(res.statusCode).toBe(200);
+
+    const rows = await builds(actorId);
+    const newest = rows.find((r) => r.image_name === IMAGE_V2);
+    expect(newest?.actor_definition).toEqual(defA);
+  });
+
   it('POST upsert re-push with the same image updates the definition without a new build', async () => {
     await createActor({
       defaultRunOptions: { image: IMAGE_V1 },
@@ -247,6 +270,17 @@ describe('Actor definition on builds (integration)', () => {
     expect(res.statusCode).toBe(400);
     expect(res.json().error.type).toBe('validation_error');
     expect(JSON.stringify(res.json().error.details)).toContain('actorDefinition.input');
+    expect((await builds(actorId))[0].actor_definition).toBeNull();
+  });
+
+  it('rejects a whole definition over 2 MB with 400', async () => {
+    const actorId = await createActor({ defaultRunOptions: { image: IMAGE_V1 } });
+    const res = await put(actorId, {
+      actorDefinition: { readme: 'a'.repeat(1000 * 1024), extra: 'b'.repeat(1100 * 1024) },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.type).toBe('validation_error');
+    expect(JSON.stringify(res.json().error.details)).toContain('2097152 bytes serialized');
     expect((await builds(actorId))[0].actor_definition).toBeNull();
   });
 

@@ -56,7 +56,7 @@ interface BuildRow {
 }
 
 // Explicit build columns. actor_definition (#112) is deliberately left out:
-// it can be ~1.5 MB per row and is served only by the build-detail endpoints
+// it can be up to 2 MB per row and is served only by the build-detail endpoints
 // that need it, so lists and these routes must never read it via `*`.
 const BUILD_COLUMNS = `id, actor_id, version_id, status, started_at, finished_at, image_name,
   image_digest, image_size_bytes, log_count, git_branch, git_commit, created_at`;

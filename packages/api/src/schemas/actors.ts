@@ -4,9 +4,12 @@ import { SUPPORTED_WEBHOOK_EVENTS } from './webhooks.js';
 
 // Size caps for the build's actorDefinition (#112). Measured in UTF-8 bytes
 // of the serialized value so a multi-byte README can't slip past a
-// character-count check. Both fit well under the server's 10 MB bodyLimit.
+// character-count check. The whole definition is capped too, since unknown
+// keys pass through and would otherwise only be bounded by the server's
+// 10 MB bodyLimit.
 export const MAX_ACTOR_INPUT_SCHEMA_BYTES = 500 * 1024;
 export const MAX_ACTOR_README_BYTES = 1024 * 1024;
+export const MAX_ACTOR_DEFINITION_BYTES = 2 * 1024 * 1024;
 
 /**
  * Apify-shaped actor definition (`.actor/actor.json` with the input schema
@@ -41,6 +44,13 @@ export const ActorDefinitionSchema = z
         code: z.ZodIssueCode.custom,
         path: ['readme'],
         message: `actorDefinition.readme must be at most ${MAX_ACTOR_README_BYTES} bytes`,
+      });
+    }
+    if (Buffer.byteLength(JSON.stringify(def)) > MAX_ACTOR_DEFINITION_BYTES) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [],
+        message: `actorDefinition must be at most ${MAX_ACTOR_DEFINITION_BYTES} bytes serialized`,
       });
     }
   });
