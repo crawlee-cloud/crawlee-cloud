@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### API
+
+- **Boolean query params accept `1`/`0`** — `apify-client` serializes booleans as `1`/`0`, so `client.runs().list({ desc: false })` sent `desc=0` and got a `400 validation_error` (this broke the MCP `get-actor-run-list` tool on every call), and request-queue `forefront=1` and logs `tail=1` were silently read as `false`. A shared `zBoolQuery` coercer now accepts `true`/`false`/`1`/`0` for `desc` on `GET /v2/actor-runs`, `forefront` on the request-queue routes and `tail` on run logs; absent keeps each route's default. **Behaviour change:** any other value for these params (e.g. `forefront=yes`) is now a `400 validation_error` instead of being treated as `false`.
+- **`forefront` actually puts a request at the head of the queue** — the sign was applied only to the Redis head score, while `GET /head` and `POST /head/lock` order by `order_no` in Postgres, so forefront requests were still served last. Forefront requests are now stored with a negative `order_no` (latest forefront first, as on Apify).
+- **Run list filters** — `status` on `GET /v2/actor-runs` accepts `TIMING-OUT` and a comma-separated list (`status=SUCCEEDED,FAILED`, which is how `apify-client` sends a status array) matching any of them; `startedAfter`/`startedBefore` are accepted as aliases of `since`/`until` (previously stripped, so the filter was silently ignored). Explicit `since`/`until` win when both are sent.
+- **`GET /v2/acts/:actorId/runs`** — new per-actor run list (`client.actor(id).runs().list()` returned 404). Resolves the actor by ID or name, scoped to the caller (404 `record-not-found` for unknown or another user's actor), and shares the query params, response shape and ordering of `GET /v2/actor-runs` through one extracted list builder.
+
 ### Self-hosting
 
 - **MinIO image replaced: `minio/minio` and `minio/mc` can no longer be pulled** (#121) — from Docker Hub or quay.io, so fresh installs failed on first `docker compose up`. `docker-compose.yml`, `docker-compose.dev.yml`, `deploy/vps/docker-compose.prod.yml` and the Render and Railway templates now pin `bitnamilegacy/minio:2025.7.23-debian-12-r5`, the image CI already used. It creates the `crawlee-cloud` bucket at startup (`MINIO_DEFAULT_BUCKETS`), which replaces the `minio-init`/`mc` job; the dev compose now creates the bucket too (it never did), and Render and Railway get it for the first time. The compose healthcheck reports healthy only once the bucket exists. The Render template also now uses `runtime: image` (its `repo:` pointed at a Docker Hub page, which Render can't build from). This is a stopgap: the Bitnami legacy archive is unmaintained, and a move to SeaweedFS is tracked separately.
