@@ -14,6 +14,7 @@ vi.mock('../src/auth/middleware.js', () => ({
 }));
 
 import { requestQueuesRoutes } from '../src/routes/request-queues.js';
+import { configureHttp } from '../src/http-setup.js';
 
 const mockQuery = vi.fn();
 vi.mock('../src/db/index.js', () => ({
@@ -68,12 +69,10 @@ describe('Request Queue Routes', () => {
 
   beforeAll(async () => {
     app = Fastify();
-    // Mirror the prod text/plain parser from src/index.ts (Apify SDK
-    // compatibility): the body reaches routes as a raw Buffer, which the
-    // batch endpoint handles with its Buffer.isBuffer branch.
-    app.addContentTypeParser('text/plain', { parseAs: 'buffer' }, (_req, body, done) => {
-      done(null, body);
-    });
+    // Production HTTP setup (src/http-setup.ts): the text/plain → Buffer
+    // parser (Apify SDK compatibility; the batch endpoint handles it with its
+    // Buffer.isBuffer branch) and the ZodError → 400 handler.
+    await configureHttp(app);
     app.register(requestQueuesRoutes, { prefix: '/v2' });
     await app.ready();
   });
@@ -476,7 +475,7 @@ describe('Request Queue Routes', () => {
         url: '/v2/request-queues/queue-1/requests?forefront=yes',
         payload: { url: 'https://example.com' },
       });
-      expect(response.statusCode).not.toBe(201);
+      expect(response.statusCode).toBe(400);
       expect(mockQuery).not.toHaveBeenCalled();
     });
 
