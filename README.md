@@ -201,7 +201,7 @@ See [deploy/](deploy/) for detailed instructions.
 | [Deployment](https://crawlee.cloud/docs/deployment)                   | Production deployment guide                  |
 | [Runner](https://crawlee.cloud/docs/runner)                           | Actor execution engine                       |
 | [SDK Compatibility](https://crawlee.cloud/docs/apify-sdk-environment) | Apify SDK integration                        |
-| [MCP (AI agents)](https://crawlee.cloud/docs/mcp)                     | Connect Claude, Cursor and other MCP clients |
+| [MCP (AI agents)](docs/mcp.md)                                        | Connect Claude, Cursor and other MCP clients |
 
 ---
 

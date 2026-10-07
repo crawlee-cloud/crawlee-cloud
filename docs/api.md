@@ -160,7 +160,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/jso
   "https://your-server.com/v2/acts/alice~my-actor/runs?timeout=600&memory=2048&waitForFinish=60"
 ```
 
-The legacy body `{ input, timeout, memory, envVars, webhooks }` is still accepted but deprecated (removed in 1.0). See [Apify API compatibility](./apify-compatibility.md#run-start-contract) for the exact detection rule.
+The legacy wrapper body `{ input, timeout, memory, envVars, webhooks }` is also accepted, permanently, as a documented extension. See [Apify API compatibility](./apify-compatibility.md#run-start-contract) for the exact detection rule.
 
 ### Store search
 

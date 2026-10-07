@@ -42,20 +42,23 @@ return `415 unsupported-media-type`; an empty `application/x-www-form-urlencoded
 body (what `apify-client` sends for `start()` without input) starts a run with
 `{}`.
 
-**Deprecated legacy body.** The wrapper body `{ input, timeout, memory, envVars, webhooks }`
-sent by `crc call` and the dashboard before this release still works: it is
-detected explicitly and its options are read from the body as before. Each such
-request is logged as `run-body: legacy` (info level). Detection will be removed
-in 1.0; current `crc call` (against an API reporting 1.7.0 or later) and the
-dashboard already send the Apify shape.
+**Legacy wrapper body (kept as an extension).** The wrapper body
+`{ input, timeout, memory, envVars, webhooks }` sent by `crc call` and the
+dashboard before this release keeps working permanently, as a documented
+Crawlee Cloud extension (it is not removed in 1.0): it is detected explicitly
+and its options are read from the body, and only `waitForFinish` from the query.
+Each such request is logged as `run-body: legacy` (info level). New clients
+should send the Apify shape; current `crc call` (against an API reporting 1.7.0
+or later) and the dashboard already do.
 
-**Known limitation until 1.0.** A body is read as the legacy wrapper when all of
+**Known ambiguity.** A body is read as the legacy wrapper when all of
 its keys are among `input`, `timeout`, `memory`, `envVars`, `webhooks` and it
 either has an `input` key or all its keys have option types. So an actor input
 that is exactly `{ "input": ... }` (optionally with option-named keys), or only
 option-named keys with option types such as `{ "timeout": 60 }`, is treated as
 the wrapper: the run gets `body.input` (or `{}`) as input and those keys as run
-options. Workaround: add any other key to the input, or rename the field.
+options. Workaround: wrap the input (`{ "input": <input> }`), add any other
+key to it, or rename the field.
 
 ## Waiting for runs and builds
 

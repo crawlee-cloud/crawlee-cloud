@@ -45,8 +45,8 @@ A recommended setting:
 --tools actors,runs,storage,get-actor-list,alice/my-actor,alice/other-actor
 ```
 
-All 18 checks of the e2e harness (`npm run test:mcp-e2e`) pass with this set:
-every tool above, a real container run started by `call-actor` and by the
+All 19 checks of the e2e harness (`npm run test:mcp-e2e`: `tools/list`, 17 tool
+calls and a `poll-count` assertion) pass with this set: every tool above, a real container run started by `call-actor` and by the
 per-actor tool, and an abort.
 
 ## Setup
@@ -181,7 +181,7 @@ Usernames cannot be changed yet.
   digits, `_` and `-`: avoid dots in the names of actors you expose as tools.
   Names longer than 64 characters are cut and given a 4-character hash suffix,
   so keep `username` + `actor name` under 62 characters for readable tool names.
-- **`call-actor` waits at most 45 s** (its `waitSecs`). Longer runs keep going;
+- **`call-actor` waits 30 s by default, at most 45 s** (its `waitSecs`). Longer runs keep going;
   the agent can poll them with `get-actor-run`. The API holds each wait request
   for at most 60 s; see [`waitForFinish`](./apify-compatibility.md#waiting-for-runs-and-builds)
   for proxy timeouts.
