@@ -58,6 +58,8 @@ describe('resolveActor', () => {
     expect(sql).toContain('WHERE a.user_id = $2');
     expect(sql).toContain('JOIN users u ON u.id = a.user_id');
     expect(sql).toContain('(u.username = $3 AND a.name = $4)');
+    // An actor named after another one's id matches too; the id match wins.
+    expect(sql).toMatch(/ORDER BY \(a\.id = \$1\) DESC\s+LIMIT 1/);
     expect(sql).not.toMatch(/LIKE/i);
   });
 

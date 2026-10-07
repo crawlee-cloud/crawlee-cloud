@@ -77,13 +77,17 @@ export async function resolveActor(
   db: Queryable = defaultDb
 ): Promise<ResolvedActor | null> {
   const full = splitActorFullName(idOrName);
-  // Exact matches only (no LIKE): names may contain `-` and `.`.
+  // Exact matches only (no LIKE): names may contain `-` and `.`. One of the
+  // caller's actors can be named after another one's id, so two rows may
+  // match: the id match wins.
   const result = await db.query<ResolvedActor>(
     `SELECT a.*, u.username
        FROM actors a
        LEFT JOIN users u ON u.id = a.user_id
       WHERE a.user_id = $2
-        AND (a.id = $1 OR a.name = $1 OR (u.username = $3 AND a.name = $4))`,
+        AND (a.id = $1 OR a.name = $1 OR (u.username = $3 AND a.name = $4))
+      ORDER BY (a.id = $1) DESC
+      LIMIT 1`,
     [idOrName, userId, full?.username ?? null, full?.name ?? null]
   );
   return result.rows[0] ?? null;

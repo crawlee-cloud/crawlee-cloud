@@ -246,7 +246,9 @@ describe('Registry Routes', () => {
 
   describe('POST /v2/acts/:actorId/builds', () => {
     it('creates a RUNNING build and queues the job in Redis', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [createBuildRow()] });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ '?column?': 1 }] }) // version is the actor's
+        .mockResolvedValueOnce({ rows: [createBuildRow()] });
       mockRedisRpush.mockResolvedValueOnce(1);
 
       const response = await app.inject({
@@ -256,7 +258,10 @@ describe('Registry Routes', () => {
       });
 
       expect(response.statusCode).toBe(201);
-      const [insertSql, insertParams] = mockQuery.mock.calls[0] as [string, unknown[]];
+      const [versionSql, versionParams] = mockQuery.mock.calls[0] as [string, unknown[]];
+      expect(versionSql).toContain('FROM actor_versions WHERE id = $1 AND actor_id = $2');
+      expect(versionParams).toEqual(['ver-1', 'actor-1']);
+      const [insertSql, insertParams] = mockQuery.mock.calls[1] as [string, unknown[]];
       expect(insertSql).toContain("'RUNNING'");
       // Image name derives from the actor name + build id prefix.
       expect(insertParams[3]).toMatch(/^crawlee-cloud\/test-actor:[A-Za-z0-9_-]{8}$/);
@@ -273,6 +278,39 @@ describe('Registry Routes', () => {
       });
       expect(job.buildId).toBeTruthy();
       expect(job.imageName).toBe(insertParams[3]);
+    });
+
+    it("returns 404 without inserting or queueing when versionId is not the actor's", async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] }); // version lookup misses
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/acts/actor-1/builds',
+        payload: { versionId: 'someone-elses-version' },
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json().error).toEqual({
+        type: 'record-not-found',
+        message: 'Version not found',
+      });
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(mockRedisRpush).not.toHaveBeenCalled();
+    });
+
+    it('skips the version check when no versionId is sent', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [createBuildRow()] });
+      mockRedisRpush.mockResolvedValueOnce(1);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/acts/actor-1/builds',
+        payload: {},
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(mockQuery.mock.calls[0][0]).toContain('INSERT INTO actor_builds');
     });
 
     it('returns 404 without queueing when the actor is missing', async () => {

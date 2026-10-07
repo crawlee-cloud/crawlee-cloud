@@ -95,6 +95,26 @@ describe('actor resolution by username~name (integration)', () => {
     expect(r.json().data.id).toBe(dotted.id);
   });
 
+  it("an id match wins over an actor named after another of the caller's actor ids", async () => {
+    const target = await createActor(alice.token, 'target-actor');
+    // Created after `target`, named exactly like its id: both rows match.
+    const impostor = await createActor(alice.token, target.id);
+    expect(impostor.id).not.toBe(target.id);
+    // Rewrite target's row so it sits after the impostor's in the heap: an
+    // unordered lookup would then return the impostor first.
+    const { pool } = await import('../../src/db/index.js');
+    await pool.query(`UPDATE actors SET title = 'touched' WHERE id = $1`, [target.id]);
+
+    const r = await app.inject({
+      method: 'GET',
+      url: `/v2/acts/${target.id}`,
+      headers: auth(alice.token),
+    });
+    expect(r.statusCode).toBe(200);
+    expect(r.json().data.id).toBe(target.id);
+    expect(r.json().data.name).toBe('target-actor');
+  });
+
   it('starts a run via POST /v2/acts/username~name/runs', async () => {
     const actor = await createActor(alice.token, 'my-actor');
 
@@ -276,6 +296,39 @@ describe('actor resolution by username~name (integration)', () => {
         bobActorId,
       ]);
       expect(versions.rowCount).toBe(1);
+    });
+
+    it("POST builds on alice's own actor 404s for bob's versionId and stores nothing", async () => {
+      for (const versionId of [bobVersionId, 'no-such-version']) {
+        const r = await app.inject({
+          method: 'POST',
+          url: `/v2/acts/${aliceActorId}/builds`,
+          headers: auth(alice.token),
+          payload: { versionId },
+        });
+        expect(r.statusCode, versionId).toBe(404);
+        expect(r.json().error).toEqual({ type: 'record-not-found', message: 'Version not found' });
+      }
+
+      const { pool } = await import('../../src/db/index.js');
+      const b = await pool.query('SELECT 1 FROM actor_builds WHERE actor_id = $1', [aliceActorId]);
+      expect(b.rowCount).toBe(0);
+
+      // Her own version is still accepted.
+      const v = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${aliceActorId}/versions`,
+        headers: auth(alice.token),
+        payload: { versionNumber: '0.1' },
+      });
+      const ok = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${aliceActorId}/builds`,
+        headers: auth(alice.token),
+        payload: { versionId: v.json().data.id },
+      });
+      expect(ok.statusCode).toBe(201);
+      expect(ok.json().data.versionId).toBe(v.json().data.id);
     });
 
     it("build routes 404 for bob's build ID under alice's own actor", async () => {

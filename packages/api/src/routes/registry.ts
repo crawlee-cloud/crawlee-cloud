@@ -258,6 +258,20 @@ export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
     if (!actor) return ACTOR_NOT_FOUND;
     const actorId = actor.id;
 
+    // The version must belong to this actor: otherwise a caller could attach
+    // another user's version to their build (and a made-up id would hit the
+    // FK as a 500).
+    if (versionId != null) {
+      const version = await query(`SELECT 1 FROM actor_versions WHERE id = $1 AND actor_id = $2`, [
+        versionId,
+        actorId,
+      ]);
+      if (!version.rows[0]) {
+        reply.status(404);
+        return { error: { type: 'record-not-found', message: 'Version not found' } };
+      }
+    }
+
     const id = nanoid();
     const imageName = `crawlee-cloud/${actor.name}:${id.slice(0, 8)}`;
 
