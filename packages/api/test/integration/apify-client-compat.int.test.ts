@@ -157,4 +157,48 @@ describe('apify-client round-trip (integration)', () => {
     const b = await client.datasets().getOrCreate('idempotent-ds');
     expect(a.id).toBe(b.id);
   });
+
+  describe('actors via /v2/actors (apify-client >= 2.23.4)', () => {
+    let actorId: string;
+
+    beforeAll(async () => {
+      const actor = await client.actors().create({ name: 'compat-actor', title: 'Compat' });
+      actorId = actor.id;
+    });
+
+    it('client.actor(id).get() resolves the actor', async () => {
+      const actor = await client.actor(actorId).get();
+      expect(actor?.id).toBe(actorId);
+      expect(actor?.name).toBe('compat-actor');
+    });
+
+    it('client.actor(id).get() returns undefined for a missing actor', async () => {
+      // record-not-found from the handler → catchNotFoundOrThrow → undefined.
+      expect(await client.actor('no-such-actor').get()).toBeUndefined();
+    });
+
+    it('client.actors().list() lists the actor', async () => {
+      const list = await client.actors().list();
+      expect(list.total).toBeGreaterThanOrEqual(1);
+      expect(list.items.map((a) => a.id)).toContain(actorId);
+    });
+
+    it('client.actor(id).update() accepts a compressed body over 1 KB', async () => {
+      // apify-client 2.25 brotli-compresses bodies >= 1 KB (2.23 used gzip).
+      const description = 'x'.repeat(2048);
+      const updated = await client.actor(actorId).update({ description });
+      expect(updated.description).toBe(description);
+
+      const fetched = await client.actor(actorId).get();
+      expect(fetched?.description).toBe(description);
+    });
+
+    it('unknown routes return the platform envelope with page-not-found', async () => {
+      const res = await fetch(`${baseUrl}/v2/no-such-route`);
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as { error: { type: string; message: string } };
+      expect(body.error.type).toBe('page-not-found');
+      expect(body.error.message).toBe('Route GET /v2/no-such-route not found');
+    });
+  });
 });

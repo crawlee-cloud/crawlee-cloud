@@ -10,9 +10,12 @@
  * POST /v2/acts/:actorId/builds - Start build
  * GET /v2/acts/:actorId/builds/:buildId - Get build
  * POST /v2/acts/:actorId/builds/:buildId/abort - Abort build
+ *
+ * Every route is also served under /v2/actors/... (see ActorsSegmentOptions).
  */
 
 import type { FastifyPluginAsync } from 'fastify';
+import type { ActorsSegmentOptions } from './actors.js';
 import { nanoid } from 'nanoid';
 import { query } from '../db/index.js';
 import { authenticate } from '../auth/middleware.js';
@@ -52,14 +55,18 @@ interface BuildRow {
   build_tag?: string | null;
 }
 
-export const registryRoutes: FastifyPluginAsync = async (fastify) => {
+export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
+  fastify,
+  opts = {}
+) => {
+  const segment = opts.actorsSegment ?? 'acts';
   // All routes require authentication
   fastify.addHook('preHandler', authenticate);
 
   /**
    * GET /v2/acts/:actorId/versions - List all versions
    */
-  fastify.get<{ Params: { actorId: string } }>('/acts/:actorId/versions', async (request) => {
+  fastify.get<{ Params: { actorId: string } }>(`/${segment}/:actorId/versions`, async (request) => {
     const { actorId } = request.params;
 
     const result = await query<VersionRow>(
@@ -88,7 +95,7 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
       buildTag?: string;
       envVars?: Record<string, string>;
     };
-  }>('/acts/:actorId/versions', async (request, reply) => {
+  }>(`/${segment}/:actorId/versions`, async (request, reply) => {
     const { actorId } = request.params;
     const { versionNumber, sourceType, sourceUrl, dockerfile, buildTag, envVars } = request.body;
 
@@ -136,7 +143,7 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
    * GET /v2/acts/:actorId/versions/:versionId - Get version details
    */
   fastify.get<{ Params: { actorId: string; versionId: string } }>(
-    '/acts/:actorId/versions/:versionId',
+    `/${segment}/:actorId/versions/:versionId`,
     async (request, reply) => {
       const { actorId, versionId } = request.params;
 
@@ -158,7 +165,7 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
    * DELETE /v2/acts/:actorId/versions/:versionId - Delete version
    */
   fastify.delete<{ Params: { actorId: string; versionId: string } }>(
-    '/acts/:actorId/versions/:versionId',
+    `/${segment}/:actorId/versions/:versionId`,
     async (request, reply) => {
       const { actorId, versionId } = request.params;
 
@@ -174,7 +181,7 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
   /**
    * GET /v2/acts/:actorId/builds - List all builds
    */
-  fastify.get<{ Params: { actorId: string } }>('/acts/:actorId/builds', async (request) => {
+  fastify.get<{ Params: { actorId: string } }>(`/${segment}/:actorId/builds`, async (request) => {
     const { actorId } = request.params;
 
     // LEFT JOIN actor_versions so the dashboard can show "0.1 (latest)"
@@ -208,7 +215,7 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
       gitBranch?: string;
       gitCommit?: string;
     };
-  }>('/acts/:actorId/builds', async (request, reply) => {
+  }>(`/${segment}/:actorId/builds`, async (request, reply) => {
     const { actorId } = request.params;
     const { versionId, gitBranch, gitCommit } = request.body;
 
@@ -251,7 +258,7 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
    * GET /v2/acts/:actorId/builds/:buildId - Get build details
    */
   fastify.get<{ Params: { actorId: string; buildId: string } }>(
-    '/acts/:actorId/builds/:buildId',
+    `/${segment}/:actorId/builds/:buildId`,
     async (request, reply) => {
       const { actorId, buildId } = request.params;
 
@@ -273,7 +280,7 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
    * POST /v2/acts/:actorId/builds/:buildId/abort - Abort a running build
    */
   fastify.post<{ Params: { actorId: string; buildId: string } }>(
-    '/acts/:actorId/builds/:buildId/abort',
+    `/${segment}/:actorId/builds/:buildId/abort`,
     async (request, reply) => {
       const { actorId, buildId } = request.params;
 
@@ -300,7 +307,7 @@ export const registryRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.get<{
     Params: { actorId: string; buildId: string };
     Querystring: { offset?: string; limit?: string };
-  }>('/acts/:actorId/builds/:buildId/logs', async (request) => {
+  }>(`/${segment}/:actorId/builds/:buildId/logs`, async (request) => {
     const { buildId } = request.params;
     const offset = parseInt(request.query.offset || '0', 10);
     const limit = parseInt(request.query.limit || '100', 10);
