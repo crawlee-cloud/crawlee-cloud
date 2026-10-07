@@ -4,7 +4,7 @@
  * Used by the registry routes (`/acts/:actorId/builds/...`,
  * `/actor-builds/:buildId`) and reusable by anything that needs an actor's
  * default build — e.g. the store listing's `includeInputSchema` (#119), which
- * should use the batch `selectDefaultBuilds` rather than one query per actor.
+ * uses the batch `selectDefaultInputSchemas` rather than one query per actor.
  *
  * None of the helpers here check ownership except `loadBuild`: callers that
  * pass an actor ID must have authorized access to that actor already.
@@ -145,6 +145,36 @@ export async function selectDefaultBuilds(
   );
   for (const row of result.rows) builds.set(row.actor_id, row);
   return builds;
+}
+
+/**
+ * The input schema (`actor_definition.input`) of each actor's default build,
+ * in one query. Same choice as selectDefaultBuilds, but reads only the
+ * `input` key so a list doesn't ship every README (up to 1 MB each) out of
+ * Postgres. Actors without a SUCCEEDED build, or whose default build has no
+ * input schema, are absent from the map.
+ */
+export async function selectDefaultInputSchemas(
+  actorIds: readonly string[],
+  db: Queryable = { query }
+): Promise<Map<string, unknown>> {
+  const schemas = new Map<string, unknown>();
+  if (actorIds.length === 0) return schemas;
+
+  const result = await db.query<{ actor_id: string; input: unknown }>(
+    `SELECT ids.actor_id, d.input FROM unnest($1::varchar[]) AS ids(actor_id)
+     CROSS JOIN LATERAL (
+       SELECT b.actor_definition -> 'input' AS input
+         FROM actor_builds b
+         LEFT JOIN actor_versions v ON v.id = b.version_id
+       ${defaultBuildTail('ids.actor_id')}
+     ) d`,
+    [[...new Set(actorIds)]]
+  );
+  for (const row of result.rows) {
+    if (row.input != null) schemas.set(row.actor_id, row.input);
+  }
+  return schemas;
 }
 
 /**
