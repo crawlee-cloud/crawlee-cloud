@@ -184,6 +184,56 @@ describe('GET /v2/store (integration)', () => {
     expect(names(page)).toEqual(['echo-plus']);
   });
 
+  it('search matches the owner username and the `username/name` handle, exact handle first', async () => {
+    // Every one of alice's actors carries her username.
+    expect((await store(alice.token, 'search=alice119&limit=100')).total).toBe(8);
+    // `echo` is older than `echo-plus`; the exact handle still sorts first.
+    expect(names(await store(alice.token, 'search=alice119%2Fecho'))).toEqual([
+      'echo',
+      'echo-plus',
+    ]);
+    expect(names(await store(alice.token, 'search=ALICE119%2FEcho-Plus'))).toEqual(['echo-plus']);
+    expect(names(await client.store().list({ search: 'alice119/echo' }))).toEqual([
+      'echo',
+      'echo-plus',
+    ]);
+  });
+
+  it("searching another user's username or handle never leaks their actors", async () => {
+    for (const search of ['bob119', 'bob119/echo-bob', 'bob']) {
+      const list = await store(alice.token, `search=${encodeURIComponent(search)}`);
+      expect(list).toMatchObject({ total: 0, count: 0, items: [] });
+    }
+    expect(names(await store(bob.token, 'search=bob119%2Fecho-bob'))).toEqual(['echo-bob']);
+  });
+
+  it('pages before aggregating runs without changing order, paging or stats', async () => {
+    const { pool } = await import('../../src/db/index.js');
+    const expected = (
+      await pool.query<{ name: string }>(
+        'SELECT name FROM actors WHERE user_id = $1 ORDER BY modified_at DESC, id DESC',
+        [alice.userId]
+      )
+    ).rows.map((r) => r.name);
+    expect(expected).toHaveLength(8);
+
+    const all = await store(alice.token, 'limit=100');
+    expect(names(all)).toEqual(expected);
+
+    const paged: StoreItem[] = [];
+    for (let offset = 0; offset < expected.length; offset += 3) {
+      const page = await store(alice.token, `limit=3&offset=${offset}`);
+      expect(page).toMatchObject({ total: 8, count: Math.min(3, 8 - offset), limit: 3 });
+      paged.push(...page.items);
+    }
+    expect(paged).toEqual(all.items);
+    // `echo` is the oldest, so it lands on the last page with its runs counted.
+    expect(paged.at(-1)).toMatchObject({ name: 'echo', stats: { totalRuns: 2 } });
+    for (const item of paged.filter((i) => i.name !== 'echo')) {
+      expect(item.stats).toEqual({ totalRuns: 0, lastRunStartedAt: null });
+    }
+  });
+
   it('requires authentication', async () => {
     const res = await fetch(`${baseUrl}/v2/store`);
     expect(res.status).toBe(401);

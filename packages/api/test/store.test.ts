@@ -186,12 +186,15 @@ describe('GET /v2/store', () => {
     expect(sql).toContain('a.user_id = $1');
     expect(sql).toContain('r.user_id = a.user_id AND r.actor_id = a.id');
     expect(sql).toContain('ORDER BY a.modified_at DESC, a.id DESC');
+    // The page is cut before the run aggregate, and re-sorted after it.
+    expect(sql.indexOf('LIMIT $2 OFFSET $3')).toBeLessThan(sql.indexOf('CROSS JOIN LATERAL'));
+    expect(sql.trimEnd().endsWith('ORDER BY a.modified_at DESC, a.id DESC')).toBe(true);
     expect(params).toEqual(['test-user-id', 10, 0]);
     // No input schemas requested → no build query.
     expect(sqlOf('unnest(')).toBeUndefined();
   });
 
-  it('searches name/title/description with escaped wildcards, exact name first', async () => {
+  it('searches name/title/description/username/handle with escaped wildcards, exact name or handle first', async () => {
     mockList([]);
     const res = await app.inject({
       method: 'GET',
@@ -200,8 +203,16 @@ describe('GET /v2/store', () => {
 
     expect(res.statusCode).toBe(200);
     const [sql, params] = sqlOf('LIMIT $');
-    expect(sql).toContain('(a.name ILIKE $2 OR a.title ILIKE $2 OR a.description ILIKE $2)');
-    expect(sql).toContain('ORDER BY (LOWER(a.name) = LOWER($3)) DESC, a.modified_at DESC');
+    expect(sql).toContain(
+      "(a.name ILIKE $2 OR a.title ILIKE $2 OR a.description ILIKE $2 OR u.username ILIKE $2 OR (u.username || '/' || a.name) ILIKE $2)"
+    );
+    // Same order inside the page subquery and outside it.
+    expect(sql).toContain(
+      "ORDER BY (LOWER(a.name) = LOWER($3) OR LOWER(u.username || '/' || a.name) = LOWER($3)) DESC, a.modified_at DESC, a.id DESC"
+    );
+    expect(sql).toContain(
+      "ORDER BY (LOWER(a.name) = LOWER($3) OR LOWER(a.username || '/' || a.name) = LOWER($3)) DESC, a.modified_at DESC, a.id DESC"
+    );
     expect(params).toEqual(['test-user-id', '%50\\%\\_a\\\\b%', '50%_a\\b', 5, 2]);
     const [, countParams] = sqlOf('COUNT(*)::text AS total');
     expect(countParams).toEqual(['test-user-id', '%50\\%\\_a\\\\b%']);

@@ -76,10 +76,15 @@ export const storeRoutes: FastifyPluginAsync = async (fastify) => {
     const q = StoreListQuerySchema.parse(request.query);
 
     const params: unknown[] = [request.user!.id];
+    // Apify's store search also matches the owner's username; the combined
+    // `username/name` handle is our extension (agents search with the handle
+    // they saw elsewhere). One bind serves every column.
     let where = appendSearchCondition('a.user_id = $1', params, q.search, [
       'a.name',
       'a.title',
       'a.description',
+      'u.username',
+      "(u.username || '/' || a.name)",
     ]);
     // Only the caller's actors are listed, so any other username is empty.
     if (q.username !== undefined) {
@@ -87,16 +92,26 @@ export const storeRoutes: FastifyPluginAsync = async (fastify) => {
       where += ` AND u.username = $${params.length}`;
     }
 
-    // Exact (case-insensitive) name match first, then most recently modified;
-    // `id` keeps LIMIT/OFFSET paging stable on ties.
+    // Exact (case-insensitive) name or `username/name` match first, then most
+    // recently modified; `id` keeps LIMIT/OFFSET paging stable on ties. The
+    // same order runs inside the page subquery (where the username is
+    // `u.username`) and outside it (where the page row carries it).
     const selectParams = [...params];
-    let order = 'a.modified_at DESC, a.id DESC';
+    let searchIdx: number | undefined;
     if (q.search) {
       selectParams.push(q.search);
-      order = `(LOWER(a.name) = LOWER($${selectParams.length})) DESC, ${order}`;
+      searchIdx = selectParams.length;
     }
+    const orderBy = (username: string) => {
+      const recency = 'a.modified_at DESC, a.id DESC';
+      if (searchIdx === undefined) return recency;
+      const term = `LOWER($${searchIdx})`;
+      return `(LOWER(a.name) = ${term} OR LOWER(${username} || '/' || a.name) = ${term}) DESC, ${recency}`;
+    };
     selectParams.push(q.limit, q.offset);
 
+    // Page the actors first, then aggregate runs for that page only: the
+    // aggregate below the LIMIT would scan every run of every matching actor.
     // The runs subquery filters on user_id as well as actor_id so it walks
     // idx_runs_user_actor_created (there's no index on runs.actor_id alone).
     const [countResult, pageResult] = await Promise.all([
@@ -107,18 +122,22 @@ export const storeRoutes: FastifyPluginAsync = async (fastify) => {
         params
       ),
       query<StoreActorRow>(
-        `SELECT a.id, a.name, u.username, a.title, a.description,
+        `SELECT a.id, a.name, a.username, a.title, a.description,
                 rs.total_runs, rs.last_run_started_at
-           FROM actors a
-           JOIN users u ON u.id = a.user_id
+           FROM (
+             SELECT a.id, a.user_id, a.name, u.username, a.title, a.description, a.modified_at
+               FROM actors a
+               JOIN users u ON u.id = a.user_id
+              WHERE ${where}
+              ORDER BY ${orderBy('u.username')}
+              LIMIT $${selectParams.length - 1} OFFSET $${selectParams.length}
+           ) a
            CROSS JOIN LATERAL (
              SELECT COUNT(*)::int AS total_runs, MAX(r.created_at) AS last_run_started_at
                FROM runs r
               WHERE r.user_id = a.user_id AND r.actor_id = a.id
            ) rs
-          WHERE ${where}
-          ORDER BY ${order}
-          LIMIT $${selectParams.length - 1} OFFSET $${selectParams.length}`,
+          ORDER BY ${orderBy('a.username')}`,
         selectParams
       ),
     ]);
