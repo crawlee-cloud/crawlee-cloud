@@ -146,7 +146,7 @@ describe('resolveActorDefinition: input schema', () => {
   });
 
   it('accepts a UTF-8 BOM', async () => {
-    await write('.actor/input_schema.json', '﻿' + JSON.stringify(SCHEMA));
+    await write('.actor/input_schema.json', '\uFEFF' + JSON.stringify(SCHEMA));
     const def = await resolveActorDefinition(root, BASE);
     expect(def.input).toEqual(SCHEMA);
   });
@@ -161,12 +161,23 @@ describe('resolveActorDefinition: input schema', () => {
     expect(res.warnings[0]).toMatch(/"type" and "properties"/);
   });
 
-  it('warns and skips an input schema over the size limit', async () => {
+  it('fails, naming the source and the limit, on an input schema over the size limit', async () => {
     const big = { ...SCHEMA, description: 'x'.repeat(MAX_ACTOR_INPUT_SCHEMA_BYTES) };
-    const res = await resolveActorDefinitionWithSources(root, { ...BASE, input: big });
-    expect(res.definition.input).toBeUndefined();
-    expect(res.inputSource).toBe('none');
-    expect(res.warnings[0]).toMatch(/over the 512000-byte limit/);
+    const err = await resolveActorDefinition(root, { ...BASE, input: big }).catch(
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(ActorDefinitionError);
+    expect((err as Error).message).toMatch(
+      /^Input schema \(inline\) is \d+ bytes, over the 512000-byte limit/
+    );
+  });
+
+  it('fails, naming the file, on a schema file over the size limit', async () => {
+    const big = { ...SCHEMA, description: 'x'.repeat(MAX_ACTOR_INPUT_SCHEMA_BYTES) };
+    await write('.actor/input_schema.json', big);
+    await expect(resolveActorDefinition(root, BASE)).rejects.toThrow(
+      `Input schema (${path.join('.actor', 'input_schema.json')})`
+    );
   });
 });
 
@@ -204,14 +215,22 @@ describe('resolveActorDefinition: README', () => {
     );
   });
 
-  it('warns and skips a README over the size limit', async () => {
+  it('fails, naming the file and the limit, on a README over the size limit', async () => {
     // Multi-byte characters: the cap is in UTF-8 bytes, not characters.
     await write('README.md', 'é'.repeat(MAX_ACTOR_README_BYTES / 2 + 1));
-    const res = await resolveActorDefinitionWithSources(root, { ...BASE, input: SCHEMA });
-    expect(res.definition.readme).toBeUndefined();
-    expect(res.definition.input).toEqual(SCHEMA);
-    expect(res.readmeSource).toBe('none');
-    expect(res.warnings[0]).toMatch(/README .* over the 1048576-byte limit/);
+    const err = await resolveActorDefinition(root, { ...BASE, input: SCHEMA }).catch(
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(ActorDefinitionError);
+    expect((err as Error).message).toMatch(
+      /^README \(README\.md\) is \d+ bytes, over the 1048576-byte limit/
+    );
+  });
+
+  it('accepts a README of exactly the size limit', async () => {
+    await write('README.md', 'x'.repeat(MAX_ACTOR_README_BYTES));
+    const def = await resolveActorDefinition(root, BASE);
+    expect(def.readme).toHaveLength(MAX_ACTOR_README_BYTES);
   });
 });
 

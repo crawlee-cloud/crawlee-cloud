@@ -12,8 +12,9 @@ import path from 'path';
 import fs from 'fs-extra';
 
 // Keep in sync with the API caps (packages/api/src/schemas/actors.ts). Over
-// the limit we warn and skip the field rather than letting the API 400 the
-// whole push.
+// the limit the push fails before the Docker build: the API would 400 the
+// definition anyway, and skipping the field would leave the actor without a
+// schema (or README) on the new build.
 export const MAX_ACTOR_INPUT_SCHEMA_BYTES = 500 * 1024;
 export const MAX_ACTOR_README_BYTES = 1024 * 1024;
 
@@ -42,11 +43,14 @@ export interface ResolvedActorDefinition {
   inputSource: string;
   /** Where the README came from: a path relative to the actor root, or "none". */
   readmeSource: string;
-  /** Non-fatal problems (oversize fields, schema without type/properties). */
+  /** Non-fatal problems (schema without type/properties). */
   warnings: string[];
 }
 
-/** A referenced file is missing or holds malformed JSON. Fails the push. */
+/**
+ * A referenced file is missing or holds malformed JSON, or the input schema
+ * or README is over its size cap. Fails the push.
+ */
 export class ActorDefinitionError extends Error {
   constructor(message: string) {
     super(message);
@@ -73,7 +77,8 @@ const README_FALLBACKS = ['.actor/README.md', 'README.md'];
  *
  * Missing fallback files are skipped silently. A referenced file that is
  * missing, or malformed JSON, throws an `ActorDefinitionError` naming the
- * file. Oversize fields are dropped with a warning.
+ * file. An input schema or README over its size cap throws an
+ * `ActorDefinitionError` naming the file and the limit.
  */
 export async function resolveActorDefinitionWithSources(
   actorDir: string,
@@ -117,18 +122,16 @@ export async function resolveActorDefinitionWithSources(
   if (input) {
     const bytes = Buffer.byteLength(JSON.stringify(input));
     if (bytes > MAX_ACTOR_INPUT_SCHEMA_BYTES) {
-      warnings.push(
-        `Input schema (${inputSource}) is ${String(bytes)} bytes, over the ${String(MAX_ACTOR_INPUT_SCHEMA_BYTES)}-byte limit; not uploading it.`
+      throw new ActorDefinitionError(
+        `Input schema (${inputSource}) is ${String(bytes)} bytes, over the ${String(MAX_ACTOR_INPUT_SCHEMA_BYTES)}-byte limit.`
       );
-      inputSource = 'none';
-    } else {
-      if (!('type' in input) || !('properties' in input)) {
-        warnings.push(
-          `Input schema (${inputSource}) has no top-level "type" and "properties"; MCP clients will ignore it.`
-        );
-      }
-      definition.input = input;
     }
+    if (!('type' in input) || !('properties' in input)) {
+      warnings.push(
+        `Input schema (${inputSource}) has no top-level "type" and "properties"; MCP clients will ignore it.`
+      );
+    }
+    definition.input = input;
   }
 
   // ---- README ----
@@ -153,13 +156,11 @@ export async function resolveActorDefinitionWithSources(
   if (readme !== undefined) {
     const bytes = Buffer.byteLength(readme);
     if (bytes > MAX_ACTOR_README_BYTES) {
-      warnings.push(
-        `README (${readmeSource}) is ${String(bytes)} bytes, over the ${String(MAX_ACTOR_README_BYTES)}-byte limit; not uploading it.`
+      throw new ActorDefinitionError(
+        `README (${readmeSource}) is ${String(bytes)} bytes, over the ${String(MAX_ACTOR_README_BYTES)}-byte limit.`
       );
-      readmeSource = 'none';
-    } else {
-      definition.readme = readme;
     }
+    definition.readme = readme;
   }
 
   return { definition, inputSource, readmeSource, warnings };

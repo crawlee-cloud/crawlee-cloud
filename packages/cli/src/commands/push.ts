@@ -135,8 +135,9 @@ export const pushCommand = new Command('push')
 
     const actorName = actorJson.name!;
 
-    // Resolve the input schema and README before building, so a missing or
-    // malformed schema file fails fast instead of after a Docker build.
+    // Resolve the input schema and README before building, so a missing,
+    // malformed or oversize schema (or README) fails fast instead of after a
+    // Docker build.
     let resolvedDefinition: ResolvedActorDefinition;
     try {
       resolvedDefinition = await resolveActorDefinitionWithSources(cwd, actorJson);
