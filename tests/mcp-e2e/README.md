@@ -70,6 +70,10 @@ exits non-zero when:
 - a listed check passes ("unexpectedly passed, remove from
   expected-failures.json"), so the list can only shrink.
 
+Since the MCP parity epic (#106) closed, the list is empty (`[]`): every check
+must pass, and any regression fails the run. Do not add a check back to the list
+to make a run pass; fix the regression or open an issue.
+
 ## Stack prerequisites
 
 - **Node 22+** for the harness. The MCP server exits on older Node. The rest of

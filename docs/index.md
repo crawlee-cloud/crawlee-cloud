@@ -13,6 +13,7 @@ Crawlee Cloud lets you run your Crawlee and Apify Actors on your own infrastruct
 - [Quick Start Tutorial](./quickstart-tutorial.md) — Deploy your first scraper in under 10 minutes
 - [Deployment Guide](./deployment.md) — Install and configure your server
 - [SDK Compatibility](./apify-sdk-environment.md) — Using the Apify SDK with Crawlee Cloud
+- [MCP (AI agents)](./mcp.md) — Let Claude, Cursor and other MCP clients run your actors
 
 ### Reference
 
@@ -20,6 +21,7 @@ Crawlee Cloud lets you run your Crawlee and Apify Actors on your own infrastruct
 - [CLI Guide](./cli.md) — Command-line interface
 - [Dashboard](./dashboard.md) — Web interface
 - [Runner](./runner.md) — Container execution engine
+- [Apify API Compatibility](./apify-compatibility.md) — Where the API matches Apify, and where it differs
 
 ## Quick Links
 
