@@ -125,7 +125,12 @@ function setupQueryMock(opts: {
   runningRows?: { id: string; started_at: Date | null; timeout_secs?: number | null }[];
   // Shape matches the reaper's batch SELECT: scoping columns are
   // filtered in memory, so mock rows must carry them.
-  webhooks?: { id: string; actor_id: string | null; run_id: string | null }[];
+  webhooks?: {
+    id: string;
+    user_id: string | null;
+    actor_id: string | null;
+    run_id: string | null;
+  }[];
   /** Make webhook-delivery INSERTs reject — exercises the reap ROLLBACK path. */
   rejectWebhookInserts?: boolean;
 }) {
@@ -138,7 +143,9 @@ function setupQueryMock(opts: {
     }
     if (typeof sql === 'string' && sql.includes("SET status = 'TIMED-OUT'")) {
       const ids = (params?.[0] as string[]) ?? [];
-      return Promise.resolve({ rows: ids.map((id) => ({ id, actor_id: 'actor-1' })) });
+      return Promise.resolve({
+        rows: ids.map((id) => ({ id, actor_id: 'actor-1', user_id: 'user-1' })),
+      });
     }
     // Dead-runner fast reap (failRunsOfDeadRunners): no stamped RUNNING
     // rows in these scenarios unless a test overrides explicitly.
@@ -406,6 +413,51 @@ describe('scaler loop', () => {
       expect(failedUpdates[0][0]).toEqual(['dead-1']);
     });
 
+    it("fast-failed runs notify only the run owner's webhooks", async () => {
+      const inserts: unknown[][] = [];
+      let failedSql = '';
+      queryMock.mockImplementation((sql: string, params?: unknown[]) => {
+        if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') {
+          return Promise.resolve({ rows: [] });
+        }
+        if (typeof sql === 'string' && sql.includes("SET status = 'FAILED'")) {
+          failedSql = sql;
+          return Promise.resolve({
+            rows: [
+              {
+                id: 'orphan-1',
+                actor_id: 'actor-1',
+                user_id: 'user-1',
+                default_key_value_store_id: null,
+              },
+            ],
+          });
+        }
+        if (typeof sql === 'string' && sql.includes('FROM webhooks')) {
+          return Promise.resolve({
+            rows: [
+              { id: 'wh-own-global', user_id: 'user-1', actor_id: null, run_id: null },
+              { id: 'wh-tenant-b-global', user_id: 'user-2', actor_id: null, run_id: null },
+            ],
+          });
+        }
+        if (typeof sql === 'string' && sql.includes('INSERT INTO webhook_deliveries')) {
+          inserts.push(params ?? []);
+        }
+        return Promise.resolve({ rows: [] });
+      });
+      noopList.mockResolvedValue([
+        makeRunner('dead-1', { createdAt: new Date(Date.now() - 300_000) }),
+      ]);
+      redisScan.mockResolvedValue(scanResult([]));
+      seedMisses({ 'dead-1': { c: 2, t: Date.now() - 120_000 } });
+
+      await initScaler();
+
+      expect(failedSql).toContain('RETURNING id, actor_id, user_id');
+      expect(inserts.map((p) => [p[1], p[3]])).toEqual([['wh-own-global', 'ACTOR.RUN.FAILED']]);
+    });
+
     it('does not fail any runs when the destroy itself failed (containers may still exist)', async () => {
       // The safety argument for the fast reap is "the droplet is gone".
       // If provider.destroyRunner threw, the runner might still be alive
@@ -630,7 +682,7 @@ describe('scaler loop', () => {
         runningRows: [
           { id: 'ghost', started_at: new Date(Date.now() - 20 * HOUR), timeout_secs: 3600 },
         ],
-        webhooks: [{ id: 'wh-1', actor_id: null, run_id: null }],
+        webhooks: [{ id: 'wh-1', user_id: 'user-1', actor_id: null, run_id: null }],
       });
       noopList.mockResolvedValue([makeRunner('r1')]);
       redisScan.mockResolvedValue(scanResult(['runner:heartbeat:r1']));
@@ -701,8 +753,8 @@ describe('scaler loop', () => {
           { id: 'ghost', started_at: new Date(Date.now() - 20 * HOUR), timeout_secs: 3600 },
         ],
         webhooks: [
-          { id: 'wh-other-actor', actor_id: 'someone-else', run_id: null },
-          { id: 'wh-other-run', actor_id: null, run_id: 'not-ghost' },
+          { id: 'wh-other-actor', user_id: 'user-1', actor_id: 'someone-else', run_id: null },
+          { id: 'wh-other-run', user_id: 'user-1', actor_id: null, run_id: 'not-ghost' },
         ],
       });
       noopList.mockResolvedValue([makeRunner('r1')]);
@@ -717,6 +769,37 @@ describe('scaler loop', () => {
           typeof c[0] === 'string' && c[0].includes('INSERT INTO webhook_deliveries')
       );
       expect(inserts).toHaveLength(0); // ...but neither webhook matches
+    });
+
+    it("enqueues deliveries only for the run owner's webhooks, never another tenant's", async () => {
+      // actor_id NULL means "all of the owner's actors": user B's global
+      // webhook (or one B pointed at A's actor id) must not fire for A's run.
+      setupQueryMock({
+        stats: { ready: 0, running: 1 },
+        runningRows: [
+          { id: 'ghost', started_at: new Date(Date.now() - 20 * HOUR), timeout_secs: 3600 },
+        ],
+        webhooks: [
+          { id: 'wh-own-global', user_id: 'user-1', actor_id: null, run_id: null },
+          { id: 'wh-tenant-b-global', user_id: 'user-2', actor_id: null, run_id: null },
+          { id: 'wh-tenant-b-actor', user_id: 'user-2', actor_id: 'actor-1', run_id: null },
+          { id: 'wh-ownerless', user_id: null, actor_id: null, run_id: null },
+        ],
+      });
+      noopList.mockResolvedValue([makeRunner('r1')]);
+      redisScan.mockResolvedValue(scanResult([]));
+      redisGet.mockResolvedValue(String(Date.now() - 60_000));
+
+      await initScaler();
+
+      const updates = updateCalls();
+      expect(updates).toHaveLength(1);
+      expect(updates[0][0] as string).toContain('RETURNING id, actor_id, user_id');
+      const inserts = queryMock.mock.calls.filter(
+        (c: unknown[]) =>
+          typeof c[0] === 'string' && c[0].includes('INSERT INTO webhook_deliveries')
+      );
+      expect(inserts.map((c: unknown[]) => (c[1] as unknown[])[1])).toEqual(['wh-own-global']);
     });
 
     it('leaves a heartbeat-claimed run alone no matter how old', async () => {
@@ -776,7 +859,7 @@ describe('scaler loop', () => {
         runningRows: [
           { id: 'ghost', started_at: new Date(Date.now() - 20 * HOUR), timeout_secs: 3600 },
         ],
-        webhooks: [{ id: 'wh-1', actor_id: null, run_id: null }],
+        webhooks: [{ id: 'wh-1', user_id: 'user-1', actor_id: null, run_id: null }],
         rejectWebhookInserts: true,
       });
       noopList.mockResolvedValue([makeRunner('r1')]);

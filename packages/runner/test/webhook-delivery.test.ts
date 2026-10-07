@@ -217,6 +217,20 @@ describe('triggerWebhooks', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("matches only the run owner's webhooks (global ones included)", async () => {
+    stubFetch({ ok: true, status: 200 });
+    const db = mockPool({ rows: [RUN] }, { rows: [] });
+
+    await triggerWebhooks('run-1', 'SUCCEEDED', db);
+
+    // actor_id NULL means "all of the owner's actors", not every tenant's:
+    // the owner predicate keeps user B's global webhook off user A's runs.
+    const [matchSql, matchParams] = db.query.mock.calls[1] as [string, unknown[]];
+    expect(matchSql).toContain('AND (actor_id IS NULL OR actor_id = $2)');
+    expect(matchSql).toContain('AND user_id = $4');
+    expect(matchParams).toEqual(['ACTOR.RUN.SUCCEEDED', 'actor-1', 'run-1', 'user-1']);
+  });
+
   it('does nothing when the run row is gone', async () => {
     const fetchMock = stubFetch({ ok: true, status: 200 });
     const db = mockPool({ rows: [] });

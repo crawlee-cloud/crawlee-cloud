@@ -880,6 +880,7 @@ async function reapZombieRuns(client: pg.PoolClient, zombieIds: string[]): Promi
     const updated = await client.query<{
       id: string;
       actor_id: string;
+      user_id: string | null;
       default_key_value_store_id: string | null;
     }>(
       `UPDATE runs
@@ -888,7 +889,7 @@ async function reapZombieRuns(client: pg.PoolClient, zombieIds: string[]): Promi
            modified_at = NOW(),
            status_message = 'Runner lost before completion; reaped by scaler after timeout overrun'
        WHERE id = ANY($1) AND status = 'RUNNING'
-       RETURNING id, actor_id, default_key_value_store_id`,
+       RETURNING id, actor_id, user_id, default_key_value_store_id`,
       [zombieIds]
     );
 
@@ -939,29 +940,36 @@ async function reapZombieRuns(client: pg.PoolClient, zombieIds: string[]): Promi
  * losing the delivery row after the terminal UPDATE commits means the
  * event is never delivered (no later tick re-discovers terminal runs).
  *
- * One SELECT for the whole batch, actor/run scoping applied in memory:
+ * One SELECT for the whole batch, owner/actor/run scoping applied in
+ * memory (same rules as the runner's triggerWebhooks: a webhook only ever
+ * fires for its owner's runs; actor_id NULL means "all of the owner's
+ * actors", not all tenants'):
  * the caller's transaction holds locks on the terminalized `runs` rows,
  * so per-run round-trips (N+1) would stretch the lock window for no
  * benefit — the enabled-webhook set is small by nature.
  */
 async function enqueueRunEventWebhooks(
   client: pg.PoolClient,
-  runs: { id: string; actor_id: string }[],
+  runs: { id: string; actor_id: string; user_id: string | null }[],
   eventType: 'ACTOR.RUN.TIMED_OUT' | 'ACTOR.RUN.FAILED'
 ): Promise<void> {
   if (runs.length === 0) return;
   const webhooks = await client.query<{
     id: string;
+    user_id: string | null;
     actor_id: string | null;
     run_id: string | null;
   }>(
-    `SELECT id, actor_id, run_id FROM webhooks
+    `SELECT id, user_id, actor_id, run_id FROM webhooks
      WHERE is_enabled = true AND $1 = ANY(event_types)`,
     [eventType]
   );
   for (const run of runs) {
     const matched = webhooks.rows.filter(
       (w) =>
+        // Non-null check mirrors SQL's `user_id = $n` (NULL never matches).
+        w.user_id !== null &&
+        w.user_id === run.user_id &&
         (w.actor_id === null || w.actor_id === run.actor_id) &&
         (w.run_id === null || w.run_id === run.id)
     );
@@ -1042,6 +1050,7 @@ async function failRunsOfDeadRunners(client: pg.PoolClient, runnerIds: string[])
     const updated = await client.query<{
       id: string;
       actor_id: string;
+      user_id: string | null;
       default_key_value_store_id: string | null;
     }>(
       `UPDATE runs
@@ -1050,7 +1059,7 @@ async function failRunsOfDeadRunners(client: pg.PoolClient, runnerIds: string[])
            modified_at = NOW(),
            status_message = 'Runner host died (heartbeat lost); run terminated when the scaler destroyed the host'
        WHERE runner_id = ANY($1) AND status = 'RUNNING'
-       RETURNING id, actor_id, default_key_value_store_id`,
+       RETURNING id, actor_id, user_id, default_key_value_store_id`,
       [runnerIds]
     );
     await enqueueRunEventWebhooks(client, updated.rows, 'ACTOR.RUN.FAILED');

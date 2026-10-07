@@ -441,7 +441,14 @@ describe('Actor Runs Routes', () => {
     it('aborts a READY run in one conditional UPDATE and queues ACTOR.RUN.ABORTED deliveries', async () => {
       mockQuery
         .mockResolvedValueOnce({
-          rows: [createRunRow({ status: 'ABORTED', started_at: null, finished_at: new Date() })],
+          rows: [
+            createRunRow({
+              status: 'ABORTED',
+              started_at: null,
+              finished_at: new Date(),
+              user_id: 'test-user-id',
+            }),
+          ],
         })
         .mockResolvedValueOnce({ rows: [{ id: 'wh-1' }, { id: 'wh-2' }] })
         .mockResolvedValue(NO_ROWS);
@@ -456,7 +463,10 @@ describe('Actor Runs Routes', () => {
 
       const [matchSql, matchParams] = mockQuery.mock.calls[1] as [string, unknown[]];
       expect(matchSql).toContain('FROM webhooks');
-      expect(matchParams).toEqual(['ACTOR.RUN.ABORTED', 'actor-1', 'run-1']);
+      // Owner predicate: a global (actor_id NULL) webhook belongs to its
+      // creator only, so another tenant's never matches this run.
+      expect(matchSql).toContain('AND user_id = $4');
+      expect(matchParams).toEqual(['ACTOR.RUN.ABORTED', 'actor-1', 'run-1', 'test-user-id']);
 
       // One PENDING row per matching webhook, due now, for the runner's
       // retry processor to send.

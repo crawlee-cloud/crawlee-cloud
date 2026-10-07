@@ -945,7 +945,9 @@ export async function triggerWebhooks(
   const run = runResult.rows[0];
   if (!run) return;
 
-  // Get applicable webhooks (global OR scoped to this actor)
+  // Get applicable webhooks: the run owner's own, global OR scoped to this
+  // actor. The owner predicate matters: a webhook with actor_id NULL is
+  // global only for the user who created it, never for every tenant.
   //
   // KEEP IN SYNC with packages/api/src/routes/runs.ts → queueAbortedWebhooks:
   // aborting a READY run never reaches a runner, so the API queues those
@@ -963,8 +965,9 @@ export async function triggerWebhooks(
     `SELECT * FROM webhooks
      WHERE is_enabled = true AND $1 = ANY(event_types)
        AND (actor_id IS NULL OR actor_id = $2)
-       AND (run_id IS NULL OR run_id = $3)`,
-    [eventType, run.actor_id, runId]
+       AND (run_id IS NULL OR run_id = $3)
+       AND user_id = $4`,
+    [eventType, run.actor_id, runId, run.user_id]
   );
 
   if (webhooks.rows.length === 0) return;

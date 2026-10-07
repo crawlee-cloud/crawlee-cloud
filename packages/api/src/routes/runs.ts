@@ -1262,8 +1262,9 @@ async function queueAbortedWebhooks(client: pg.PoolClient, run: RunRow): Promise
     `SELECT id FROM webhooks
      WHERE is_enabled = true AND $1 = ANY(event_types)
        AND (actor_id IS NULL OR actor_id = $2)
-       AND (run_id IS NULL OR run_id = $3)`,
-    [eventType, run.actor_id, run.id]
+       AND (run_id IS NULL OR run_id = $3)
+       AND user_id = $4`,
+    [eventType, run.actor_id, run.id, run.user_id]
   );
   for (const webhook of webhooks.rows) {
     await client.query(

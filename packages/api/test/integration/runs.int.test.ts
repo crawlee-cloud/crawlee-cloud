@@ -402,4 +402,59 @@ describe('Runs lifecycle (integration)', () => {
     const after = await query('SELECT id FROM webhook_deliveries WHERE run_id = $1', [runId]);
     expect(after.rows).toHaveLength(1);
   });
+
+  it("queues READY-abort deliveries only for the run owner's webhooks, never another tenant's", async () => {
+    ({ token } = await createTestUser('abort-owner@test.local', 'pw-abort-owner-1'));
+    const other = await createTestUser('abort-tenant-b@test.local', 'pw-abort-tenant-b-1');
+    const { query } = await import('../../src/db/index.js');
+
+    const actor = await app.inject({
+      method: 'POST',
+      url: '/v2/acts',
+      headers: authHeaders(),
+      payload: { name: 'abort-owner-actor' },
+    });
+    const actorId = actor.json().data.id;
+
+    const hook = async (authorization: string, payload: Record<string, unknown>) => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/v2/webhooks',
+        headers: { authorization },
+        payload: {
+          requestUrl: 'https://consumer.test.local/hook',
+          eventTypes: ['ACTOR.RUN.ABORTED'],
+          ...payload,
+        },
+      });
+      expect(res.statusCode).toBe(201);
+      return res.json().data.id as string;
+    };
+    // The owner's global webhook (actor_id NULL) fires for the owner's runs…
+    const ownGlobalId = await hook(`Bearer ${token}`, {});
+    // …but user B's global webhook, and one B pointed at A's actor id, must not.
+    await hook(`Bearer ${other.token}`, {});
+    await hook(`Bearer ${other.token}`, { actorId });
+
+    const run = await app.inject({
+      method: 'POST',
+      url: `/v2/acts/${actorId}/runs`,
+      headers: authHeaders(),
+    });
+    const runId = run.json().data.id;
+    expect(run.json().data.status).toBe('READY');
+
+    const abort = await app.inject({
+      method: 'POST',
+      url: `/v2/actor-runs/${runId}/abort`,
+      headers: authHeaders(),
+    });
+    expect(abort.statusCode).toBe(200);
+
+    const deliveries = await query<{ webhook_id: string }>(
+      'SELECT webhook_id FROM webhook_deliveries WHERE run_id = $1',
+      [runId]
+    );
+    expect(deliveries.rows.map((r) => r.webhook_id)).toEqual([ownGlobalId]);
+  });
 });
