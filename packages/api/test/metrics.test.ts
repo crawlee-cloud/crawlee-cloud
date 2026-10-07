@@ -43,7 +43,7 @@ vi.mock('../src/auth/middleware.js', () => ({
 }));
 
 import { requireAdmin } from '../src/auth/middleware.js';
-import { registry } from '../src/metrics.js';
+import { registry, metricsRouteLabel } from '../src/metrics.js';
 
 describe('Metrics Endpoint', () => {
   let app: FastifyInstance;
@@ -107,5 +107,27 @@ describe('Metrics Endpoint', () => {
     state.currentUser = null;
     const res = await app.inject({ method: 'GET', url: '/health' });
     expect(res.statusCode).toBe(200);
+  });
+});
+
+describe('metricsRouteLabel', () => {
+  it.each([
+    ['/v2/actors', '/v2/acts'],
+    ['/v2/actors/:actorId', '/v2/acts/:actorId'],
+    ['/v2/actors/:actorId/runs', '/v2/acts/:actorId/runs'],
+    ['/v2/actors/:actorId/builds/:buildId/abort', '/v2/acts/:actorId/builds/:buildId/abort'],
+  ])('folds the /v2/actors alias %s onto %s', (route, expected) => {
+    expect(metricsRouteLabel(route)).toBe(expected);
+  });
+
+  it.each([
+    '/v2/acts/:actorId/runs',
+    '/v2/actor-runs',
+    '/v2/actor-runs/:runId',
+    '/v2/actor-builds/:buildId',
+    '/v2/actorsx',
+    '/health',
+  ])('leaves %s untouched', (route) => {
+    expect(metricsRouteLabel(route)).toBe(route);
   });
 });
