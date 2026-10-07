@@ -194,7 +194,11 @@ describe('GET /v2/actor-runs/:runId?waitForFinish (real socket)', () => {
       signal: controller.signal,
     }).catch((err: unknown) => err);
 
-    await sleep(1_300);
+    // Wait until the loop has polled at least twice (bounded, so a loaded CI
+    // runner can't fail this on timing alone).
+    for (let waited = 0; mockQuery.mock.calls.length < 2 && waited < 5_000; waited += 50) {
+      await sleep(50);
+    }
     expect(mockQuery.mock.calls.length).toBeGreaterThanOrEqual(2);
     controller.abort();
     expect(await pending).toBeInstanceOf(Error);
