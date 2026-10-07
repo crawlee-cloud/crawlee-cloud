@@ -8,11 +8,14 @@
  *
  * GET /v2/acts/:actorId/builds - List builds
  * POST /v2/acts/:actorId/builds - Start build
+ * GET /v2/acts/:actorId/builds/default - Get the default build (#117)
  * GET /v2/acts/:actorId/builds/:buildId - Get build
  * POST /v2/acts/:actorId/builds/:buildId/abort - Abort build
  * GET /v2/acts/:actorId/builds/:buildId/logs - Get build logs
  *
  * Every route is also served under /v2/actors/... (see ActorsSegmentOptions).
+ *
+ * GET /v2/actor-builds/:buildId - Get build by ID (actorBuildsRoutes, #117)
  *
  * Every route resolves `:actorId` (ID, name or username~name) to one of the
  * caller's own actors first and 404s otherwise, so another user's versions
@@ -27,6 +30,24 @@ import { query } from '../db/index.js';
 import { authenticate } from '../auth/middleware.js';
 import { redis } from '../storage/redis.js';
 import { resolveActor, ACTOR_NOT_FOUND, type ResolvedActor } from '../lib/resolve-actor.js';
+import {
+  BUILD_COLUMNS,
+  BUILD_COLUMNS_B,
+  BUILD_NUMBER_WINDOW_SQL,
+  buildSelectSql,
+  formatBuild,
+  loadBuild,
+  selectDefaultBuild,
+  type BuildRow,
+} from '../lib/builds.js';
+import {
+  waitForTerminal,
+  parseWaitForFinish,
+  createWaitAbortFactory,
+  isTerminalStatus,
+  markLongPoll,
+  type WaitAbortHandle,
+} from '../lib/wait-for-terminal.js';
 
 interface VersionRow {
   id: string;
@@ -41,36 +62,6 @@ interface VersionRow {
   created_at: Date;
 }
 
-interface BuildRow {
-  id: string;
-  actor_id: string;
-  version_id: string | null;
-  status: string;
-  started_at: Date | null;
-  finished_at: Date | null;
-  image_name: string | null;
-  image_digest: string | null;
-  image_size_bytes: number | null;
-  log_count: number;
-  git_branch: string | null;
-  git_commit: string | null;
-  created_at: Date;
-  // Joined from actor_versions when available — exposes the source version
-  // ("0.1") and tag ("latest") to the dashboard without requiring a second
-  // request per row.
-  version_number?: string | null;
-  build_tag?: string | null;
-}
-
-// Explicit build columns. actor_definition (#112) is deliberately left out:
-// it can be ~1.5 MB per row and is served only by the build-detail endpoints
-// that need it, so lists and these routes must never read it via `*`.
-const BUILD_COLUMNS = `id, actor_id, version_id, status, started_at, finished_at, image_name,
-  image_digest, image_size_bytes, log_count, git_branch, git_commit, created_at`;
-const BUILD_COLUMNS_B = `b.id, b.actor_id, b.version_id, b.status, b.started_at, b.finished_at,
-  b.image_name, b.image_digest, b.image_size_bytes, b.log_count, b.git_branch, b.git_commit,
-  b.created_at`;
-
 /**
  * Resolve the route's `:actorId` to one of the caller's actors. On a miss
  * the 404 is already set on `reply` and the caller returns ACTOR_NOT_FOUND.
@@ -84,6 +75,38 @@ async function ownedActor(
   return actor;
 }
 
+const BUILD_NOT_FOUND = {
+  error: { type: 'record-not-found', message: 'Build not found' },
+} as const;
+
+/**
+ * Load a build, long-polling while it is non-terminal when the request has
+ * `waitForFinish=N` (same semantics as GET /actor-runs/:runId, #111). A
+ * missing build (null) ends the wait immediately.
+ */
+async function loadBuildWithWait(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  waitAbortSignal: (reply: FastifyReply) => WaitAbortHandle,
+  waitSecs: number,
+  load: () => Promise<BuildRow | null>
+): Promise<BuildRow | null> {
+  if (waitSecs <= 0) return load();
+
+  markLongPoll(request);
+  const abort = waitAbortSignal(reply);
+  try {
+    return await waitForTerminal({
+      load,
+      isTerminal: (b) => isTerminalStatus(b.status),
+      waitSecs,
+      signal: abort.signal,
+    });
+  } finally {
+    abort.dispose();
+  }
+}
+
 export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
   fastify,
   opts = {}
@@ -91,6 +114,7 @@ export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
   const segment = opts.actorsSegment ?? 'acts';
   // All routes require authentication
   fastify.addHook('preHandler', authenticate);
+  const waitAbortSignal = createWaitAbortFactory(fastify);
 
   /**
    * GET /v2/acts/:actorId/versions - List all versions
@@ -223,9 +247,13 @@ export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       // alongside the image, without an N+1 lookup per row. LEFT JOIN (not
       // inner) to keep historical builds whose version_id may have been
       // SET NULL when a version was deleted.
+      // buildNumber's window covers all of a version's builds, since every
+      // build of a version belongs to that version's actor.
       const result = await query<BuildRow>(
-        `SELECT ${BUILD_COLUMNS_B}, v.version_number, v.build_tag
+        `SELECT ${BUILD_COLUMNS_B}, v.version_number, v.build_tag, a.user_id,
+                ${BUILD_NUMBER_WINDOW_SQL} AS build_number
            FROM actor_builds b
+           JOIN actors a ON a.id = b.actor_id
            LEFT JOIN actor_versions v ON v.id = b.version_id
           WHERE b.actor_id = $1
           ORDER BY b.created_at DESC`,
@@ -262,10 +290,13 @@ export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
     const imageName = `crawlee-cloud/${actor.name}:${id.slice(0, 8)}`;
 
     const result = await query<BuildRow>(
-      `INSERT INTO actor_builds 
-       (id, actor_id, version_id, status, image_name, git_branch, git_commit, started_at)
-       VALUES ($1, $2, $3, 'RUNNING', $4, $5, $6, NOW())
-       RETURNING ${BUILD_COLUMNS}`,
+      `WITH inserted AS (
+         INSERT INTO actor_builds
+         (id, actor_id, version_id, status, image_name, git_branch, git_commit, started_at)
+         VALUES ($1, $2, $3, 'RUNNING', $4, $5, $6, NOW())
+         RETURNING ${BUILD_COLUMNS}
+       )
+       ${buildSelectSql('inserted')}`,
       [id, actorId, versionId, imageName, gitBranch, gitCommit]
     );
 
@@ -287,6 +318,34 @@ export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
   });
 
   /**
+   * GET /v2/acts/:actorId/builds/default - Get the actor's default build
+   *
+   * apify-client `actor.defaultBuild()` calls this, then GET
+   * /actor-builds/:id and reads `actorDefinition`. The choice (newest
+   * SUCCEEDED build of the `latest` version, else of the actor; never a
+   * RUNNING orphan) lives in selectDefaultBuild. The static `default`
+   * segment wins over `:buildId` in find-my-way regardless of order.
+   */
+  fastify.get<{ Params: { actorId: string } }>(
+    `/${segment}/:actorId/builds/default`,
+    async (request, reply) => {
+      const waitSecs = parseWaitForFinish(request.query);
+      const actor = await ownedActor(request, reply);
+      if (!actor) return ACTOR_NOT_FOUND;
+
+      const build = await loadBuildWithWait(request, reply, waitAbortSignal, waitSecs, () =>
+        selectDefaultBuild(actor.id)
+      );
+      if (!build) {
+        reply.status(404);
+        return { error: { type: 'record-not-found', message: 'Default build not found' } };
+      }
+
+      return { data: formatBuild(build) };
+    }
+  );
+
+  /**
    * GET /v2/acts/:actorId/builds/:buildId - Get build details
    */
   fastify.get<{ Params: { actorId: string; buildId: string } }>(
@@ -297,13 +356,13 @@ export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       if (!actor) return ACTOR_NOT_FOUND;
 
       const result = await query<BuildRow>(
-        `SELECT ${BUILD_COLUMNS} FROM actor_builds WHERE id = $1 AND actor_id = $2`,
+        `${buildSelectSql()} WHERE b.id = $1 AND b.actor_id = $2`,
         [buildId, actor.id]
       );
 
       if (!result.rows[0]) {
         reply.status(404);
-        return { error: { type: 'record-not-found', message: 'Build not found' } };
+        return BUILD_NOT_FOUND;
       }
 
       return { data: formatBuild(result.rows[0]) };
@@ -321,10 +380,13 @@ export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       if (!actor) return ACTOR_NOT_FOUND;
 
       const result = await query<BuildRow>(
-        `UPDATE actor_builds 
-         SET status = 'ABORTED', finished_at = NOW()
-         WHERE id = $1 AND actor_id = $2 AND status = 'RUNNING'
-         RETURNING ${BUILD_COLUMNS}`,
+        `WITH aborted AS (
+           UPDATE actor_builds
+           SET status = 'ABORTED', finished_at = NOW()
+           WHERE id = $1 AND actor_id = $2 AND status = 'RUNNING'
+           RETURNING ${BUILD_COLUMNS}
+         )
+         ${buildSelectSql('aborted')}`,
         [buildId, actor.id]
       );
 
@@ -355,7 +417,7 @@ export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
     ]);
     if (!build.rows[0]) {
       reply.status(404);
-      return { error: { type: 'record-not-found', message: 'Build not found' } };
+      return BUILD_NOT_FOUND;
     }
 
     const offset = parseInt(request.query.offset || '0', 10);
@@ -374,6 +436,36 @@ export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
   });
 };
 
+/**
+ * GET /v2/actor-builds/:buildId - Get a build by ID (apify-client
+ * `client.build(id)`, `resourcePath: 'actor-builds'`).
+ *
+ * A separate plugin, registered once: the path has no actor segment, so it
+ * must not be part of registryRoutes, which registerV2Routes registers twice
+ * (/acts and /actors) — that would be a duplicate-route error. Scoped to the
+ * caller through actor_builds.actor_id → actors.user_id; another user's
+ * build is a 404. `waitForFinish=N` long-polls like GET /actor-runs/:runId.
+ */
+export const actorBuildsRoutes: FastifyPluginAsync = async (fastify) => {
+  fastify.addHook('preHandler', authenticate);
+  const waitAbortSignal = createWaitAbortFactory(fastify);
+
+  fastify.get<{ Params: { buildId: string } }>('/actor-builds/:buildId', async (request, reply) => {
+    const { buildId } = request.params;
+    const waitSecs = parseWaitForFinish(request.query);
+
+    const build = await loadBuildWithWait(request, reply, waitAbortSignal, waitSecs, () =>
+      loadBuild(buildId, request.user!.id)
+    );
+    if (!build) {
+      reply.status(404);
+      return BUILD_NOT_FOUND;
+    }
+
+    return { data: formatBuild(build) };
+  });
+};
+
 function formatVersion(row: VersionRow) {
   return {
     id: row.id,
@@ -385,28 +477,6 @@ function formatVersion(row: VersionRow) {
     buildTag: row.build_tag,
     envVars: row.env_vars,
     isDeprecated: row.is_deprecated,
-    createdAt: row.created_at,
-  };
-}
-
-function formatBuild(row: BuildRow) {
-  return {
-    id: row.id,
-    actorId: row.actor_id,
-    versionId: row.version_id,
-    // versionNumber + buildTag come from a LEFT JOIN on actor_versions in
-    // the list query. They're null for builds whose version was deleted.
-    versionNumber: row.version_number ?? null,
-    buildTag: row.build_tag ?? null,
-    status: row.status,
-    startedAt: row.started_at,
-    finishedAt: row.finished_at,
-    imageName: row.image_name,
-    imageDigest: row.image_digest,
-    imageSizeBytes: row.image_size_bytes,
-    logCount: row.log_count,
-    gitBranch: row.git_branch,
-    gitCommit: row.git_commit,
     createdAt: row.created_at,
   };
 }

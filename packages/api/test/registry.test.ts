@@ -392,6 +392,7 @@ describe('Registry Routes', () => {
       { method: 'DELETE', path: 'versions/ver-1' },
       { method: 'GET', path: 'builds' },
       { method: 'POST', path: 'builds', payload: {} },
+      { method: 'GET', path: 'builds/default' },
       { method: 'GET', path: 'builds/build-1' },
       { method: 'POST', path: 'builds/build-1/abort' },
       { method: 'GET', path: 'builds/build-1/logs' },

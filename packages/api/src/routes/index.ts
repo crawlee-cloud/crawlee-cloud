@@ -13,7 +13,7 @@ import { datasetsRoutes } from './datasets.js';
 import { keyValueStoresRoutes } from './key-value-stores.js';
 import { requestQueuesRoutes } from './request-queues.js';
 import { logsRoutes } from './logs.js';
-import { registryRoutes } from './registry.js';
+import { registryRoutes, actorBuildsRoutes } from './registry.js';
 import { usersRoutes } from './users.js';
 import { webhooksRoutes } from './webhooks.js';
 import { schedulesRoutes } from './schedules.js';
@@ -33,6 +33,8 @@ export async function registerV2Routes(app: FastifyInstance): Promise<void> {
   await app.register(logsRoutes, { prefix: '/v2' });
   await app.register(registryRoutes, { prefix: '/v2', actorsSegment: 'acts' });
   await app.register(registryRoutes, { prefix: '/v2', actorsSegment: 'actors' });
+  // /actor-builds/:buildId has no actor segment, so it's registered once.
+  await app.register(actorBuildsRoutes, { prefix: '/v2' });
   await app.register(usersRoutes, { prefix: '/v2' });
   await app.register(webhooksRoutes, { prefix: '/v2' });
   await app.register(schedulesRoutes, { prefix: '/v2' });
