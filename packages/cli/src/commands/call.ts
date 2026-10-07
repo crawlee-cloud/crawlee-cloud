@@ -4,7 +4,7 @@
  * Calls a remote Actor on the platform.
  */
 
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import fs from 'fs-extra';
@@ -20,8 +20,9 @@ export function collectEnvVars(
 ): Record<string, string> {
   const [key, ...valueParts] = value.split('=');
   if (!key || valueParts.length === 0) {
-    console.error(chalk.red(`Invalid env var format: ${value}. Use KEY=VALUE`));
-    process.exit(1);
+    // Commander prints "error: option '-e, --env <KEY=VALUE>' argument
+    // '<value>' is invalid. Use KEY=VALUE." and exits 1.
+    throw new InvalidArgumentError('Use KEY=VALUE.');
   }
   return { ...previous, [key]: valueParts.join('=') };
 }
@@ -30,8 +31,7 @@ export function collectEnvVars(
 export function parsePositiveInt(value: string): number {
   const n = Number(value);
   if (!Number.isInteger(n) || n <= 0) {
-    console.error(chalk.red(`Invalid number: ${value}. Use a positive integer`));
-    process.exit(1);
+    throw new InvalidArgumentError('Use a positive integer.');
   }
   return n;
 }

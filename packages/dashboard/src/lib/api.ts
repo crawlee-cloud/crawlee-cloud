@@ -709,11 +709,38 @@ export function utf8ToBase64(text: string): string {
   return btoa(binary);
 }
 
+// The keys of the API's legacy wrapper body (packages/api/src/lib/run-body.ts).
+const LEGACY_RUN_BODY_KEYS: ReadonlySet<string> = new Set([
+  'input',
+  'timeout',
+  'memory',
+  'envVars',
+  'webhooks',
+]);
+
+/**
+ * True when `input`, sent as a raw (Apify-shaped) body, could be read by the
+ * API as the legacy wrapper `{ input, timeout, memory, envVars, webhooks }`:
+ * a non-empty plain object whose keys are all wrapper keys, e.g.
+ * `{"input":"x"}` or `{"timeout":30}`. Such input is sent wrapped instead.
+ * Keep in sync with the CLI's copy (packages/cli/src/utils/runs.ts).
+ */
+export function wouldReadAsLegacy(input: unknown): boolean {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return false;
+  const proto = Object.getPrototypeOf(input) as unknown;
+  if (proto !== Object.prototype && proto !== null) return false;
+  const keys = Object.keys(input);
+  return keys.length > 0 && keys.every((k) => LEGACY_RUN_BODY_KEYS.has(k));
+}
+
 /**
  * Start a run with the Apify contract (#115): the body is the input itself
  * (`{}` when none), options go in the query string and only when set, so
  * the actor's default run options apply otherwise. `envVars` is a Crawlee
- * Cloud extension, sent as base64-encoded JSON.
+ * Cloud extension, sent as base64-encoded JSON. An input the API would
+ * mistake for the legacy wrapper (`wouldReadAsLegacy`) is sent as the
+ * wrapper `{ input, timeout, memory, envVars }` instead, which the API keeps
+ * accepting as a documented extension.
  */
 export async function startRun(
   actorId: string,
@@ -724,11 +751,26 @@ export async function startRun(
     envVars?: Record<string, string>;
   }
 ): Promise<Run> {
+  const envVars = options?.envVars;
+  const hasEnvVars = envVars !== undefined && Object.keys(envVars).length > 0;
+  if (wouldReadAsLegacy(options?.input)) {
+    const res = await fetchApi<{ data: Run }>(`/v2/acts/${actorId}/runs`, {
+      method: 'POST',
+      body: JSON.stringify({
+        input: options?.input,
+        timeout: options?.timeout,
+        memory: options?.memory,
+        envVars: hasEnvVars ? envVars : undefined,
+      }),
+    });
+    return res.data;
+  }
+
   const qs = new URLSearchParams();
   if (options?.timeout !== undefined) qs.set('timeout', String(options.timeout));
   if (options?.memory !== undefined) qs.set('memory', String(options.memory));
-  if (options?.envVars && Object.keys(options.envVars).length > 0) {
-    qs.set('envVars', utf8ToBase64(JSON.stringify(options.envVars)));
+  if (hasEnvVars) {
+    qs.set('envVars', utf8ToBase64(JSON.stringify(envVars)));
   }
   const query = qs.toString();
   const res = await fetchApi<{ data: Run }>(`/v2/acts/${actorId}/runs${query ? `?${query}` : ''}`, {

@@ -21,14 +21,43 @@ export interface StartedRun {
   status: string;
 }
 
+// The keys of the API's legacy wrapper body (packages/api/src/lib/run-body.ts).
+const LEGACY_RUN_BODY_KEYS: ReadonlySet<string> = new Set([
+  'input',
+  'timeout',
+  'memory',
+  'envVars',
+  'webhooks',
+]);
+
+/**
+ * True when `input`, sent as a raw (Apify-shaped) body, could be read by the
+ * API as the legacy wrapper `{ input, timeout, memory, envVars, webhooks }`:
+ * a non-empty plain object whose keys are all wrapper keys, e.g.
+ * `{"input":"x"}` or `{"timeout":30}`. Deliberately broader than the API's
+ * own check (which also looks at value types), so the client never depends
+ * on that detail. Such input is sent wrapped instead, which the API always
+ * reads unambiguously.
+ */
+export function wouldReadAsLegacy(input: unknown): boolean {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return false;
+  const proto = Object.getPrototypeOf(input) as unknown;
+  if (proto !== Object.prototype && proto !== null) return false;
+  const keys = Object.keys(input);
+  return keys.length > 0 && keys.every((k) => LEGACY_RUN_BODY_KEYS.has(k));
+}
+
 /**
  * Builds the run-start request for the given shape.
  *
  * - `apify`: the body is the input itself; `timeout`, `memory` and
  *   `envVars` (base64-encoded JSON) go in the query, each only when set.
+ *   An input the API would mistake for the legacy wrapper
+ *   (`wouldReadAsLegacy`) is sent in the legacy shape instead.
  * - `legacy`: the wrapper body `{ input, timeout, memory, envVars }` that
- *   APIs older than #115 expect. `input` is always present so the API's
- *   legacy detection is unambiguous.
+ *   APIs older than #115 expect (and that newer APIs keep accepting as a
+ *   documented extension). `input` is always present so the API's legacy
+ *   detection is unambiguous.
  */
 export function buildStartRunRequest(
   config: Pick<CLIConfig, 'apiBaseUrl' | 'token'>,
@@ -41,7 +70,7 @@ export function buildStartRunRequest(
   let url = `${config.apiBaseUrl}/v2/acts/${actor}/runs`;
   let body: string;
 
-  if (shape === 'apify') {
+  if (shape === 'apify' && !wouldReadAsLegacy(input)) {
     const qs = new URLSearchParams();
     if (timeout !== undefined) qs.set('timeout', String(timeout));
     if (memory !== undefined) qs.set('memory', String(memory));

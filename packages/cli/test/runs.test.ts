@@ -12,7 +12,9 @@ import {
   resetApiCapabilitiesCache,
   supportsApifyRunBody,
 } from '../src/utils/api-capabilities.js';
-import { buildStartRunRequest, startRun } from '../src/utils/runs.js';
+import { buildStartRunRequest, startRun, wouldReadAsLegacy } from '../src/utils/runs.js';
+// The API's own parser: what the server makes of the request the CLI sends.
+import { parseRunStartRequest } from '../../api/src/lib/run-body.js';
 
 const config = { apiBaseUrl: 'http://api.test', token: 'tok' };
 const fetchMock = vi.fn();
@@ -127,6 +129,63 @@ describe('buildStartRunRequest', () => {
 
     const empty = buildStartRunRequest(config, 'my-actor', 'legacy', { timeout: 60 });
     expect(JSON.parse(empty.init.body as string)).toEqual({ input: {}, timeout: 60 });
+  });
+});
+
+describe('wouldReadAsLegacy', () => {
+  it.each([
+    [{ input: 'x' }, true],
+    [{ timeout: 30 }, true],
+    [{ timeout: '30s' }, true],
+    [{ memory: 1, envVars: { A: 'b' } }, true],
+    [{ webhooks: [] }, true],
+    [{ input: 1, foo: 2 }, false],
+    [{ query: 'x' }, false],
+    [{}, false],
+    [[], false],
+    ['input', false],
+    [null, false],
+    [undefined, false],
+  ])('%j → %s', (input, expected) => {
+    expect(wouldReadAsLegacy(input)).toBe(expected);
+  });
+});
+
+describe('buildStartRunRequest round-trip through the API parser', () => {
+  /** Builds the request as the CLI does and parses it as the API does. */
+  function serverSees(input: unknown, options: Record<string, unknown>) {
+    const { url, init } = buildStartRunRequest(config, 'my-actor', 'apify', { input, ...options });
+    const query = Object.fromEntries(new URL(url).searchParams);
+    return parseRunStartRequest(JSON.parse(init.body as string), query);
+  }
+
+  it.each([{ input: 'x' }, { timeout: 30 }, { query: 'x', timeout: 'soon' }, ['a'], {}])(
+    'input %j arrives unchanged with -t/-m/-e applied',
+    (input) => {
+      const parsed = serverSees(input, { timeout: 99, memory: 256, envVars: { K: 'v' } });
+      expect(parsed.input).toEqual(input);
+      expect(parsed.timeout).toBe(99);
+      expect(parsed.memory).toBe(256);
+      expect(parsed.envVars).toEqual({ K: 'v' });
+    }
+  );
+
+  it('input {"timeout":30} without options is not applied as the timeout', () => {
+    const parsed = serverSees({ timeout: 30 }, {});
+    expect(parsed.input).toEqual({ timeout: 30 });
+    expect(parsed.timeout).toBeUndefined();
+  });
+
+  it('sends legacy-looking input as the wrapper, other input raw', () => {
+    const wrapped = buildStartRunRequest(config, 'my-actor', 'apify', {
+      input: { input: 'x' },
+      timeout: 30,
+    });
+    expect(wrapped.url).toBe('http://api.test/v2/acts/my-actor/runs');
+    expect(JSON.parse(wrapped.init.body as string)).toEqual({ input: { input: 'x' }, timeout: 30 });
+
+    const raw = buildStartRunRequest(config, 'my-actor', 'apify', { input: { query: 'x' } });
+    expect(JSON.parse(raw.init.body as string)).toEqual({ query: 'x' });
   });
 });
 

@@ -331,7 +331,7 @@ crc call my-actor -e KEY1=val1 -e KEY2=val2
 
 Without `--timeout` / `--memory` the run uses the Actor's default run options (`defaultRunOptions` in `actor.json`).
 
-`call` sends the Apify run-start request (the input as the body, options in the query string) to APIs that report version 1.7.0 or later on `GET /health`, and the legacy wrapped body to older ones. Set `CRAWLEE_CLOUD_RUN_BODY=apify` or `legacy` to force one.
+`call` sends the Apify run-start request (the input as the body, options in the query string) to APIs that report version 1.7.0 or later on `GET /health`, and the legacy wrapped body to older ones. An input made only of the wrapper's keys (`input`, `timeout`, `memory`, `envVars`, `webhooks` — e.g. `{"timeout":30}`) is always sent wrapped, so the API can't mistake it for run options. Set `CRAWLEE_CLOUD_RUN_BODY=apify` or `legacy` to force one.
 
 ---
 

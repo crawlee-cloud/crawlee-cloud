@@ -23,7 +23,10 @@ import {
   rerunRun,
   startRun,
   utf8ToBase64,
+  wouldReadAsLegacy,
 } from '@/lib/api';
+// The API's own parser: what the server makes of the request the dashboard sends.
+import { parseRunStartRequest } from '../../api/src/lib/run-body';
 
 const fetchMock = vi.fn();
 
@@ -197,6 +200,56 @@ describe('startRun (Apify run-start contract, #115)', () => {
     const encoded = new URL(url).searchParams.get('envVars');
     // Decode the way the API does (Buffer, utf8).
     expect(JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'))).toEqual(envVars);
+  });
+
+  it.each([
+    [{ input: 'x' }, true],
+    [{ timeout: 30 }, true],
+    [{ memory: 1, envVars: { A: 'b' } }, true],
+    [{ input: 1, foo: 2 }, false],
+    [{ query: 'x' }, false],
+    [{}, false],
+    [['input'], false],
+    [null, false],
+  ])('wouldReadAsLegacy(%j) → %s', (input, expected) => {
+    expect(wouldReadAsLegacy(input)).toBe(expected);
+  });
+
+  /** Sends a run start and parses the captured request as the API does. */
+  async function serverSees(options: Parameters<typeof startRun>[1]) {
+    fetchMock.mockResolvedValue(jsonResponse({ data: run }, 201));
+    await startRun('actor-1', options);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const query = Object.fromEntries(new URL(url).searchParams);
+    return {
+      url,
+      body: JSON.parse(init.body as string),
+      parsed: parseRunStartRequest(JSON.parse(init.body as string), query),
+    };
+  }
+
+  it.each([{ input: 'x' }, { timeout: 30 }, { query: 'x', timeout: 'soon' }, {}])(
+    'input %j arrives unchanged with timeout/memory/envVars applied',
+    async (input) => {
+      const { parsed } = await serverSees({
+        input,
+        timeout: 99,
+        memory: 256,
+        envVars: { K: 'v' },
+      });
+      expect(parsed.input).toEqual(input);
+      expect(parsed.timeout).toBe(99);
+      expect(parsed.memory).toBe(256);
+      expect(parsed.envVars).toEqual({ K: 'v' });
+    }
+  );
+
+  it('sends legacy-looking input as the wrapper body without a query string', async () => {
+    const { url, body, parsed } = await serverSees({ input: { timeout: 30 } });
+    expect(url).toBe('http://localhost:3000/v2/acts/actor-1/runs');
+    expect(body).toEqual({ input: { timeout: 30 } });
+    expect(parsed.input).toEqual({ timeout: 30 });
+    expect(parsed.timeout).toBeUndefined();
   });
 
   it('utf8ToBase64 matches Buffer for non-Latin-1 text', () => {
