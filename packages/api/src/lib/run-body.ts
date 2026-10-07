@@ -7,11 +7,16 @@
  * ...). That is what `apify-client`'s `actor.start(input)` / `call(input)`
  * send.
  *
- * Legacy contract (our CLI and dashboard before #118): a wrapper body
- * `{ input, timeout, memory, envVars, webhooks }`. It is detected explicitly
- * by `isLegacyRunBody` and kept working until 1.0. Known ambiguity: an input
- * that is genuinely `{ "input": ... }`, or made only of option-named keys
- * with legacy types (e.g. `{ "timeout": 60 }`), is read as legacy.
+ * Legacy wrapper (our CLI and dashboard before #118), kept permanently as a
+ * documented Crawlee Cloud extension (not removed in 1.0): a plain object
+ * with an `input` key and otherwise only the option keys `timeout`,
+ * `memory`, `envVars`, `webhooks`. It is detected explicitly by
+ * `isLegacyRunBody`. For the pre-#118 dashboard, a body made only of option
+ * keys with option value types (`{"timeout":3600,"memory":1024}`) is also
+ * read as the wrapper, with input `{}`. Known ambiguity: an Apify-style input
+ * that is genuinely `{ "input": ... }` (plus only option keys), or made only
+ * of option-named keys with option types (e.g. `{ "timeout": 60 }`), is read
+ * as the wrapper — clients send such input wrapped, `{ "input": <input> }`.
  */
 
 import type { z } from 'zod';
@@ -80,7 +85,7 @@ export function isUnsupportedRunContentType(contentType: string | undefined): bo
 }
 
 export interface RunStartRequest {
-  /** Which contract the request used; legacy is logged for deprecation tracking. */
+  /** Which contract the request used; legacy requests are logged (`run-body: legacy`). */
   legacy: boolean;
   /** Stored as the run's INPUT record (JSON). */
   input: unknown;

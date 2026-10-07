@@ -41,6 +41,10 @@ vi.mock('../src/storage/s3.js', () => ({
 }));
 
 import { actorsRoutes } from '../src/routes/actors.js';
+import { isLongPollRequest } from '../src/lib/wait-for-terminal.js';
+
+/** isLongPollRequest() of each response, as the production metrics hook sees it. */
+const longPollFlags: boolean[] = [];
 
 const b64 = (value: unknown) => Buffer.from(JSON.stringify(value), 'utf8').toString('base64');
 
@@ -116,6 +120,10 @@ describe('POST /v2/acts/:actorId/runs body contract', () => {
       }
       reply.status(500).send({ error: { message: error.message } });
     });
+    app.addHook('onResponse', (request, _reply, done) => {
+      longPollFlags.push(isLongPollRequest(request));
+      done();
+    });
     app.register(actorsRoutes, { prefix: '/v2', actorsSegment: 'acts' });
     app.register(actorsRoutes, { prefix: '/v2', actorsSegment: 'actors' });
     await app.ready();
@@ -131,6 +139,7 @@ describe('POST /v2/acts/:actorId/runs body contract', () => {
     mockRedisSet.mockReset().mockResolvedValue('OK');
     mockPutKVRecord.mockReset().mockResolvedValue(undefined);
     authHeaders.length = 0;
+    longPollFlags.length = 0;
   });
 
   it('Apify body is the input; timeout/memory come from the query', async () => {
@@ -334,6 +343,25 @@ describe('POST /v2/acts/:actorId/runs body contract', () => {
     expect(data.options).toEqual({ timeoutSecs: 3600, memoryMbytes: 1024 });
     const loadCall = mockQuery.mock.calls[mockQuery.mock.calls.length - 1];
     expect(loadCall[0]).toContain('WHERE r.id = $1 AND r.user_id = $2');
+    // Answered without waiting: stays in the latency histogram.
+    expect(longPollFlags).toEqual([false]);
+  });
+
+  it('?waitForFinish marks the request as a long-poll only once it waits', async () => {
+    mockRunStart();
+    mockQuery
+      .mockResolvedValueOnce({ rows: [runRow({ status: 'RUNNING' })] }) // loadRun: not yet
+      .mockResolvedValueOnce({ rows: [runRow({ status: 'SUCCEEDED' })] }); // after one sleep
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v2/acts/actor-1/runs?waitForFinish=30',
+      payload: { query: 'x' },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json().data.status).toBe('SUCCEEDED');
+    expect(longPollFlags).toEqual([true]);
   });
 
   describe('POST /v2/acts/:actorId/run-sync', () => {
@@ -381,6 +409,42 @@ describe('POST /v2/acts/:actorId/runs body contract', () => {
 
       expect(response.statusCode).toBe(201);
       expect(storedInput()).toBe('just a string');
+    });
+
+    it('empty form-urlencoded body (apify-client start() without input) starts with {}', async () => {
+      mockRunStart();
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/acts/actor-1/run-sync?memory=512',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        payload: '',
+      });
+
+      expect(response.statusCode).toBe(201);
+      // An object, not the string "{}" (the re-serialized body is sent as JSON).
+      expect(storedInput()).toEqual({});
+      expect(runInsertParams()).toContain(512);
+    });
+
+    it('a form-urlencoded body stores the same INPUT as the start route', async () => {
+      const send = async (path: string) => {
+        mockQuery.mockReset();
+        mockPutKVRecord.mockReset().mockResolvedValue(undefined);
+        mockRunStart();
+        const response = await app.inject({
+          method: 'POST',
+          url: `/v2/acts/actor-1/${path}`,
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          payload: 'a=b',
+        });
+        expect(response.statusCode).toBe(201);
+        return storedInput();
+      };
+
+      const direct = await send('runs');
+      const viaSync = await send('run-sync');
+      expect(viaSync).toEqual(direct);
     });
 
     it('passes the 415 for text/plain through', async () => {

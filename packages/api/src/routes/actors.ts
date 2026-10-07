@@ -742,8 +742,8 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
    * Apify contract: the body is the actor input and run options come from
    * the query string (`timeout`, `memory`, `waitForFinish`, base64
    * `webhooks` / `envVars`). The legacy wrapper body `{ input, timeout,
-   * memory, envVars, webhooks }` is still accepted until 1.0 — see
-   * lib/run-body.ts. `waitForFinish=N` (clamped to 60) holds the response
+   * memory, envVars, webhooks }` is also accepted, as a documented
+   * extension — see lib/run-body.ts. `waitForFinish=N` (clamped to 60) holds the response
    * until the new run is terminal or N seconds pass, like GET
    * /actor-runs/:runId, and then returns the full run object.
    */
@@ -919,7 +919,6 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
     reply.status(201);
 
     if (parsed.waitForFinish > 0) {
-      markLongPoll(request);
       const abort = waitAbortSignal(reply);
       try {
         const run = await waitForTerminal({
@@ -927,6 +926,8 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
           isTerminal: (r) => isTerminalStatus(r.status),
           waitSecs: parsed.waitForFinish,
           signal: abort.signal,
+          // Only a request that actually waits leaves the latency histogram.
+          onWait: () => markLongPoll(request),
         });
         // Only null if the run was deleted mid-wait; fall through to the
         // creation response below.
@@ -968,11 +969,18 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
     if (request.headers['content-type']) headers['content-type'] = request.headers['content-type'];
 
     // Re-serialize the parsed body: injecting a parsed JSON string or number
-    // would send it raw. Buffers (text/plain, octet-stream) go through as-is
-    // and the start route answers them with 415.
+    // would send it raw. A re-serialized body is sent as JSON, whatever it
+    // arrived as — the form parser has already turned an empty
+    // form-urlencoded body into `{}`, and re-sending that with the form
+    // content type would store INPUT as the string "{}". Buffers
+    // (text/plain, octet-stream) keep their content type and the start
+    // route answers them with 415.
     let payload: string | Buffer | undefined;
     if (Buffer.isBuffer(request.body)) payload = request.body;
-    else if (request.body !== undefined) payload = JSON.stringify(request.body);
+    else if (request.body !== undefined) {
+      payload = JSON.stringify(request.body);
+      headers['content-type'] = 'application/json';
+    }
 
     const res = await fastify.inject({
       method: 'POST',
