@@ -30,6 +30,7 @@ export const USERNAME_CASES: ReadonlyArray<{ email: string; expected: string }> 
   { email: 'API@x.com', expected: 'api-2' },
   { email: 'apify@x.com', expected: 'apify-2' },
   { email: 'system@x.com', expected: 'system-2' },
+  { email: 'anonymous@x.com', expected: 'anonymous-2' },
   // 40-character local part: truncated to 26, suffix still fits in 30.
   { email: `${'a'.repeat(40)}@x.com`, expected: 'a'.repeat(26) },
   { email: `${'a'.repeat(40)}@y.com`, expected: `${'a'.repeat(26)}-2` },

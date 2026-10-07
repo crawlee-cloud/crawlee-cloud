@@ -445,7 +445,7 @@ BEGIN
         suffix := '-' || n;
         candidate := rtrim(left(base, 30 - length(suffix)), '-') || suffix;
       END IF;
-      EXIT WHEN candidate NOT IN ('me', 'api', 'apify', 'system')
+      EXIT WHEN candidate NOT IN ('me', 'api', 'apify', 'system', 'anonymous')
         AND NOT EXISTS (SELECT 1 FROM users WHERE username = candidate);
       n := n + 1;
     END LOOP;

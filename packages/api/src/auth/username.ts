@@ -20,11 +20,18 @@ export const USERNAME_MAX_LENGTH = 30;
 const USERNAME_BASE_MAX_LENGTH = 26;
 
 /**
- * Names that are never handed out. `admin` is deliberately not reserved:
- * the default ADMIN_EMAIL is admin@crawlee.cloud and the first admin
- * should get `admin`.
+ * Names that are never handed out. `anonymous` is what `GET /v2/users/me`
+ * reports for an unauthenticated caller. `admin` is deliberately not
+ * reserved: the default ADMIN_EMAIL is admin@crawlee.cloud and the first
+ * admin should get `admin`.
  */
-export const RESERVED_USERNAMES: ReadonlySet<string> = new Set(['me', 'api', 'apify', 'system']);
+export const RESERVED_USERNAMES: ReadonlySet<string> = new Set([
+  'me',
+  'api',
+  'apify',
+  'system',
+  'anonymous',
+]);
 
 /**
  * Collision-free base derived from an email: local part, runs of anything
