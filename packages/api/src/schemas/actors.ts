@@ -2,6 +2,51 @@ import { z } from 'zod';
 
 import { SUPPORTED_WEBHOOK_EVENTS } from './webhooks.js';
 
+// Size caps for the build's actorDefinition (#112). Measured in UTF-8 bytes
+// of the serialized value so a multi-byte README can't slip past a
+// character-count check. Both fit well under the server's 10 MB bodyLimit.
+export const MAX_ACTOR_INPUT_SCHEMA_BYTES = 500 * 1024;
+export const MAX_ACTOR_README_BYTES = 1024 * 1024;
+
+/**
+ * Apify-shaped actor definition (`.actor/actor.json` with the input schema
+ * and README inlined), stored per build on actor_builds.actor_definition.
+ * `input` must be the schema object itself, not a file path — the Apify MCP
+ * server only keeps it when it has both `type` and `properties`. Unknown
+ * keys pass through so Apify fields like `dockerfile` and `storages` survive.
+ * The input schema is stored as given, not validated against Apify's spec.
+ */
+export const ActorDefinitionSchema = z
+  .object({
+    actorSpecification: z.number().optional(),
+    name: z.string().optional(),
+    version: z.string().optional(),
+    input: z.record(z.unknown()).optional(),
+    readme: z.string().optional(),
+  })
+  .passthrough()
+  .superRefine((def, ctx) => {
+    if (
+      def.input !== undefined &&
+      Buffer.byteLength(JSON.stringify(def.input)) > MAX_ACTOR_INPUT_SCHEMA_BYTES
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['input'],
+        message: `actorDefinition.input must be at most ${MAX_ACTOR_INPUT_SCHEMA_BYTES} bytes serialized`,
+      });
+    }
+    if (def.readme !== undefined && Buffer.byteLength(def.readme) > MAX_ACTOR_README_BYTES) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['readme'],
+        message: `actorDefinition.readme must be at most ${MAX_ACTOR_README_BYTES} bytes`,
+      });
+    }
+  });
+
+export type ActorDefinition = z.infer<typeof ActorDefinitionSchema>;
+
 export const CreateActorSchema = z.object({
   name: z
     .string()
@@ -45,6 +90,10 @@ export const CreateActorSchema = z.object({
     .max(64)
     .regex(/^[A-Za-z0-9._+-]+$/, 'Version must be alphanumeric with . _ + -')
     .optional(),
+  // Input schema, README and the rest of .actor/actor.json for this deploy.
+  // Stored on the build row recordBuildIfNew writes or updates, so it
+  // requires an image (no image → no build → 400).
+  actorDefinition: ActorDefinitionSchema.optional(),
 });
 
 export const UpdateActorSchema = CreateActorSchema.partial();
