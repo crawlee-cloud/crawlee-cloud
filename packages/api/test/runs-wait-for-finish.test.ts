@@ -26,6 +26,10 @@ vi.mock('../src/storage/redis.js', () => ({ redis: {} }));
 vi.mock('../src/config.js', () => ({ config: { apifyCuPrice: 0.4 } }));
 
 import { runsRoutes } from '../src/routes/runs.js';
+import { isLongPollRequest } from '../src/lib/wait-for-terminal.js';
+
+/** isLongPollRequest() of each response, as the production metrics hook sees it. */
+const longPollFlags: boolean[] = [];
 
 const runRow = (status: string) => ({
   id: 'run-1',
@@ -55,6 +59,10 @@ async function buildApp(): Promise<FastifyInstance> {
     }
     return reply.send(error);
   });
+  app.addHook('onResponse', (request, _reply, done) => {
+    longPollFlags.push(isLongPollRequest(request));
+    done();
+  });
   await app.register(runsRoutes, { prefix: '/v2' });
   await app.ready();
   return app;
@@ -74,6 +82,7 @@ describe('GET /v2/actor-runs/:runId?waitForFinish (fake timers)', () => {
 
   beforeEach(async () => {
     mockQuery.mockReset();
+    longPollFlags.length = 0;
     app = await buildApp();
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     vi.spyOn(Math, 'random').mockReturnValue(0);
@@ -149,6 +158,36 @@ describe('GET /v2/actor-runs/:runId?waitForFinish (fake timers)', () => {
     expect(res.statusCode).toBe(404);
     expect(res.json().error.type).toBe('record-not-found');
     expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['an already-terminal run', [runRow('SUCCEEDED')], 200],
+    ['an unknown run', [], 404],
+  ])(
+    'keeps an immediate answer for %s in the latency histogram (not marked long-poll)',
+    async (_label, rows, status) => {
+      mockQuery.mockResolvedValue({ rows });
+      const res = await app.inject({
+        method: 'GET',
+        url: '/v2/actor-runs/run-1?waitForFinish=20',
+      });
+      expect(res.statusCode).toBe(status);
+      expect(longPollFlags).toEqual([false]);
+    }
+  );
+
+  it('marks a request that actually waits as a long-poll', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [runRow('RUNNING')] })
+      .mockResolvedValue({ rows: [runRow('SUCCEEDED')] });
+
+    const probe = track(
+      app.inject({ method: 'GET', url: '/v2/actor-runs/run-1?waitForFinish=20' })
+    );
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(probe.settled).toBe(true);
+    expect(probe.value.json().data.status).toBe('SUCCEEDED');
+    expect(longPollFlags).toEqual([true]);
   });
 
   it.each(['-1', 'abc', '2.5'])('rejects waitForFinish=%s with 400 validation_error', async (v) => {

@@ -238,7 +238,6 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
 
     let row: RunRow | null;
     if (waitSecs > 0) {
-      markLongPoll(request);
       const abort = waitAbortSignal(reply);
       try {
         row = await waitForTerminal({
@@ -246,6 +245,9 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
           isTerminal: (r) => isTerminalStatus(r.status),
           waitSecs,
           signal: abort.signal,
+          // Only requests that are actually held open leave the latency
+          // histogram; already-terminal / not-found answers stay in it.
+          onWait: () => markLongPoll(request),
         });
       } finally {
         abort.dispose();

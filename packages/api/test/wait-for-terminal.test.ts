@@ -58,6 +58,37 @@ describe('waitForTerminal', () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ['waitSecs is 0', { status: 'RUNNING' }, 0],
+    ['the first load is terminal', { status: 'SUCCEEDED' }, 20],
+    ['the first load finds nothing', null, 20],
+  ])('does not call onWait when %s', async (_label, first, waitSecs) => {
+    const load = vi.fn().mockResolvedValue(first);
+    const onWait = vi.fn();
+    await waitForTerminal({ load, isTerminal, waitSecs, onWait });
+    expect(onWait).not.toHaveBeenCalled();
+  });
+
+  it('calls onWait once, right before the first sleep, however many sleeps follow', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 'RUNNING' })
+      .mockResolvedValueOnce({ status: 'RUNNING' })
+      .mockResolvedValue({ status: 'SUCCEEDED' });
+    const onWait = vi.fn();
+
+    const probe = track(waitForTerminal({ load, isTerminal, waitSecs: 20, onWait }));
+    await vi.advanceTimersByTimeAsync(0);
+    // First load done, now sleeping: onWait has fired before the sleep.
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(onWait).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(probe.settled).toBe(true);
+    expect(load).toHaveBeenCalledTimes(3);
+    expect(onWait).toHaveBeenCalledTimes(1);
+  });
+
   it('returns the terminal value as soon as a re-load sees it', async () => {
     vi.spyOn(Math, 'random').mockReturnValue(0);
     const load = vi

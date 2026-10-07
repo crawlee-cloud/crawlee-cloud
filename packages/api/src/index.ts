@@ -42,7 +42,7 @@ app.addHook('onResponse', (request, reply, done) => {
 
   httpRequestsTotal.inc({ method, route, status_code: statusCode });
 
-  // Long-polls (`waitForFinish > 0`) are held open on purpose; observing
+  // Long-polls (requests `waitForFinish` actually held open) are slow on purpose; observing
   // them would push the latency histogram for the route into the +Inf bucket.
   if (startTime && !isLongPollRequest(request)) {
     const duration = Number(process.hrtime.bigint() - startTime) / 1e9;

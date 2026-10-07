@@ -14,7 +14,8 @@
  *   - `createWaitAbortFactory` — per-request AbortSignal that fires on client
  *                                disconnect or server shutdown.
  *   - `markLongPoll` / `isLongPollRequest` — keeps long-polls out of the
- *                                request-duration histogram.
+ *                                request-duration histogram (mark from
+ *                                `waitForTerminal`'s `onWait`).
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -40,6 +41,14 @@ export interface WaitForTerminalOptions<T> {
   signal?: AbortSignal;
   /** Base delay between loads; up to 10% jitter is added so waiters don't align. */
   intervalMs?: number;
+  /**
+   * Called once, right before the first sleep — i.e. only when the request
+   * is actually going to be held open. Routes pass
+   * `() => markLongPoll(request)` so answers that return straight away
+   * (already terminal, not found, `waitSecs` 0) stay in the latency
+   * histogram.
+   */
+  onWait?: () => void;
 }
 
 /**
@@ -54,8 +63,10 @@ export async function waitForTerminal<T>({
   waitSecs,
   signal,
   intervalMs = 1000,
+  onWait,
 }: WaitForTerminalOptions<T>): Promise<T | null> {
   const deadline = Date.now() + Math.max(0, waitSecs) * 1000;
+  let waited = false;
 
   for (;;) {
     const value = await load();
@@ -64,6 +75,10 @@ export async function waitForTerminal<T>({
     const remaining = deadline - Date.now();
     if (remaining <= 0) return value;
 
+    if (!waited) {
+      waited = true;
+      onWait?.();
+    }
     const jitter = Math.random() * intervalMs * 0.1;
     await sleep(Math.min(intervalMs + jitter, remaining), signal);
     if (signal?.aborted) return value;
