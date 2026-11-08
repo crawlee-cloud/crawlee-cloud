@@ -27,10 +27,13 @@ export function collectEnvVars(
   return { ...previous, [key]: valueParts.join('=') };
 }
 
-/** Parser for --timeout / --memory: a positive integer. */
+/**
+ * Parser for --timeout / --memory: a positive decimal integer. Plain digits
+ * only — `Number()` alone would also accept `0x10`, `1e3` or ` 30`.
+ */
 export function parsePositiveInt(value: string): number {
-  const n = Number(value);
-  if (!Number.isInteger(n) || n <= 0) {
+  const n = /^[1-9]\d*$/.test(value) ? Number(value) : NaN;
+  if (!Number.isSafeInteger(n)) {
     throw new InvalidArgumentError('Use a positive integer.');
   }
   return n;
@@ -108,9 +111,12 @@ export const callCommand = new Command('call')
         while (status === 'RUNNING' || status === 'READY') {
           await sleep(2000);
 
-          const statusResponse = await fetch(`${config.apiBaseUrl}/v2/actor-runs/${runId}`, {
-            headers: { Authorization: `Bearer ${config.token}` },
-          });
+          const statusResponse = await fetch(
+            `${config.apiBaseUrl}/v2/actor-runs/${encodeURIComponent(runId)}`,
+            {
+              headers: { Authorization: `Bearer ${config.token}` },
+            }
+          );
 
           const statusResult = (await statusResponse.json()) as { data: { status: string } };
           status = statusResult.data.status;
@@ -125,7 +131,7 @@ export const callCommand = new Command('call')
 
           // Fetch and display output
           const outputResponse = await fetch(
-            `${config.apiBaseUrl}/v2/actor-runs/${runId}/key-value-store/records/OUTPUT`,
+            `${config.apiBaseUrl}/v2/actor-runs/${encodeURIComponent(runId)}/key-value-store/records/OUTPUT`,
             { headers: { Authorization: `Bearer ${config.token}` } }
           );
 

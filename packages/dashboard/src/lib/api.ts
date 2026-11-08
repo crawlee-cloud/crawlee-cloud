@@ -734,13 +734,66 @@ export function wouldReadAsLegacy(input: unknown): boolean {
 }
 
 /**
- * Start a run with the Apify contract (#115): the body is the input itself
- * (`{}` when none), options go in the query string and only when set, so
- * the actor's default run options apply otherwise. `envVars` is a Crawlee
- * Cloud extension, sent as base64-encoded JSON. An input the API would
- * mistake for the legacy wrapper (`wouldReadAsLegacy`) is sent as the
- * wrapper `{ input, timeout, memory, envVars }` instead, which the API keeps
- * accepting as a documented extension.
+ * First API release that accepts the Apify run-start contract (#115). The
+ * dashboard can be deployed apart from the API (it only needs
+ * NEXT_PUBLIC_API_URL), and an older API reads the body as the legacy
+ * wrapper — a raw input body would start the run with input `{}` and the
+ * query options ignored. Same gate as the CLI
+ * (packages/cli/src/utils/api-capabilities.ts).
+ */
+const MIN_APIFY_RUN_BODY_VERSION: readonly [number, number, number] = [1, 7, 0];
+
+/**
+ * True when an API reporting `version` (`GET /health`) accepts the Apify
+ * run-start body. Prereleases of the gate version (`1.7.0-rc.1`) count.
+ * Anything else — a missing or non-semver version, or `0.0.0` (the API's
+ * sentinel for "unknown") — is treated as legacy, which every API accepts.
+ */
+export function supportsApifyRunBody(version: unknown): boolean {
+  if (typeof version !== 'string') return false;
+  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version.trim());
+  if (!m) return false;
+  const parts = [Number(m[1]), Number(m[2]), Number(m[3])];
+  for (let i = 0; i < 3; i++) {
+    if (parts[i] !== MIN_APIFY_RUN_BODY_VERSION[i]) return parts[i] > MIN_APIFY_RUN_BODY_VERSION[i];
+  }
+  return true;
+}
+
+type RunBodyShape = 'apify' | 'legacy';
+
+// Probed once per page session; any failure falls back to legacy.
+let runBodyShape: Promise<RunBodyShape> | null = null;
+
+function getRunBodyShape(): Promise<RunBodyShape> {
+  runBodyShape ??= (async (): Promise<RunBodyShape> => {
+    try {
+      const res = await fetch(`${API_URL}/health`, { signal: AbortSignal.timeout(2000) });
+      if (!res.ok) return 'legacy';
+      const body = (await res.json()) as { version?: unknown };
+      return supportsApifyRunBody(body?.version) ? 'apify' : 'legacy';
+    } catch {
+      return 'legacy';
+    }
+  })();
+  return runBodyShape;
+}
+
+/** Test hook: forget the probed run-start shape. */
+export function resetRunBodyShapeCache(): void {
+  runBodyShape = null;
+}
+
+/**
+ * Start a run. Against an API with the Apify contract (#115, gated on the
+ * `/health` version): the body is the input itself (`{}` when none),
+ * options go in the query string and only when set, so the actor's default
+ * run options apply otherwise; `envVars` is a Crawlee Cloud extension, sent
+ * as base64-encoded JSON. Against an older API, or for an input the API
+ * would mistake for the legacy wrapper (`wouldReadAsLegacy`), the wrapper
+ * `{ input, timeout, memory, envVars }` is sent instead, which the API keeps
+ * accepting as a documented extension. `username/name` is sent as
+ * `username~name` (Apify convention) and the id is percent-encoded.
  */
 export async function startRun(
   actorId: string,
@@ -753,11 +806,13 @@ export async function startRun(
 ): Promise<Run> {
   const envVars = options?.envVars;
   const hasEnvVars = envVars !== undefined && Object.keys(envVars).length > 0;
-  if (wouldReadAsLegacy(options?.input)) {
-    const res = await fetchApi<{ data: Run }>(`/v2/acts/${actorId}/runs`, {
+  const path = `/v2/acts/${encodeURIComponent(actorId.replace('/', '~'))}/runs`;
+  if ((await getRunBodyShape()) === 'legacy' || wouldReadAsLegacy(options?.input)) {
+    const res = await fetchApi<{ data: Run }>(path, {
       method: 'POST',
       body: JSON.stringify({
-        input: options?.input,
+        // Always present, so the API's legacy detection is unambiguous.
+        input: options?.input ?? {},
         timeout: options?.timeout,
         memory: options?.memory,
         envVars: hasEnvVars ? envVars : undefined,
@@ -773,7 +828,7 @@ export async function startRun(
     qs.set('envVars', utf8ToBase64(JSON.stringify(envVars)));
   }
   const query = qs.toString();
-  const res = await fetchApi<{ data: Run }>(`/v2/acts/${actorId}/runs${query ? `?${query}` : ''}`, {
+  const res = await fetchApi<{ data: Run }>(`${path}${query ? `?${query}` : ''}`, {
     method: 'POST',
     body: JSON.stringify(options?.input ?? {}),
   });

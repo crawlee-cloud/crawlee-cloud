@@ -48,6 +48,16 @@ export function wouldReadAsLegacy(input: unknown): boolean {
 }
 
 /**
+ * The actor as a URL path segment. `username/name` is sent as
+ * `username~name` (the Apify convention, as `apify-client` does): a raw `/`
+ * would split the path and hit no route. Everything else is
+ * percent-encoded, so `?` / `#` in an argument can't corrupt the URL.
+ */
+export function actorPathSegment(actor: string): string {
+  return encodeURIComponent(actor.replace('/', '~'));
+}
+
+/**
  * Builds the run-start request for the given shape.
  *
  * - `apify`: the body is the input itself; `timeout`, `memory` and
@@ -67,7 +77,7 @@ export function buildStartRunRequest(
 ): { url: string; init: RequestInit } {
   const { input, timeout, memory, envVars } = options;
   const hasEnvVars = envVars !== undefined && Object.keys(envVars).length > 0;
-  let url = `${config.apiBaseUrl}/v2/acts/${actor}/runs`;
+  let url = `${config.apiBaseUrl}/v2/acts/${actorPathSegment(actor)}/runs`;
   let body: string;
 
   if (shape === 'apify' && !wouldReadAsLegacy(input)) {

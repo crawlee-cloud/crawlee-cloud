@@ -101,10 +101,13 @@ describe('parsePositiveInt (call --timeout / --memory)', () => {
     expect(parsePositiveInt('1024')).toBe(1024);
   });
 
-  it.each(['0', '-5', '2.5', 'abc', ''])('throws InvalidArgumentError for %j', (value) => {
-    expect(() => parsePositiveInt(value)).toThrow(InvalidArgumentError);
-    expect(() => parsePositiveInt(value)).toThrow('Use a positive integer.');
-  });
+  it.each(['0', '-5', '2.5', 'abc', '', '0x10', '1e3', '0b11', ' 30', '+30', '30s', '00'])(
+    'throws InvalidArgumentError for %j',
+    (value) => {
+      expect(() => parsePositiveInt(value)).toThrow(InvalidArgumentError);
+      expect(() => parsePositiveInt(value)).toThrow('Use a positive integer.');
+    }
+  );
 
   it('is reported by Commander as an invalid option argument', () => {
     const program = new Command()

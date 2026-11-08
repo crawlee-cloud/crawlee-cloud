@@ -21,7 +21,12 @@ export const RUN_BODY_ENV = 'CRAWLEE_CLOUD_RUN_BODY';
 
 export type RunBodyShape = 'apify' | 'legacy';
 
-const HEALTH_TIMEOUT_MS = 5000;
+/**
+ * `/health` probe timeout. The probe runs before every `crc call` that has no
+ * `CRAWLEE_CLOUD_RUN_BODY` override, so a slow or unreachable API must not
+ * hold the command for long; on timeout the legacy shape is used.
+ */
+export const HEALTH_TIMEOUT_MS = 2000;
 
 interface SemVer {
   major: number;
@@ -80,8 +85,13 @@ export function compareSemver(a: SemVer, b: SemVer): number {
 /**
  * True when an API reporting `version` accepts the Apify run-start body.
  * Compares against `<MIN>-0`, the lowest prerelease of the minimum version,
- * so `1.7.0-rc.1` passes while `1.6.9` does not. Missing or unparseable
- * versions fail the gate (legacy is the shape every API version accepts).
+ * so `1.7.0-rc.1` passes while `1.6.9` does not.
+ *
+ * Anything that is not a parseable semver at or above the gate is treated
+ * as legacy on purpose: a missing `version`, a non-semver string (`dev`,
+ * `1.7`), and `0.0.0` — the sentinel `packages/api/src/version.ts` reports
+ * when it can't read its package.json, i.e. an unknown version. The legacy
+ * wrapper is accepted by every API version, so the fallback is always safe.
  */
 export function supportsApifyRunBody(version: unknown): boolean {
   const parsed = parseSemver(version);

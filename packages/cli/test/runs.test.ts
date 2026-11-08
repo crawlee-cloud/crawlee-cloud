@@ -6,13 +6,19 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
+  HEALTH_TIMEOUT_MS,
   MIN_APIFY_RUN_BODY_VERSION,
   RUN_BODY_ENV,
   getRunBodyShape,
   resetApiCapabilitiesCache,
   supportsApifyRunBody,
 } from '../src/utils/api-capabilities.js';
-import { buildStartRunRequest, startRun, wouldReadAsLegacy } from '../src/utils/runs.js';
+import {
+  actorPathSegment,
+  buildStartRunRequest,
+  startRun,
+  wouldReadAsLegacy,
+} from '../src/utils/runs.js';
 // The API's own parser: what the server makes of the request the CLI sends.
 import { parseRunStartRequest } from '../../api/src/lib/run-body.js';
 
@@ -74,6 +80,8 @@ describe('supportsApifyRunBody', () => {
     ['1.6.0-rc.1', false],
     ['0.9.9', false],
     ['1.7', false],
+    // version.ts's sentinel when package.json can't be read.
+    ['0.0.0', false],
     ['latest', false],
     ['', false],
     [undefined, false],
@@ -129,6 +137,26 @@ describe('buildStartRunRequest', () => {
 
     const empty = buildStartRunRequest(config, 'my-actor', 'legacy', { timeout: 60 });
     expect(JSON.parse(empty.init.body as string)).toEqual({ input: {}, timeout: 60 });
+  });
+});
+
+describe('actor in the run URL', () => {
+  it.each([
+    ['my-actor', 'my-actor'],
+    ['alice~my-actor', 'alice~my-actor'],
+    // apify-client convention: `username/name` travels as `username~name`.
+    ['alice/my-actor', 'alice~my-actor'],
+    ['a?b#c', 'a%3Fb%23c'],
+    ['sp ace', 'sp%20ace'],
+  ])('actorPathSegment(%j) → %j', (actor, segment) => {
+    expect(actorPathSegment(actor)).toBe(segment);
+  });
+
+  it.each(['apify', 'legacy'] as const)('%s: encodes the actor path segment', (shape) => {
+    const req = buildStartRunRequest(config, 'alice/a?b#c', shape, { timeout: 5 });
+    const url = new URL(req.url);
+    expect(url.pathname).toBe('/v2/acts/alice~a%3Fb%23c/runs');
+    expect(url.hash).toBe('');
   });
 });
 
@@ -232,6 +260,16 @@ describe('startRun version gate', () => {
 
     const [, init] = runCall();
     expect(JSON.parse(init.body as string)).toEqual({ input: { query: 'x' } });
+  });
+
+  it('probes /health with a short timeout (it delays every `crc call`)', async () => {
+    mockApi(() => jsonResponse({ status: 'ok', version: '1.7.0' }));
+    expect(HEALTH_TIMEOUT_MS).toBeLessThanOrEqual(2000);
+
+    await getRunBodyShape(config);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
   it('probes /health once per process and API URL', async () => {

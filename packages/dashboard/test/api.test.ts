@@ -22,6 +22,8 @@ import {
   deleteActor,
   rerunRun,
   startRun,
+  resetRunBodyShapeCache,
+  supportsApifyRunBody,
   utf8ToBase64,
   wouldReadAsLegacy,
 } from '@/lib/api';
@@ -162,16 +164,32 @@ describe('rerunRun', () => {
 describe('startRun (Apify run-start contract, #115)', () => {
   const run = { id: 'run-1', status: 'READY' };
 
-  it('sends the input as the raw body and options in the query', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ data: run }, 201));
+  /** Routes `/health` to `health` and run starts to a 201 with a run. */
+  function mockApi(health: () => unknown = () => jsonResponse({ status: 'ok', version: '1.7.0' })) {
+    fetchMock.mockImplementation((url: string) => {
+      if (url.endsWith('/health')) return Promise.resolve(health());
+      return Promise.resolve(jsonResponse({ data: run }, 201));
+    });
+  }
 
+  function runCall(): [string, RequestInit] {
+    const call = fetchMock.mock.calls.find(([url]) => !(url as string).endsWith('/health'));
+    return call as [string, RequestInit];
+  }
+
+  beforeEach(() => {
+    resetRunBodyShapeCache();
+    mockApi();
+  });
+
+  it('sends the input as the raw body and options in the query', async () => {
     const result = await startRun('actor-1', {
       input: { query: 'x', timeout: 'not-an-option' },
       timeout: 60,
       memory: 512,
     });
 
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url, init] = runCall();
     expect(url).toBe('http://localhost:3000/v2/acts/actor-1/runs?timeout=60&memory=512');
     expect(init.method).toBe('POST');
     expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
@@ -181,22 +199,19 @@ describe('startRun (Apify run-start contract, #115)', () => {
   });
 
   it('sends `{}` and no query when there is no input or options', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ data: run }, 201));
-
     await startRun('actor-1');
 
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url, init] = runCall();
     expect(url).toBe('http://localhost:3000/v2/acts/actor-1/runs');
     expect(init.body).toBe('{}');
   });
 
   it('base64-encodes envVars as UTF-8 JSON', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ data: run }, 201));
     const envVars = { FOO: 'bar', GREETING: 'héllo ✓ 日本' };
 
     await startRun('actor-1', { envVars });
 
-    const [url] = fetchMock.mock.calls[0] as [string];
+    const [url] = runCall();
     const encoded = new URL(url).searchParams.get('envVars');
     // Decode the way the API does (Buffer, utf8).
     expect(JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'))).toEqual(envVars);
@@ -217,9 +232,8 @@ describe('startRun (Apify run-start contract, #115)', () => {
 
   /** Sends a run start and parses the captured request as the API does. */
   async function serverSees(options: Parameters<typeof startRun>[1]) {
-    fetchMock.mockResolvedValue(jsonResponse({ data: run }, 201));
     await startRun('actor-1', options);
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url, init] = runCall();
     const query = Object.fromEntries(new URL(url).searchParams);
     return {
       url,
@@ -250,6 +264,66 @@ describe('startRun (Apify run-start contract, #115)', () => {
     expect(body).toEqual({ input: { timeout: 30 } });
     expect(parsed.input).toEqual({ timeout: 30 });
     expect(parsed.timeout).toBeUndefined();
+  });
+
+  it.each([
+    ['1.7.0', true],
+    ['v1.7.0', true],
+    ['1.7.0-rc.1', true],
+    ['1.10.0', true],
+    ['2.0.0', true],
+    ['1.6.0', false],
+    ['1.6.99', false],
+    ['0.0.0', false],
+    ['1.7', false],
+    ['dev', false],
+    [undefined, false],
+  ])('supportsApifyRunBody(%j) → %s', (version, expected) => {
+    expect(supportsApifyRunBody(version)).toBe(expected);
+  });
+
+  it.each([
+    ['an older API', () => jsonResponse({ status: 'ok', version: '1.6.0' })],
+    ['a missing version', () => jsonResponse({ status: 'ok' })],
+    ['a failed /health', () => jsonResponse({}, 503)],
+    [
+      'a network error',
+      () => {
+        throw new Error('offline');
+      },
+    ],
+  ])('sends the legacy wrapper to %s, options in the body', async (_label, health) => {
+    mockApi(health);
+
+    await startRun('actor-1', {
+      input: { query: 'x' },
+      timeout: 60,
+      memory: 512,
+      envVars: { K: 'v' },
+    });
+
+    const [url, init] = runCall();
+    expect(url).toBe('http://localhost:3000/v2/acts/actor-1/runs');
+    const body = JSON.parse(init.body as string);
+    expect(body).toEqual({ input: { query: 'x' }, timeout: 60, memory: 512, envVars: { K: 'v' } });
+    const parsed = parseRunStartRequest(body, {});
+    expect(parsed.input).toEqual({ query: 'x' });
+    expect(parsed.timeout).toBe(60);
+  });
+
+  it('probes /health once per page session', async () => {
+    await startRun('actor-1');
+    await startRun('actor-1');
+
+    const healthCalls = fetchMock.mock.calls.filter(([url]) => (url as string).endsWith('/health'));
+    expect(healthCalls).toHaveLength(1);
+  });
+
+  it('encodes the actor id in the URL', async () => {
+    await startRun('alice/a?b#c');
+
+    const [url] = runCall();
+    expect(new URL(url).pathname).toBe('/v2/acts/alice~a%3Fb%23c/runs');
   });
 
   it('utf8ToBase64 matches Buffer for non-Latin-1 text', () => {
