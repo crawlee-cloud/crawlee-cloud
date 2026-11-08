@@ -25,7 +25,14 @@ vi.mock('../src/db/index.js', () => ({
     sql.includes('JOIN users u ON u.id = a.user_id')
       ? mockResolveActor(sql, params)
       : mockQuery(sql, params),
+  // Transactions (DELETE version) run on a client whose queries are recorded.
+  getClient: async () => ({
+    query: (sql: string, params?: unknown[]) => mockClientQuery(sql, params),
+    release: () => mockClientRelease(),
+  }),
 }));
+const mockClientQuery = vi.fn();
+const mockClientRelease = vi.fn();
 
 const OWN_ACTOR = {
   id: 'actor-1',
@@ -89,6 +96,8 @@ describe('Registry Routes', () => {
 
   beforeEach(() => {
     mockQuery.mockReset();
+    mockClientQuery.mockReset();
+    mockClientRelease.mockReset();
     mockResolveActor.mockReset();
     mockResolveActor.mockResolvedValue({ rows: [OWN_ACTOR] });
     mockRedisRpush.mockReset();
@@ -191,8 +200,8 @@ describe('Registry Routes', () => {
   });
 
   describe('DELETE /v2/acts/:actorId/versions/:versionId', () => {
-    it('deletes idempotently and returns 204', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+    it('clears current_version_id and deletes in one transaction, returning 204', async () => {
+      mockClientQuery.mockResolvedValue({ rows: [] });
 
       const response = await app.inject({
         method: 'DELETE',
@@ -200,9 +209,37 @@ describe('Registry Routes', () => {
       });
 
       expect(response.statusCode).toBe(204);
-      const [sql, params] = mockQuery.mock.calls[0] as [string, unknown[]];
-      expect(sql).toContain('DELETE FROM actor_versions');
-      expect(params).toEqual(['ver-1', 'actor-1']);
+      const calls = mockClientQuery.mock.calls as Array<[string, unknown[] | undefined]>;
+      expect(calls.map(([sql]) => sql.trim().split(/\s+/)[0])).toEqual([
+        'BEGIN',
+        'SELECT',
+        'UPDATE',
+        'DELETE',
+        'COMMIT',
+      ]);
+      expect(calls[2][0]).toContain('SET current_version_id = NULL');
+      expect(calls[2][1]).toEqual(['actor-1', 'ver-1']);
+      expect(calls[3][0]).toContain('DELETE FROM actor_versions');
+      expect(calls[3][1]).toEqual(['ver-1', 'actor-1']);
+      expect(mockClientRelease).toHaveBeenCalledTimes(1);
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('rolls back and releases the client when a statement fails', async () => {
+      mockClientQuery
+        .mockResolvedValueOnce({ rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rows: [] }) // lock
+        .mockRejectedValueOnce(new Error('boom')) // UPDATE
+        .mockResolvedValue({ rows: [] }); // ROLLBACK
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/v2/acts/actor-1/versions/ver-1',
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(mockClientQuery.mock.calls.at(-1)?.[0]).toBe('ROLLBACK');
+      expect(mockClientRelease).toHaveBeenCalledTimes(1);
     });
   });
 

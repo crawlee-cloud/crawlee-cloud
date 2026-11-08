@@ -23,10 +23,11 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import type { ActorsSegmentOptions } from './actors.js';
 import { nanoid } from 'nanoid';
-import { query } from '../db/index.js';
+import { query, getClient } from '../db/index.js';
 import { authenticate } from '../auth/middleware.js';
 import { redis } from '../storage/redis.js';
 import { resolveActor, ACTOR_NOT_FOUND, type ResolvedActor } from '../lib/resolve-actor.js';
+import { CreateBuildSchema, CreateVersionSchema } from '../schemas/registry.js';
 
 interface VersionRow {
   id: string;
@@ -129,7 +130,10 @@ export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       envVars?: Record<string, string>;
     };
   }>(`/${segment}/:actorId/versions`, async (request, reply) => {
-    const { versionNumber, sourceType, sourceUrl, dockerfile, buildTag, envVars } = request.body;
+    // A missing body arrives as undefined: validate it (400) instead of
+    // destructuring it (500).
+    const { versionNumber, sourceType, sourceUrl, dockerfile, buildTag, envVars } =
+      CreateVersionSchema.parse(request.body ?? {});
 
     const actor = await ownedActor(request, reply);
     if (!actor) return ACTOR_NOT_FOUND;
@@ -201,10 +205,31 @@ export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       const actor = await ownedActor(request, reply);
       if (!actor) return ACTOR_NOT_FOUND;
 
-      await query(`DELETE FROM actor_versions WHERE id = $1 AND actor_id = $2`, [
-        versionId,
-        actor.id,
-      ]);
+      // actors.current_version_id references actor_versions with no ON DELETE
+      // action, so deleting the current version used to fail the FK (500).
+      // Apify lets any version be deleted: clear the pointer in the same
+      // transaction. The actor row is locked first so a concurrent push
+      // can't point it back at the version between the two statements.
+      const client = await getClient();
+      try {
+        await client.query('BEGIN');
+        await client.query(`SELECT 1 FROM actors WHERE id = $1 FOR UPDATE`, [actor.id]);
+        await client.query(
+          `UPDATE actors SET current_version_id = NULL, modified_at = NOW()
+            WHERE id = $1 AND current_version_id = $2`,
+          [actor.id, versionId]
+        );
+        await client.query(`DELETE FROM actor_versions WHERE id = $1 AND actor_id = $2`, [
+          versionId,
+          actor.id,
+        ]);
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
 
       reply.status(204);
     }
@@ -252,7 +277,7 @@ export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       gitCommit?: string;
     };
   }>(`/${segment}/:actorId/builds`, async (request, reply) => {
-    const { versionId, gitBranch, gitCommit } = request.body;
+    const { versionId, gitBranch, gitCommit } = CreateBuildSchema.parse(request.body ?? {});
 
     const actor = await ownedActor(request, reply);
     if (!actor) return ACTOR_NOT_FOUND;

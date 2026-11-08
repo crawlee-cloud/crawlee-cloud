@@ -54,12 +54,17 @@ describe('resolveActor', () => {
 
     const [sql, params] = mockQuery.mock.calls[0] as [string, unknown[]];
     expect(params).toEqual([input, 'user-1', ...split]);
-    // Always scoped to the caller, joined for the username, exact matches only.
+    // Always scoped to the caller, joined for the username, equality matches
+    // only; username and name are case-insensitive, the id is not.
     expect(sql).toContain('WHERE a.user_id = $2');
     expect(sql).toContain('JOIN users u ON u.id = a.user_id');
-    expect(sql).toContain('(u.username = $3 AND a.name = $4)');
-    // An actor named after another one's id matches too; the id match wins.
-    expect(sql).toMatch(/ORDER BY \(a\.id = \$1\) DESC\s+LIMIT 1/);
+    expect(sql).toContain('a.id = $1');
+    expect(sql).toContain('lower(a.name) = lower($1)');
+    expect(sql).toContain('(u.username = lower($3) AND lower(a.name) = lower($4))');
+    // Several rows can match: exact id first, then exact-case name.
+    expect(sql).toMatch(
+      /ORDER BY \(a\.id = \$1\) DESC, \(a\.name = \$1 OR a\.name = \$4\) IS TRUE DESC, a\.id\s+LIMIT 1/
+    );
     expect(sql).not.toMatch(/LIKE/i);
   });
 

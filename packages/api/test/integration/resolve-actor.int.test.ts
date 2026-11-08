@@ -380,4 +380,272 @@ describe('actor resolution by username~name (integration)', () => {
       expect(versions.json().data.total).toBe(1);
     });
   });
+
+  describe('verification feedback', () => {
+    async function shadowed(): Promise<{ target: { id: string }; impostor: { id: string } }> {
+      const target = await createActor(alice.token, 'target-actor');
+      const impostor = await createActor(alice.token, target.id);
+      // Put target's row after the impostor's in the heap (see above).
+      const { pool } = await import('../../src/db/index.js');
+      await pool.query(`UPDATE actors SET title = 'touched' WHERE id = $1`, [target.id]);
+      return { target, impostor };
+    }
+
+    it('PUT, runs and DELETE prefer the id match over a same-named actor', async () => {
+      const { target, impostor } = await shadowed();
+      const { pool } = await import('../../src/db/index.js');
+
+      const put = await app.inject({
+        method: 'PUT',
+        url: `/v2/acts/${target.id}`,
+        headers: auth(alice.token),
+        payload: { title: 'via-id' },
+      });
+      expect(put.statusCode).toBe(200);
+      expect(put.json().data.id).toBe(target.id);
+      const titles = await pool.query<{ id: string; title: string | null }>(
+        'SELECT id, title FROM actors WHERE id = ANY($1)',
+        [[target.id, impostor.id]]
+      );
+      expect(Object.fromEntries(titles.rows.map((r) => [r.id, r.title]))).toEqual({
+        [target.id]: 'via-id',
+        [impostor.id]: null,
+      });
+
+      const run = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${target.id}/runs`,
+        headers: auth(alice.token),
+        payload: {},
+      });
+      expect(run.statusCode).toBe(201);
+      expect(run.json().data.actId).toBe(target.id);
+
+      const runs = await app.inject({
+        method: 'GET',
+        url: `/v2/acts/${target.id}/runs`,
+        headers: auth(alice.token),
+      });
+      expect(runs.statusCode).toBe(200);
+      expect(runs.json().data.items.map((r: { actId: string }) => r.actId)).toEqual([target.id]);
+
+      // The impostor has no runs, so deleting it would succeed; the target
+      // has one, so resolving to the target yields 409 without force.
+      const del = await app.inject({
+        method: 'DELETE',
+        url: `/v2/acts/${target.id}`,
+        headers: auth(alice.token),
+      });
+      expect(del.statusCode).toBe(409);
+      expect(del.json().error.type).toBe('actor-has-runs');
+      await pool.query(`UPDATE runs SET status = 'SUCCEEDED' WHERE actor_id = $1`, [target.id]);
+      const forced = await app.inject({
+        method: 'DELETE',
+        url: `/v2/acts/${target.id}?force=true`,
+        headers: auth(alice.token),
+      });
+      expect(forced.statusCode).toBe(204);
+      const left = await pool.query('SELECT id FROM actors WHERE id = ANY($1)', [
+        [target.id, impostor.id],
+      ]);
+      expect(left.rows.map((r) => r.id)).toEqual([impostor.id]);
+    });
+
+    it('matches username and actor name case-insensitively', async () => {
+      const actor = await createActor(alice.token, 'Web-Scraper');
+
+      for (const ref of [
+        'alice~web-scraper',
+        'ALICE~WEB-SCRAPER',
+        'Alice%2FWeb-Scraper',
+        'web-SCRAPER',
+      ]) {
+        const r = await app.inject({
+          method: 'GET',
+          url: `/v2/acts/${ref}`,
+          headers: auth(alice.token),
+        });
+        expect(r.statusCode, ref).toBe(200);
+        expect(r.json().data.id, ref).toBe(actor.id);
+      }
+
+      // Bob still can't reach it, whatever the case.
+      const foreign = await app.inject({
+        method: 'GET',
+        url: '/v2/acts/ALICE~web-scraper',
+        headers: auth(bob.token),
+      });
+      expect(foreign.statusCode).toBe(404);
+    });
+
+    it('the exact id, then the exact-case name, win over case-insensitive matches', async () => {
+      const upper = await createActor(alice.token, 'Foo');
+      const lower = await createActor(alice.token, 'foo');
+      // Named like upper's id with flipped case: matches it case-insensitively.
+      const flipped = upper.id.replace(/[a-zA-Z]/g, (c) =>
+        c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()
+      );
+      const caseTwin = await createActor(alice.token, flipped);
+
+      for (const [ref, id] of [
+        ['Foo', upper.id],
+        ['foo', lower.id],
+        ['alice~Foo', upper.id],
+        ['alice~foo', lower.id],
+        [upper.id, upper.id],
+        [flipped, caseTwin.id],
+      ] as const) {
+        const r = await app.inject({
+          method: 'GET',
+          url: `/v2/acts/${ref}`,
+          headers: auth(alice.token),
+        });
+        expect(r.statusCode, ref).toBe(200);
+        expect(r.json().data.id, ref).toBe(id);
+      }
+    });
+
+    it('schedules accept a 30-char username + 100-char name on create and update', async () => {
+      const username = 'u'.repeat(30);
+      const long = await createTestUser('sched@resolve.local', 'pw-sched-1', username);
+      const first = await createActor(long.token, 'a'.repeat(100));
+      const second = await createActor(long.token, 'b'.repeat(100));
+
+      const created = await app.inject({
+        method: 'POST',
+        url: '/v2/schedules',
+        headers: auth(long.token),
+        payload: {
+          actorId: `${username}~${'a'.repeat(100)}`,
+          name: 'nightly',
+          cronExpression: '0 0 * * *',
+        },
+      });
+      expect(created.statusCode).toBe(201);
+      expect(created.json().data.actorId).toBe(first.id);
+
+      const updated = await app.inject({
+        method: 'PUT',
+        url: `/v2/schedules/${created.json().data.id}`,
+        headers: auth(long.token),
+        payload: { actorId: `${username}/${'b'.repeat(100)}` },
+      });
+      expect(updated.statusCode).toBe(200);
+      expect(updated.json().data.actorId).toBe(second.id);
+
+      const tooLong = await app.inject({
+        method: 'POST',
+        url: '/v2/schedules',
+        headers: auth(long.token),
+        payload: { actorId: 'x'.repeat(132), name: 'n', cronExpression: '0 0 * * *' },
+      });
+      expect(tooLong.statusCode).toBe(400);
+    });
+
+    it("a forged versionId never surfaces alice's version in bob's builds", async () => {
+      const aliceActor = await createActor(alice.token, 'alices-actor');
+      const v = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${aliceActor.id}/versions`,
+        headers: auth(alice.token),
+        payload: { versionNumber: '7.7', buildTag: 'secret-tag' },
+      });
+      expect(v.statusCode).toBe(201);
+      const aliceVersionId = v.json().data.id;
+      const bobActor = await createActor(bob.token, 'bobs-actor');
+
+      const forged = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${bobActor.id}/builds`,
+        headers: auth(bob.token),
+        payload: { versionId: aliceVersionId },
+      });
+      expect(forged.statusCode).toBe(404);
+
+      const list = await app.inject({
+        method: 'GET',
+        url: `/v2/acts/${bobActor.id}/builds`,
+        headers: auth(bob.token),
+      });
+      expect(list.statusCode).toBe(200);
+      expect(list.json().data.items).toEqual([]);
+      expect(JSON.stringify(list.json())).not.toContain('secret-tag');
+      const { redis } = await import('../../src/storage/redis.js');
+      const jobs = await redis.lrange('build_queue', 0, -1);
+      expect(jobs.some((j) => j.includes(aliceVersionId))).toBe(false);
+    });
+
+    it('POST builds/versions without a body never 500', async () => {
+      const actor = await createActor(alice.token, 'my-actor');
+      const { pool } = await import('../../src/db/index.js');
+
+      // A version needs versionNumber: 400.
+      const version = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${actor.id}/versions`,
+        headers: auth(alice.token),
+      });
+      expect(version.statusCode).toBe(400);
+      expect(version.json().error.type).toBe('validation_error');
+
+      // Every build field is optional, and apify-client's actor.build()
+      // sends no body (options go in the query string): starts a build.
+      const build = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${actor.id}/builds`,
+        headers: auth(alice.token),
+      });
+      expect(build.statusCode).toBe(201);
+      expect(build.json().data).toMatchObject({ actorId: actor.id, versionId: null });
+      await pool.query('DELETE FROM actor_builds WHERE actor_id = $1', [actor.id]);
+    });
+
+    it('POST builds/versions with a malformed body return 400 and store nothing', async () => {
+      const actor = await createActor(alice.token, 'my-actor');
+      for (const [path, payload] of [
+        ['builds', { versionId: 42 }],
+        ['versions', {}],
+      ] as const) {
+        const r = await app.inject({
+          method: 'POST',
+          url: `/v2/acts/${actor.id}/${path}`,
+          headers: auth(alice.token),
+          payload,
+        });
+        expect(r.statusCode, path).toBe(400);
+      }
+      const { pool } = await import('../../src/db/index.js');
+      const b = await pool.query('SELECT 1 FROM actor_builds WHERE actor_id = $1', [actor.id]);
+      expect(b.rowCount).toBe(0);
+    });
+
+    it("deleting the actor's current version succeeds and clears the pointer", async () => {
+      const actor = await createActor(alice.token, 'my-actor');
+      const v = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${actor.id}/versions`,
+        headers: auth(alice.token),
+        payload: { versionNumber: '0.1' },
+      });
+      const versionId = v.json().data.id;
+      const { pool } = await import('../../src/db/index.js');
+      await pool.query('UPDATE actors SET current_version_id = $1 WHERE id = $2', [
+        versionId,
+        actor.id,
+      ]);
+
+      const del = await app.inject({
+        method: 'DELETE',
+        url: `/v2/acts/alice~my-actor/versions/${versionId}`,
+        headers: auth(alice.token),
+      });
+      expect(del.statusCode).toBe(204);
+      const row = await pool.query('SELECT current_version_id FROM actors WHERE id = $1', [
+        actor.id,
+      ]);
+      expect(row.rows[0].current_version_id).toBeNull();
+      const gone = await pool.query('SELECT 1 FROM actor_versions WHERE id = $1', [versionId]);
+      expect(gone.rowCount).toBe(0);
+    });
+  });
 });

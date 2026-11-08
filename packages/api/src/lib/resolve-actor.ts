@@ -10,6 +10,8 @@
  *   - `username~name`
  *   - `username/name` (a `%2F` in the path arrives decoded in params)
  *
+ * Usernames and names match case-insensitively, as on Apify.
+ *
  * Lookups never cross users: the actor must belong to `userId`, and a
  * `username` part that isn't the caller's own resolves to nothing (404).
  * Actor names match `^[a-zA-Z0-9._-]+$` (schemas/actors.ts), so they never
@@ -77,16 +79,26 @@ export async function resolveActor(
   db: Queryable = defaultDb
 ): Promise<ResolvedActor | null> {
   const full = splitActorFullName(idOrName);
-  // Exact matches only (no LIKE): names may contain `-` and `.`. One of the
-  // caller's actors can be named after another one's id, so two rows may
-  // match: the id match wins.
+  // Equality matches only (no LIKE): names may contain `-` and `.`. Like
+  // Apify, usernames and names match case-insensitively (`Alice~My-Actor`
+  // is `alice~my-actor`); ids are case-sensitive nanoids and match exactly.
+  // Usernames are stored lowercase (src/auth/username.ts), so lower($3) needs
+  // no function on the column. Names are compared with lower() after the
+  // user_id filter, which the UNIQUE(user_id, name) index serves, so no
+  // functional index is needed.
+  //
+  // Several rows can match (an actor named after another one's id, or both
+  // `Foo` and `foo`), so the order is: exact id, then exact-case name, then
+  // case-insensitive name; the id tiebreak keeps the result deterministic.
   const result = await db.query<ResolvedActor>(
     `SELECT a.*, u.username
        FROM actors a
        LEFT JOIN users u ON u.id = a.user_id
       WHERE a.user_id = $2
-        AND (a.id = $1 OR a.name = $1 OR (u.username = $3 AND a.name = $4))
-      ORDER BY (a.id = $1) DESC
+        AND (a.id = $1
+             OR lower(a.name) = lower($1)
+             OR (u.username = lower($3) AND lower(a.name) = lower($4)))
+      ORDER BY (a.id = $1) DESC, (a.name = $1 OR a.name = $4) IS TRUE DESC, a.id
       LIMIT 1`,
     [idOrName, userId, full?.username ?? null, full?.name ?? null]
   );
