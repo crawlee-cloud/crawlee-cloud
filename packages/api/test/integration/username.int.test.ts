@@ -41,6 +41,34 @@ describe('Username slug (integration)', () => {
     expect(data.email).toBe('me-test@integration.local');
   });
 
+  it('GET /v2/users/me returns 404 record-not-found once the user row is gone', async () => {
+    const { pool } = await import('../../src/db/index.js');
+    const { token, userId } = await createTestUser('gone@integration.local');
+    await pool.query('DELETE FROM api_keys WHERE user_id = $1', [userId]);
+    await pool.query('DELETE FROM users WHERE id = $1', [userId]);
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v2/users/me',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.type).toBe('record-not-found');
+  });
+
+  it('POST /v2/auth/login includes the username', async () => {
+    await createTestUser('login@integration.local', 'pw123456', 'login-user');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v2/auth/login',
+      payload: { email: 'login@integration.local', password: 'pw123456' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.user).toMatchObject({
+      email: 'login@integration.local',
+      username: 'login-user',
+    });
+  });
+
   it('GET /v2/auth/me includes the username', async () => {
     const { token } = await createTestUser('auth-me@integration.local', 'pw123456', 'auth-me');
     const res = await app.inject({
@@ -59,20 +87,52 @@ describe('Username slug (integration)', () => {
     const { config } = await import('../../src/config.js');
     const { setupAdminUser } = await import('../../src/setup.js');
     const { pool } = await import('../../src/db/index.js');
+    const { redis } = await import('../../src/storage/redis.js');
     const saved = { email: config.adminEmail, password: config.adminPassword };
+    // setupAdminUser also creates the runner key: a DB row (removed by
+    // cleanDatabase) plus a TTL-less raw key in Redis. Restore Redis
+    // afterwards, or later runs see a raw key with no DB row — the
+    // runner-key outage state.
+    const savedRunnerKey = await redis.get('runner:api-key');
     config.adminEmail = 'admin@crawlee.cloud';
     config.adminPassword = 'admin-password-123';
     try {
       await setupAdminUser();
+      const row = await pool.query<{ username: string; role: string }>(
+        'SELECT username, role FROM users WHERE email = $1',
+        ['admin@crawlee.cloud']
+      );
+      expect(row.rows[0]).toEqual({ username: 'admin', role: 'admin' });
     } finally {
       config.adminEmail = saved.email;
       config.adminPassword = saved.password;
+      if (savedRunnerKey === null) await redis.del('runner:api-key');
+      else await redis.set('runner:api-key', savedRunnerKey);
     }
-    const row = await pool.query<{ username: string; role: string }>(
-      'SELECT username, role FROM users WHERE email = $1',
-      ['admin@crawlee.cloud']
-    );
-    expect(row.rows[0]).toEqual({ username: 'admin', role: 'admin' });
+  });
+
+  it('setupAdminUser never gives an admin the reserved username anonymous', async () => {
+    const { config } = await import('../../src/config.js');
+    const { setupAdminUser } = await import('../../src/setup.js');
+    const { pool } = await import('../../src/db/index.js');
+    const { redis } = await import('../../src/storage/redis.js');
+    const saved = { email: config.adminEmail, password: config.adminPassword };
+    const savedRunnerKey = await redis.get('runner:api-key');
+    config.adminEmail = 'anonymous@example.com';
+    config.adminPassword = 'admin-password-123';
+    try {
+      await setupAdminUser();
+      const row = await pool.query<{ username: string }>(
+        'SELECT username FROM users WHERE email = $1',
+        ['anonymous@example.com']
+      );
+      expect(row.rows[0]?.username).toBe('anonymous-2');
+    } finally {
+      config.adminEmail = saved.email;
+      config.adminPassword = saved.password;
+      if (savedRunnerKey === null) await redis.del('runner:api-key');
+      else await redis.set('runner:api-key', savedRunnerKey);
+    }
   });
 
   it('a duplicate username fails on users_username_key (the retry relies on it)', async () => {
@@ -118,7 +178,13 @@ describe('Username migration backfill (integration)', () => {
     await admin?.end();
   });
 
-  it('backfills existing users in created_at order, matching generateUsername', async () => {
+  /**
+   * Fresh legacy schema (users table as it existed before #110, seeded
+   * with USERNAME_CASES), then the real migration. Each test calls it so
+   * it also runs alone (`-t`).
+   */
+  async function seedLegacyUsersAndMigrate(): Promise<void> {
+    await client.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public');
     // users table as it existed before #110.
     await client.query(`
       CREATE TABLE users (
@@ -140,8 +206,11 @@ describe('Username migration backfill (integration)', () => {
         [`u${i}`, USERNAME_CASES[i].email, i]
       );
     }
-
     await client.query(schema);
+  }
+
+  it('backfills existing users in created_at order, matching generateUsername', async () => {
+    await seedLegacyUsersAndMigrate();
 
     const rows = await client.query<{ id: string; username: string }>(
       'SELECT id, username FROM users'
@@ -159,6 +228,7 @@ describe('Username migration backfill (integration)', () => {
   });
 
   it('rerunning the migration is a no-op', async () => {
+    await seedLegacyUsersAndMigrate();
     const before = await client.query('SELECT id, username FROM users ORDER BY id');
     await client.query(schema);
     const after = await client.query('SELECT id, username FROM users ORDER BY id');

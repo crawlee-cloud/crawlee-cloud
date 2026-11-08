@@ -96,6 +96,7 @@ describe('Auth Routes', () => {
           {
             id: 'user-1',
             email: 'test@example.com',
+            username: 'test',
             password_hash: 'hashed',
             name: 'Test User',
             role: 'user',
@@ -115,6 +116,13 @@ describe('Auth Routes', () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body.data.token).toBe('mock_jwt_token');
+      // Same user shape as /v2/auth/me and /v2/users/me.
+      expect(body.data.user).toEqual({
+        id: 'user-1',
+        email: 'test@example.com',
+        username: 'test',
+        name: 'Test User',
+      });
     });
 
     it('should reject invalid credentials', async () => {

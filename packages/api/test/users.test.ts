@@ -64,6 +64,19 @@ describe('Users routes — GET /v2/users/me', () => {
     expect(body.data.proxy).toBeUndefined();
   });
 
+  it('returns 404 record-not-found when the authenticated user row is gone', async () => {
+    // A still-valid JWT or a cached API key can outlive the user row.
+    // Reporting username '' would make MCP build broken tool names.
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v2/users/me',
+      headers: { authorization: 'Bearer valid-token' },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.type).toBe('record-not-found');
+  });
+
   it('returns no proxy field when authed user has no password set', async () => {
     mockQuery.mockResolvedValueOnce({
       rows: [{ email: 'a@b.com', username: 'a', proxy_password_encrypted: null }],

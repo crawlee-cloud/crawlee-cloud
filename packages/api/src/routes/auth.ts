@@ -45,10 +45,13 @@ export async function authRoutes(app: FastifyInstance) {
     const result = await pool.query<{
       id: string;
       email: string;
+      username: string;
       password_hash: string;
       name: string | null;
       role: string;
-    }>('SELECT id, email, password_hash, name, role FROM users WHERE email = $1', [body.email]);
+    }>('SELECT id, email, username, password_hash, name, role FROM users WHERE email = $1', [
+      body.email,
+    ]);
 
     const user = result.rows[0];
     if (!user) {
@@ -69,7 +72,7 @@ export async function authRoutes(app: FastifyInstance) {
 
     return reply.send({
       data: {
-        user: { id: user.id, email: user.email, name: user.name },
+        user: { id: user.id, email: user.email, username: user.username, name: user.name },
         token,
       },
     });
