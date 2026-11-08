@@ -9,6 +9,7 @@ import type { FastifyPluginAsync, RouteHandler } from 'fastify';
 import { redis } from '../storage/redis.js';
 import { query } from '../db/index.js';
 import { authenticate } from '../auth/middleware.js';
+import { zBoolQuery } from '../schemas/common.js';
 
 export const logsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.addHook('preHandler', authenticate);
@@ -75,7 +76,7 @@ export const logsRoutes: FastifyPluginAsync = async (fastify) => {
     }
 
     const limit = Math.min(2000, Math.max(1, parseInt(request.query.limit || '500', 10) || 500));
-    const tail = request.query.tail === 'true';
+    const tail = zBoolQuery.parse(request.query.tail) ?? false;
 
     // total is the authoritative count of log lines stored in Redis. We need
     // it so the UI can render "showing X-Y of Z" honestly, AND so tail mode

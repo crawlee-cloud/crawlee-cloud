@@ -6,6 +6,5 @@
   "call-actor",
   "poll-count",
   "actor-tool",
-  "get-actor-run-list",
   "get-dataset-items"
 ]

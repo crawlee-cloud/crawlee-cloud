@@ -7,7 +7,13 @@ import { nanoid } from 'nanoid';
 import { query, getClient } from '../db/index.js';
 import { redis } from '../storage/redis.js';
 import { authenticate } from '../auth/middleware.js';
-import { UpdateRunSchema, ListRunsQuerySchema, RunsHistogramQuerySchema } from '../schemas/runs.js';
+import {
+  UpdateRunSchema,
+  TERMINAL_RUN_STATUSES,
+  ListRunsQuerySchema,
+  RunsHistogramQuerySchema,
+  type ListRunsQuery,
+} from '../schemas/runs.js';
 import { config } from '../config.js';
 import { computeYourCostUsd, type CostWindow } from '../lib/run-cost.js';
 
@@ -67,92 +73,23 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
    * GET /v2/actor-runs - List runs (user-scoped, filterable, paginated).
    *
    * Query params (all optional):
-   *   status   = READY|RUNNING|SUCCEEDED|FAILED|TIMED-OUT|ABORTED
+   *   status   = READY|RUNNING|SUCCEEDED|FAILED|TIMING-OUT|TIMED-OUT|ABORTING|ABORTED,
+   *              or a comma-separated list of them (any-of)
    *   actorId  = filter to one actor
-   *   since    = ISO datetime, runs created at >= this
-   *   until    = ISO datetime, runs created at <  this
+   *   since    = ISO datetime, runs created at >= this (extension)
+   *   until    = ISO datetime, runs created at <  this (extension)
+   *   startedAfter / startedBefore = ISO datetime, run start time (created
+   *              time while READY), both bounds inclusive — Apify's filters
    *   limit    = page size, default 50, max 200
    *   offset   = page offset, default 0
-   *   desc     = sort by created_at desc (default true). 'false' for asc.
+   *   desc     = sort by created_at desc (default true). 'false'/'0' for asc.
    *
    * Returns Apify-shaped { data: { total, count, offset, limit, desc, items } }
    * where total is the *real* count of matching rows (not the page size).
    */
   fastify.get('/actor-runs', async (request) => {
     const q = ListRunsQuerySchema.parse(request.query);
-    const limit = q.limit ?? 50;
-    const offset = q.offset ?? 0;
-    const desc = q.desc;
-
-    // Build WHERE clause dynamically while keeping queries parameterised.
-    // Columns are qualified with `r.` because the SELECT below LEFT JOINs
-    // datasets, and `user_id` / `created_at` exist on BOTH tables —
-    // unqualified references would error with "column reference is
-    // ambiguous". The COUNT query doesn't join, but using `r.` there
-    // too keeps the where-builder uniform (and harmless: bare-`runs`
-    // can be aliased to `r` via the table-alias form below).
-    const where: string[] = ['r.user_id = $1'];
-    const params: unknown[] = [request.user!.id];
-    let p = 2;
-    if (q.status !== undefined) {
-      where.push(`r.status = $${p++}`);
-      params.push(q.status);
-    }
-    if (q.actorId !== undefined) {
-      where.push(`r.actor_id = $${p++}`);
-      params.push(q.actorId);
-    }
-    if (q.since !== undefined) {
-      where.push(`r.created_at >= $${p++}`);
-      params.push(q.since);
-    }
-    if (q.until !== undefined) {
-      where.push(`r.created_at < $${p++}`);
-      params.push(q.until);
-    }
-    const whereSql = where.join(' AND ');
-
-    // COUNT and SELECT run in parallel — both share the same composite index
-    // so the count query is cheap up to ~hundreds of thousands of rows.
-    const [countResult, pageResult] = await Promise.all([
-      query<{ total: string }>(
-        `SELECT COUNT(*)::text AS total FROM runs r WHERE ${whereSql}`,
-        params
-      ),
-      query<RunRow>(
-        // Stable tiebreaker on `id`. Without it, LIMIT/OFFSET pagination
-        // can drop or duplicate rows when two runs share the exact same
-        // created_at (ms-precision ties are realistic at 140 scrapers ×
-        // burst writes — Postgres doesn't guarantee row order on ties).
-        //
-        // WHERE-clause columns are `r.`-qualified above because the
-        // LEFT JOIN below brings in `datasets`, which shares the
-        // `user_id` and `created_at` column names with `runs` —
-        // unqualified references would error with "column reference
-        // is ambiguous". `status` and `actor_id` are not ambiguous
-        // today, but qualifying them keeps the where-builder uniform
-        // and protects against future columns being added on either
-        // side of the join.
-        `${RUN_SELECT_WITH_DATASET_COUNT}
-         WHERE ${whereSql}
-         ORDER BY r.created_at ${desc ? 'DESC' : 'ASC'}, r.id ${desc ? 'DESC' : 'ASC'}
-         LIMIT $${p++} OFFSET $${p++}`,
-        [...params, limit, offset]
-      ),
-    ]);
-
-    const total = parseInt(countResult.rows[0]?.total ?? '0', 10);
-
-    return {
-      data: {
-        total,
-        count: pageResult.rows.length,
-        offset,
-        limit,
-        desc,
-        items: pageResult.rows.map(formatRun),
-      },
-    };
+    return { data: await listRuns(request.user!.id, q) };
   });
 
   /**
@@ -539,7 +476,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       values.push(status);
 
       // Set finished_at if terminal status
-      if (['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT'].includes(status)) {
+      if (TERMINAL_RUN_STATUSES.includes(status)) {
         setClauses.push('finished_at = NOW()');
       }
     }
@@ -1134,6 +1071,100 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
     }
   );
 };
+
+/**
+ * Shared WHERE/ORDER/COUNT builder behind GET /v2/actor-runs and
+ * GET /v2/acts/:actorId/runs, so both list endpoints filter, paginate and
+ * order identically. Always scoped to `userId`; `q.actorId` must already be
+ * a resolved `actors.id` (the per-actor route passes the looked-up id, never
+ * the raw path param, which may be a name).
+ *
+ * Returns the Apify-shaped page `{ total, count, offset, limit, desc, items }`
+ * where total is the *real* count of matching rows (not the page size).
+ */
+export async function listRuns(userId: string, q: ListRunsQuery) {
+  const limit = q.limit ?? 50;
+  const offset = q.offset ?? 0;
+  const desc = q.desc;
+
+  // Build WHERE clause dynamically while keeping queries parameterised.
+  // Columns are qualified with `r.` because the SELECT below LEFT JOINs
+  // datasets, and `user_id` / `created_at` exist on BOTH tables —
+  // unqualified references would error with "column reference is
+  // ambiguous". The COUNT query doesn't join, but using `r.` there
+  // too keeps the where-builder uniform (and harmless: bare-`runs`
+  // can be aliased to `r` via the table-alias form below).
+  const where: string[] = ['r.user_id = $1'];
+  const params: unknown[] = [userId];
+  let p = 2;
+  if (q.status !== undefined) {
+    where.push(`r.status = ANY($${p++})`);
+    params.push(q.status);
+  }
+  if (q.actorId !== undefined) {
+    where.push(`r.actor_id = $${p++}`);
+    params.push(q.actorId);
+  }
+  if (q.since !== undefined) {
+    where.push(`r.created_at >= $${p++}`);
+    params.push(q.since);
+  }
+  if (q.until !== undefined) {
+    where.push(`r.created_at < $${p++}`);
+    params.push(q.until);
+  }
+  // Apify semantics: start time, inclusive bounds. A READY run has no
+  // started_at yet, so it is placed at its creation time.
+  if (q.startedAfter !== undefined) {
+    where.push(`COALESCE(r.started_at, r.created_at) >= $${p++}`);
+    params.push(q.startedAfter);
+  }
+  if (q.startedBefore !== undefined) {
+    where.push(`COALESCE(r.started_at, r.created_at) <= $${p++}`);
+    params.push(q.startedBefore);
+  }
+  const whereSql = where.join(' AND ');
+
+  // COUNT and SELECT run in parallel — both share the same composite index
+  // so the count query is cheap up to ~hundreds of thousands of rows.
+  const [countResult, pageResult] = await Promise.all([
+    query<{ total: string }>(
+      `SELECT COUNT(*)::text AS total FROM runs r WHERE ${whereSql}`,
+      params
+    ),
+    query<RunRow>(
+      // Stable tiebreaker on `id`. Without it, LIMIT/OFFSET pagination
+      // can drop or duplicate rows when two runs share the exact same
+      // created_at (ms-precision ties are realistic at 140 scrapers ×
+      // burst writes — Postgres doesn't guarantee row order on ties).
+      //
+      // WHERE-clause columns are `r.`-qualified above because the
+      // LEFT JOIN below brings in `datasets`, which shares the
+      // `user_id` and `created_at` column names with `runs` —
+      // unqualified references would error with "column reference
+      // is ambiguous". `status` and `actor_id` are not ambiguous
+      // today, but qualifying them keeps the where-builder uniform
+      // and protects against future columns being added on either
+      // side of the join.
+      `${RUN_SELECT_WITH_DATASET_COUNT}
+       WHERE ${whereSql}
+       ORDER BY r.created_at ${desc ? 'DESC' : 'ASC'}, r.id ${desc ? 'DESC' : 'ASC'}
+       LIMIT $${p++} OFFSET $${p++}`,
+      [...params, limit, offset]
+    ),
+  ]);
+
+  const total = parseInt(countResult.rows[0]?.total ?? '0', 10);
+
+  return {
+    total,
+    count: pageResult.rows.length,
+    offset,
+    limit,
+    desc,
+    items: pageResult.rows.map(formatRun),
+  };
+}
 
 function formatRun(row: RunRow) {
   return {

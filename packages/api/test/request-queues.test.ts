@@ -14,6 +14,7 @@ vi.mock('../src/auth/middleware.js', () => ({
 }));
 
 import { requestQueuesRoutes } from '../src/routes/request-queues.js';
+import { configureHttp } from '../src/http-setup.js';
 
 const mockQuery = vi.fn();
 vi.mock('../src/db/index.js', () => ({
@@ -68,12 +69,10 @@ describe('Request Queue Routes', () => {
 
   beforeAll(async () => {
     app = Fastify();
-    // Mirror the prod text/plain parser from src/index.ts (Apify SDK
-    // compatibility): the body reaches routes as a raw Buffer, which the
-    // batch endpoint handles with its Buffer.isBuffer branch.
-    app.addContentTypeParser('text/plain', { parseAs: 'buffer' }, (_req, body, done) => {
-      done(null, body);
-    });
+    // Production HTTP setup (src/http-setup.ts): the text/plain → Buffer
+    // parser (Apify SDK compatibility; the batch endpoint handles it with its
+    // Buffer.isBuffer branch) and the ZodError → 400 handler.
+    await configureHttp(app);
     app.register(requestQueuesRoutes, { prefix: '/v2' });
     await app.ready();
   });
@@ -278,7 +277,7 @@ describe('Request Queue Routes', () => {
     it('should release lock', async () => {
       mockQuery
         .mockResolvedValueOnce({ rows: [createQueueRow()] })
-        .mockResolvedValueOnce({ rows: [] });
+        .mockResolvedValueOnce({ rows: [{ id: 'req-1' }] });
 
       const response = await app.inject({
         method: 'DELETE',
@@ -287,6 +286,46 @@ describe('Request Queue Routes', () => {
 
       expect(response.statusCode).toBe(204);
     });
+
+    it.each(['true', '1'])(
+      'moves the request to the head on forefront=%s (negated order_no)',
+      async (forefront) => {
+        mockQuery
+          .mockResolvedValueOnce({ rows: [createQueueRow()] })
+          .mockResolvedValueOnce({ rows: [{ id: 'req-1' }] });
+
+        const response = await app.inject({
+          method: 'DELETE',
+          url: `/v2/request-queues/queue-1/requests/req-1/lock?clientKey=worker1&forefront=${forefront}`,
+        });
+
+        expect(response.statusCode).toBe(204);
+        const [updateSql] = mockQuery.mock.calls[1] as [string];
+        expect(updateSql).toContain('locked_until = NULL');
+        expect(updateSql).toContain(
+          "order_no = -nextval(pg_get_serial_sequence('requests', 'order_no'))"
+        );
+      }
+    );
+
+    it.each(['false', '0', undefined])(
+      'leaves order_no alone on forefront=%s',
+      async (forefront) => {
+        mockQuery
+          .mockResolvedValueOnce({ rows: [createQueueRow()] })
+          .mockResolvedValueOnce({ rows: [{ id: 'req-1' }] });
+
+        const qs = forefront === undefined ? '' : `&forefront=${forefront}`;
+        await app.inject({
+          method: 'DELETE',
+          url: `/v2/request-queues/queue-1/requests/req-1/lock?clientKey=worker1${qs}`,
+        });
+
+        const [updateSql] = mockQuery.mock.calls[1] as [string];
+        expect(updateSql).toContain('locked_until = NULL');
+        expect(updateSql).not.toContain('order_no');
+      }
+    );
 
     it('returns 404 when the queue does not exist', async () => {
       mockQuery.mockResolvedValueOnce({ rows: [] });
@@ -298,6 +337,24 @@ describe('Request Queue Routes', () => {
 
       expect(response.statusCode).toBe(404);
       expect(response.json().error.type).toBe('record-not-found');
+      expect(redisMocks.releaseLock).not.toHaveBeenCalled();
+    });
+
+    it('scopes the UPDATE to the resolved queue and 404s a foreign request id', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [createQueueRow()] })
+        .mockResolvedValueOnce({ rows: [] }); // request not in this queue
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/v2/request-queues/queue-1/requests/other-users-req/lock?clientKey=worker1',
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json().error.type).toBe('record-not-found');
+      const [updateSql, params] = mockQuery.mock.calls[1] as [string, unknown[]];
+      expect(updateSql).toContain('queue_id = $2');
+      expect(params).toEqual(['other-users-req', createQueueRow().id]);
       expect(redisMocks.releaseLock).not.toHaveBeenCalled();
     });
   });
@@ -424,20 +481,60 @@ describe('Request Queue Routes', () => {
       expect(insertParams[1]).toBeNull();
     });
 
-    it('scores the head entry negatively for forefront requests', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rows: [createQueueRow()] })
-        .mockResolvedValueOnce({ rows: [createRequestRow({ order_no: 7 })] })
-        .mockResolvedValueOnce({ rows: [] });
+    it.each(['true', '1'])(
+      'stores a negative order_no for forefront=%s and scores the head entry with it',
+      async (forefront) => {
+        mockQuery
+          .mockResolvedValueOnce({ rows: [createQueueRow()] })
+          .mockResolvedValueOnce({ rows: [createRequestRow({ order_no: -7 })] })
+          .mockResolvedValueOnce({ rows: [] });
 
-      await app.inject({
+        const response = await app.inject({
+          method: 'POST',
+          url: `/v2/request-queues/queue-1/requests?forefront=${forefront}`,
+          payload: { url: 'https://example.com' },
+        });
+
+        expect(response.statusCode).toBe(201);
+        // The sign lands on the row: head reads order by order_no in Postgres.
+        const [insertSql, insertParams] = mockQuery.mock.calls[1] as [string, unknown[]];
+        expect(insertSql).toContain('INSERT INTO requests');
+        expect(insertParams.at(-1)).toBe(-1);
+        const [, , score] = redisMocks.addToQueueHead.mock.calls[0] as [string, string, number];
+        expect(score).toBe(-7);
+      }
+    );
+
+    it.each(['false', '0', undefined])(
+      'stores a positive order_no for forefront=%s',
+      async (forefront) => {
+        mockQuery
+          .mockResolvedValueOnce({ rows: [createQueueRow()] })
+          .mockResolvedValueOnce({ rows: [createRequestRow({ order_no: 7 })] })
+          .mockResolvedValueOnce({ rows: [] });
+
+        const qs = forefront === undefined ? '' : `?forefront=${forefront}`;
+        await app.inject({
+          method: 'POST',
+          url: `/v2/request-queues/queue-1/requests${qs}`,
+          payload: { url: 'https://example.com' },
+        });
+
+        const [, insertParams] = mockQuery.mock.calls[1] as [string, unknown[]];
+        expect(insertParams.at(-1)).toBe(1);
+        const [, , score] = redisMocks.addToQueueHead.mock.calls[0] as [string, string, number];
+        expect(score).toBe(7);
+      }
+    );
+
+    it('rejects a forefront value that is not a boolean', async () => {
+      const response = await app.inject({
         method: 'POST',
-        url: '/v2/request-queues/queue-1/requests?forefront=true',
+        url: '/v2/request-queues/queue-1/requests?forefront=yes',
         payload: { url: 'https://example.com' },
       });
-
-      const [, , score] = redisMocks.addToQueueHead.mock.calls[0] as [string, string, number];
-      expect(score).toBe(-7);
+      expect(response.statusCode).toBe(400);
+      expect(mockQuery).not.toHaveBeenCalled();
     });
 
     it('returns 500 on the vanishing-row race (no insert, no existing)', async () => {
@@ -506,6 +603,44 @@ describe('Request Queue Routes', () => {
         (sql as string).includes('total_request_count = total_request_count +')
       );
       expect(counterCall?.[1]).toEqual([1, 'queue-1']);
+    });
+
+    it.each([
+      ['true', -1],
+      ['1', -1],
+      ['false', 1],
+      ['0', 1],
+      [undefined, 1],
+    ])('signs the batch INSERT order_no for forefront=%s', async (forefront, sign) => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [createQueueRow()] })
+        .mockResolvedValueOnce({ rows: [{ id: 'new-1' }] })
+        .mockResolvedValueOnce({ rows: [] }); // counter UPDATE
+
+      const qs = forefront === undefined ? '' : `?forefront=${forefront}`;
+      const response = await app.inject({
+        method: 'POST',
+        url: `/v2/request-queues/queue-1/requests/batch${qs}`,
+        payload: [{ url: 'https://a.example.com' }],
+      });
+
+      expect(response.statusCode).toBe(200);
+      const [insertSql, insertParams] = mockQuery.mock.calls[1] as [string, unknown[]];
+      expect(insertSql).toContain('INSERT INTO requests');
+      expect(insertSql).toContain(
+        "$8::int * nextval(pg_get_serial_sequence('requests', 'order_no'))"
+      );
+      expect(insertParams.at(-1)).toBe(sign);
+    });
+
+    it('rejects a batch forefront value that is not a boolean', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/request-queues/queue-1/requests/batch?forefront=yes',
+        payload: [{ url: 'https://a.example.com' }],
+      });
+      expect(response.statusCode).toBe(400);
+      expect(mockQuery).not.toHaveBeenCalled();
     });
 
     it('skips the counter update when everything was a duplicate', async () => {
@@ -676,6 +811,59 @@ describe('Request Queue Routes', () => {
       expect(updateSql).not.toContain('handled_at = $');
       expect(updateParams[0]).toBe(3);
       expect(redisMocks.removeFromQueueHead).not.toHaveBeenCalled();
+    });
+
+    it.each(['true', '1'])(
+      'reclaim with forefront=%s re-stamps a negated order_no',
+      async (forefront) => {
+        mockQuery
+          .mockResolvedValueOnce({ rows: [createRequestRow()] })
+          .mockResolvedValueOnce({ rows: [] });
+
+        const response = await app.inject({
+          method: 'PUT',
+          url: `/v2/request-queues/queue-1/requests/req-1?forefront=${forefront}`,
+          payload: { retryCount: 1 },
+        });
+
+        expect(response.statusCode).toBe(200);
+        const [updateSql] = mockQuery.mock.calls[1] as [string];
+        expect(updateSql).toContain(
+          "order_no = -nextval(pg_get_serial_sequence('requests', 'order_no'))"
+        );
+      }
+    );
+
+    it('reclaim without forefront leaves order_no alone', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [createRequestRow()] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      await app.inject({
+        method: 'PUT',
+        url: '/v2/request-queues/queue-1/requests/req-1?forefront=0',
+        payload: { retryCount: 1 },
+      });
+
+      const [updateSql] = mockQuery.mock.calls[1] as [string];
+      expect(updateSql).not.toContain('order_no');
+    });
+
+    it('does not re-stamp order_no when forefront accompanies a handledAt', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [createRequestRow()] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      await app.inject({
+        method: 'PUT',
+        url: '/v2/request-queues/queue-1/requests/req-1?forefront=1',
+        payload: { handledAt: new Date().toISOString() },
+      });
+
+      const [updateSql] = mockQuery.mock.calls[1] as [string];
+      expect(updateSql).toContain('handled_at = $1');
+      expect(updateSql).not.toContain('order_no');
     });
 
     it('reports an already-handled request without re-bumping counts', async () => {

@@ -540,6 +540,94 @@ describe('Actor Routes', () => {
     });
   });
 
+  describe('GET /v2/acts/:actorId/runs', () => {
+    const runRow = (overrides = {}) => ({
+      id: 'run-1',
+      actor_id: 'actor-1',
+      user_id: 'test-user-id',
+      status: 'SUCCEEDED',
+      status_message: null,
+      started_at: new Date(),
+      finished_at: new Date(),
+      default_dataset_id: null,
+      default_key_value_store_id: null,
+      default_request_queue_id: null,
+      timeout_secs: 3600,
+      memory_mbytes: 1024,
+      container_url: null,
+      build_id: null,
+      build_number: null,
+      exit_code: 0,
+      stats_json: null,
+      retry_count: 0,
+      origin_run_id: null,
+      run_after: null,
+      created_at: new Date(),
+      modified_at: new Date(),
+      default_dataset_item_count: null,
+      ...overrides,
+    });
+
+    it('resolves the actor by name and filters runs by the resolved actors.id', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ id: 'actor-1' }] }) // actor lookup
+        .mockResolvedValueOnce({ rows: [{ total: '1' }] }) // COUNT
+        .mockResolvedValueOnce({ rows: [runRow()] }); // page
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/acts/test-actor/runs?desc=0&status=SUCCEEDED,FAILED&limit=10',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.data).toMatchObject({ total: 1, count: 1, offset: 0, limit: 10, desc: false });
+      expect(body.data.items[0]).toMatchObject({ id: 'run-1', actId: 'actor-1' });
+
+      // Same user-scoped id-or-name lookup as GET /acts/:actorId.
+      const [lookupSql, lookupParams] = mockQuery.mock.calls[0] as [string, unknown[]];
+      expect(lookupSql).toContain('(id = $1 OR name = $1) AND user_id = $2');
+      expect(lookupParams).toEqual(['test-actor', 'test-user-id']);
+
+      // Runs are filtered by the resolved id, never the raw path param.
+      const [countSql, countParams] = mockQuery.mock.calls[1] as [string, unknown[]];
+      expect(countSql).toContain('r.user_id = $1');
+      expect(countSql).toContain('r.status = ANY($2)');
+      expect(countSql).toContain('r.actor_id = $3');
+      expect(countParams).toEqual(['test-user-id', ['SUCCEEDED', 'FAILED'], 'actor-1']);
+      const [pageSql] = mockQuery.mock.calls[2] as [string];
+      expect(pageSql).toContain('ORDER BY r.created_at ASC, r.id ASC');
+    });
+
+    it('ignores an actorId query param in favour of the path actor', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ id: 'actor-1' }] })
+        .mockResolvedValueOnce({ rows: [{ total: '0' }] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      await app.inject({ method: 'GET', url: '/v2/acts/actor-1/runs?actorId=other-actor' });
+
+      const [, countParams] = mockQuery.mock.calls[1] as [string, unknown[]];
+      expect(countParams).toEqual(['test-user-id', 'actor-1']);
+    });
+
+    it('returns 404 record-not-found for an unknown or foreign actor', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({ method: 'GET', url: '/v2/acts/someone-else/runs' });
+
+      expect(response.statusCode).toBe(404);
+      expect(JSON.parse(response.body).error.type).toBe('record-not-found');
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects an invalid desc value with 400', async () => {
+      const response = await app.inject({ method: 'GET', url: '/v2/acts/actor-1/runs?desc=maybe' });
+      expect(response.statusCode).toBe(400);
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+  });
+
   describe('POST /v2/acts/:actorId/runs', () => {
     it('should start actor run', async () => {
       mockQuery

@@ -21,6 +21,7 @@ import {
   isLocked as _isLocked,
 } from '../storage/redis.js';
 import { authenticate } from '../auth/middleware.js';
+import { zBoolQuery } from '../schemas/common.js';
 import {
   CreateQueueSchema,
   AddRequestSchema,
@@ -277,9 +278,9 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
           `
           UPDATE requests 
           SET locked_until = NOW() + ($1::int * INTERVAL '1 second'), locked_by = $2
-          WHERE id = $3
+          WHERE id = $3 AND queue_id = $4
         `,
-          [lockSecs, clientKey, req.id]
+          [lockSecs, clientKey, req.id, qId]
         );
         lockedRequests.push(req);
       }
@@ -356,7 +357,7 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     Querystring: { forefront?: string };
   }>('/request-queues/:queueId/requests', async (request, reply) => {
     const { queueId } = request.params;
-    const forefront = request.query.forefront === 'true';
+    const forefront = zBoolQuery.parse(request.query.forefront) ?? false;
     const body = AddRequestSchema.parse(request.body);
 
     // Get or create queue (user-scoped)
@@ -383,7 +384,11 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     const uniqueKey =
       body.uniqueKey || computeUniqueKey(body.url, body.method || 'GET', body.payload);
 
-    // For forefront, use negative order_no to put at front
+    // For forefront, use a negative order_no to put it at the front. The
+    // head/listAndLock reads order by `order_no ASC` in Postgres, so the sign
+    // has to land on the row itself, not just on the Redis head score. Taking
+    // the negated next sequence value makes forefront LIFO (the latest
+    // forefront request has the most negative order_no), as on Apify.
     const orderModifier = forefront ? -1 : 1;
 
     // INSERT ... ON CONFLICT DO NOTHING is the race-free shape: under
@@ -397,8 +402,9 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     const id = nanoid();
     const insertResult = await query<RequestRow>(
       `
-      INSERT INTO requests (id, queue_id, unique_key, url, method, payload, headers, user_data, no_retry)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      INSERT INTO requests (id, queue_id, unique_key, url, method, payload, headers, user_data, no_retry, order_no)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+              $10::int * nextval(pg_get_serial_sequence('requests', 'order_no')))
       ON CONFLICT (queue_id, unique_key) DO NOTHING
       RETURNING *
     `,
@@ -412,6 +418,7 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
         body.headers ? JSON.stringify(body.headers) : null,
         body.userData ? JSON.stringify(body.userData) : null,
         body.noRetry || false,
+        orderModifier,
       ]
     );
 
@@ -453,7 +460,7 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     );
 
     // Add to Redis head cache
-    await addToQueueHead(qId, id, result.rows[0]!.order_no * orderModifier);
+    await addToQueueHead(qId, id, Number(result.rows[0]!.order_no));
 
     reply.status(201);
     return {
@@ -474,7 +481,12 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     Querystring: { forefront?: string };
   }>('/request-queues/:queueId/requests/batch', async (request, _reply) => {
     const { queueId } = request.params;
-    const _forefront = request.query.forefront === 'true';
+    const forefront = zBoolQuery.parse(request.query.forefront) ?? false;
+    // Same sign trick as the single-add route: forefront rows take a negated
+    // sequence value so head reads (`ORDER BY order_no ASC`) serve them first.
+    // Chunk elements insert concurrently, so the order *within* a forefront
+    // batch is not guaranteed.
+    const orderModifier = forefront ? -1 : 1;
     let body = request.body;
 
     // Handle Buffer body from content-type parser
@@ -538,8 +550,9 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
             const id = nanoid();
             const inserted = await query<{ id: string }>(
               `
-            INSERT INTO requests (id, queue_id, unique_key, url, method, payload, user_data)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO requests (id, queue_id, unique_key, url, method, payload, user_data, order_no)
+            VALUES ($1, $2, $3, $4, $5, $6, $7,
+                    $8::int * nextval(pg_get_serial_sequence('requests', 'order_no')))
             ON CONFLICT (queue_id, unique_key) DO NOTHING
             RETURNING id
           `,
@@ -551,6 +564,7 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
                 req.method || 'GET',
                 req.payload,
                 req.userData ? JSON.stringify(req.userData) : null,
+                orderModifier,
               ]
             );
 
@@ -677,7 +691,7 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
   }>('/request-queues/:queueId/requests/:requestId', async (request, reply) => {
     const { queueId, requestId } = request.params;
     const updates = UpdateRequestSchema.parse(request.body);
-    const _forefront = request.query.forefront === 'true';
+    const forefront = zBoolQuery.parse(request.query.forefront) ?? false;
     const clientKey = request.query.clientKey;
 
     const existingResult = await query<RequestRow>(
@@ -728,13 +742,23 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
       values.push(JSON.stringify(updates.userData));
     }
 
+    // reclaimRequest(req, { forefront: true }) — move the request to the head
+    // by re-stamping order_no with a negated sequence value. Skipped when the
+    // update marks the request handled: it leaves the queue anyway.
+    if (forefront && !updates.handledAt) {
+      setClauses.push(`order_no = -nextval(pg_get_serial_sequence('requests', 'order_no'))`);
+    }
+
     // Clear lock when updating
     setClauses.push('locked_until = NULL');
     setClauses.push('locked_by = NULL');
 
     if (setClauses.length > 0) {
-      values.push(requestId);
-      await query(`UPDATE requests SET ${setClauses.join(', ')} WHERE id = $${paramIndex}`, values);
+      values.push(requestId, existing.queue_id);
+      await query(
+        `UPDATE requests SET ${setClauses.join(', ')} WHERE id = $${paramIndex} AND queue_id = $${paramIndex + 1}`,
+        values
+      );
     }
 
     // Release Redis lock
@@ -807,9 +831,9 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
       `
       UPDATE requests 
       SET locked_until = NOW() + ($1::int * INTERVAL '1 second')
-      WHERE id = $2
+      WHERE id = $2 AND queue_id = $3
     `,
-      [lockSecs, requestId]
+      [lockSecs, requestId, queue.rows[0].id]
     );
 
     return { data: { lockExpiresAt: new Date(Date.now() + lockSecs * 1000).toISOString() } };
@@ -823,7 +847,8 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     Querystring: { clientKey?: string; forefront?: string };
   }>('/request-queues/:queueId/requests/:requestId/lock', async (request, reply) => {
     const { queueId, requestId } = request.params;
-    const { clientKey = '', forefront: _forefront } = request.query;
+    const { clientKey = '' } = request.query;
+    const forefront = zBoolQuery.parse(request.query.forefront) ?? false;
 
     const queue = await query<QueueRow>(
       'SELECT * FROM request_queues WHERE (id = $1 OR name = $2) AND user_id = $3',
@@ -835,18 +860,32 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
       return { error: { type: 'record-not-found', message: 'Request queue not found' } };
     }
 
-    // Release in Redis
-    await releaseLock(queue.rows[0].id, requestId, clientKey);
+    const qId = queue.rows[0].id;
 
-    // Clear in DB
-    await query(
+    // Clear in DB. With forefront, also move the request to the head of the
+    // queue (negated sequence value, as on the add routes). Scoped to the
+    // resolved queue: a request id alone would let a caller clear another
+    // user's lock by pairing their own queue id with a foreign request id.
+    const reorder = forefront
+      ? `, order_no = -nextval(pg_get_serial_sequence('requests', 'order_no'))`
+      : '';
+    const cleared = await query(
       `
-      UPDATE requests 
-      SET locked_until = NULL, locked_by = NULL
-      WHERE id = $1
+      UPDATE requests
+      SET locked_until = NULL, locked_by = NULL${reorder}
+      WHERE id = $1 AND queue_id = $2
+      RETURNING id
     `,
-      [requestId]
+      [requestId, qId]
     );
+
+    if (!cleared.rows[0]) {
+      reply.status(404);
+      return { error: { type: 'record-not-found', message: 'Request not found' } };
+    }
+
+    // Release in Redis
+    await releaseLock(qId, requestId, clientKey);
 
     reply.status(204);
   });

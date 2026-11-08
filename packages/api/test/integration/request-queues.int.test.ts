@@ -92,4 +92,75 @@ describe('Request Queues (integration)', () => {
     // Second add should return the existing request (wasAlreadyPresent)
     expect(dup.json().data.wasAlreadyPresent).toBe(true);
   });
+
+  it("cannot touch another user's request through the caller's own queue id", async () => {
+    // User A: queue with one request, locked by A's crawler.
+    const a = await createTestUser('rq-owner-a@test.local', 'pw-rq-owner-a-1');
+    const authA = { authorization: `Bearer ${a.token}` };
+    const qa = await app.inject({
+      method: 'POST',
+      url: '/v2/request-queues?name=owner-a-queue',
+      headers: authA,
+    });
+    const queueA = qa.json().data.id;
+    const added = await app.inject({
+      method: 'POST',
+      url: `/v2/request-queues/${queueA}/requests`,
+      headers: authA,
+      payload: { url: 'https://example.com/a', uniqueKey: 'a' },
+    });
+    const ridA = added.json().data.requestId;
+    const lock = await app.inject({
+      method: 'POST',
+      url: `/v2/request-queues/${queueA}/head/lock?lockSecs=300&clientKey=crawler-a`,
+      headers: authA,
+    });
+    expect(lock.json().data.items.map((r: { id: string }) => r.id)).toEqual([ridA]);
+
+    // User B: own queue, then aims every per-request route at A's request id.
+    const b = await createTestUser('rq-attacker-b@test.local', 'pw-rq-attacker-b-1');
+    const authB = { authorization: `Bearer ${b.token}` };
+    const qb = await app.inject({
+      method: 'POST',
+      url: '/v2/request-queues?name=attacker-b-queue',
+      headers: authB,
+    });
+    const queueB = qb.json().data.id;
+    const base = `/v2/request-queues/${queueB}/requests/${ridA}`;
+
+    const attempts = [
+      { method: 'DELETE' as const, url: `${base}/lock` },
+      { method: 'DELETE' as const, url: `${base}/lock?forefront=1` },
+      { method: 'PUT' as const, url: `${base}/lock?lockSecs=1` },
+      { method: 'GET' as const, url: base },
+      {
+        method: 'PUT' as const,
+        url: base,
+        payload: { id: ridA, url: 'https://example.com/a', uniqueKey: 'a' },
+      },
+    ];
+    for (const attempt of attempts) {
+      const r = await app.inject({ ...attempt, headers: authB });
+      expect(r.statusCode, `${attempt.method} ${attempt.url}`).toBe(404);
+      expect(r.json().error.type).toBe('record-not-found');
+    }
+
+    // A's request is untouched: still locked by A, not moved to the head, and
+    // a second A client is not served it again (no double crawl).
+    const { pool } = await import('../../src/db/index.js');
+    const row = await pool.query(
+      `SELECT locked_by, locked_until > NOW() + INTERVAL '200 seconds' AS long_lock, order_no
+         FROM requests WHERE id = $1`,
+      [ridA]
+    );
+    expect(row.rows[0]).toMatchObject({ locked_by: 'crawler-a', long_lock: true });
+    expect(Number(row.rows[0].order_no)).toBeGreaterThan(0);
+
+    const again = await app.inject({
+      method: 'POST',
+      url: `/v2/request-queues/${queueA}/head/lock?lockSecs=60&clientKey=crawler-a2`,
+      headers: authA,
+    });
+    expect(again.json().data.items).toEqual([]);
+  });
 });
