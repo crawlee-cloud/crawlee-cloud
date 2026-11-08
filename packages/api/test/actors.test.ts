@@ -18,16 +18,21 @@ import { actorsRoutes } from '../src/routes/actors.js';
 import { CreateActorSchema, UpdateActorSchema } from '../src/schemas/actors.js';
 
 const mockQuery = vi.fn();
+/** BEGIN/COMMIT/ROLLBACK and release() calls on pooled clients, in order. */
+const txLog: string[] = [];
 vi.mock('../src/db/index.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
   getClient: vi.fn().mockImplementation(async () => ({
     query: async (text: string, params?: unknown[]) => {
       if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') {
+        txLog.push(text);
         return { rows: [], rowCount: 0 };
       }
       return mockQuery(text, params);
     },
-    release: vi.fn(),
+    release: vi.fn(() => {
+      txLog.push('release');
+    }),
   })),
 }));
 
@@ -259,7 +264,11 @@ describe('Actor Routes', () => {
       const stored = createActorRow({
         default_run_options: defaultRunOptions,
       });
-      mockQuery.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [stored] });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [stored] })
+        // Build recording (actor lock, dedup lookup, insert).
+        .mockResolvedValue({ rows: [{ default_run_options: defaultRunOptions }] });
 
       const response = await app.inject({
         method: 'POST',
@@ -433,7 +442,9 @@ describe('Actor Routes', () => {
       };
       mockQuery
         .mockResolvedValueOnce({ rows: [createActorRow()] }) // resolveActor
-        .mockResolvedValueOnce({ rows: [createActorRow({ default_run_options: dro })] });
+        .mockResolvedValueOnce({ rows: [createActorRow({ default_run_options: dro })] })
+        // Build recording (actor lock, dedup lookup, insert).
+        .mockResolvedValue({ rows: [{ default_run_options: dro }] });
 
       const response = await app.inject({
         method: 'PUT',
@@ -603,6 +614,7 @@ describe('Actor Routes', () => {
       mockQuery
         .mockResolvedValueOnce({ rows: [row] }) // existing actor
         .mockResolvedValueOnce({ rows: [row] }) // UPDATE actors
+        .mockResolvedValueOnce({ rows: [{ default_run_options: { image: IMAGE } }] }) // actor row lock
         .mockResolvedValueOnce({ rows: [{ id: 'build-1', image_name: IMAGE, version_id: null }] })
         .mockResolvedValueOnce({ rows: [] }); // UPDATE actor_builds
 
@@ -613,7 +625,7 @@ describe('Actor Routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      const [sql, params] = mockQuery.mock.calls[3] as [string, unknown[]];
+      const [sql, params] = mockQuery.mock.calls[4] as [string, unknown[]];
       expect(sql).toMatch(/UPDATE actor_builds b\s+SET actor_definition =/);
       expect(params).toEqual(['build-1', JSON.stringify(definition), 'actor-1', null, IMAGE]);
     });
@@ -649,12 +661,14 @@ describe('Actor Routes', () => {
       expect(response.statusCode).toBe(500);
     });
 
-    it('still swallows build write failures when no definition was sent', async () => {
+    it('also fails the request when the build write fails and no definition was sent', async () => {
+      // #117: the build row backs builds/default and runs' buildNumber, so a
+      // failed record is a 5xx even for a plain image push.
       const row = createActorRow({ default_run_options: { image: IMAGE } });
       mockQuery
         .mockResolvedValueOnce({ rows: [row] }) // resolveActor
         .mockResolvedValueOnce({ rows: [row] }) // UPDATE actors
-        .mockRejectedValueOnce(new Error('db down')); // dedup SELECT
+        .mockRejectedValueOnce(new Error('db down')); // actor row lock
 
       const response = await app.inject({
         method: 'PUT',
@@ -662,7 +676,8 @@ describe('Actor Routes', () => {
         payload: { defaultRunOptions: { image: IMAGE } },
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode).toBe(500);
+      expect(txLog).toContain('ROLLBACK');
     });
 
     it('PUT with only actorDefinition on an actor without an image returns 400 before updating', async () => {
@@ -713,6 +728,7 @@ describe('Actor Routes', () => {
       mockQuery
         .mockResolvedValueOnce({ rows: [{ default_run_options: { image: IMAGE } }] })
         .mockResolvedValueOnce({ rows: [row] }) // UPDATE actors
+        .mockResolvedValueOnce({ rows: [{ default_run_options: { image: IMAGE } }] }) // actor row lock
         // Latest build carries a version; no version in the body must still match.
         .mockResolvedValueOnce({ rows: [{ id: 'build-1', image_name: IMAGE, version_id: 'v-1' }] })
         .mockResolvedValueOnce({ rows: [] });
@@ -724,8 +740,8 @@ describe('Actor Routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(mockQuery).toHaveBeenCalledTimes(4);
-      const [sql] = mockQuery.mock.calls[3] as [string];
+      expect(mockQuery).toHaveBeenCalledTimes(5);
+      const [sql] = mockQuery.mock.calls[4] as [string];
       expect(sql).toContain('UPDATE actor_builds');
       expect(sql).not.toContain('INSERT');
     });
@@ -735,6 +751,7 @@ describe('Actor Routes', () => {
       mockQuery
         .mockResolvedValueOnce({ rows: [row] }) // resolveActor
         .mockResolvedValueOnce({ rows: [row] }) // UPDATE actors
+        .mockResolvedValueOnce({ rows: [{ default_run_options: { image: IMAGE } }] }) // actor row lock
         .mockResolvedValueOnce({ rows: [{ id: 'build-1', image_name: 'old', version_id: null }] })
         .mockResolvedValueOnce({ rows: [] });
 
@@ -745,7 +762,7 @@ describe('Actor Routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      const [sql, params] = mockQuery.mock.calls[3] as [string, unknown[]];
+      const [sql, params] = mockQuery.mock.calls[4] as [string, unknown[]];
       expect(sql).toContain('INSERT INTO actor_builds');
       expect(sql).toMatch(/CASE WHEN \$5::jsonb IS NULL THEN \(SELECT actor_definition FROM src\)/);
       // Registry-created builds (RUNNING, no definition) never feed carry-over.
@@ -757,6 +774,60 @@ describe('Actor Routes', () => {
         /ORDER BY COALESCE\(version_id = \$3::varchar, false\) DESC,\s+COALESCE\(image_name = \$4::text, false\) DESC,\s+created_at DESC/
       );
       expect(params[4]).toBeNull();
+    });
+
+    it('records the build on one transaction that locks the actor row first', async () => {
+      const row = createActorRow({ default_run_options: { image: IMAGE } });
+      txLog.length = 0;
+      mockQuery
+        .mockResolvedValueOnce({ rows: [row] }) // resolveActor
+        .mockResolvedValueOnce({ rows: [row] }) // UPDATE actors
+        .mockResolvedValueOnce({ rows: [{ default_run_options: { image: IMAGE } }] }) // actor row lock
+        .mockResolvedValueOnce({ rows: [] }) // clear sibling tag
+        .mockResolvedValueOnce({ rows: [{ id: 'v-2' }] }) // claim tag on existing version
+        .mockResolvedValueOnce({ rows: [{ id: 'build-1', image_name: 'old', version_id: 'v-1' }] })
+        .mockResolvedValueOnce({ rows: [] }) // INSERT actor_builds
+        .mockResolvedValueOnce({ rows: [] }); // UPDATE actors current_version_id
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/v2/acts/actor-1',
+        payload: { defaultRunOptions: { image: IMAGE }, version: '0.2' },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const sqls = (mockQuery.mock.calls as Array<[string]>).slice(2).map(([sql]) => sql);
+      // The lock is an UPDATE that re-writes the requested defaultRunOptions.
+      expect(sqls[0]).toMatch(/UPDATE actors SET default_run_options = COALESCE\(\$2::jsonb/);
+      expect((mockQuery.mock.calls[2] as [string, unknown[]])[1]).toEqual([
+        'actor-1',
+        JSON.stringify({ image: IMAGE }),
+      ]);
+      expect(sqls[1]).toContain('SET build_tag = NULL');
+      expect(sqls[2]).toContain('SET build_tag = $3');
+      expect(sqls[4]).toContain('INSERT INTO actor_builds');
+      expect(sqls[5]).toContain('UPDATE actors SET current_version_id');
+      expect(txLog).toEqual(['BEGIN', 'COMMIT', 'release']);
+    });
+
+    it('rolls back and answers 500 (not a silent 200) when recording the build fails', async () => {
+      const row = createActorRow({ default_run_options: { image: IMAGE } });
+      txLog.length = 0;
+      mockQuery
+        .mockResolvedValueOnce({ rows: [row] }) // resolveActor
+        .mockResolvedValueOnce({ rows: [row] }) // UPDATE actors
+        .mockResolvedValueOnce({ rows: [{ default_run_options: { image: IMAGE } }] }) // actor row lock
+        .mockResolvedValueOnce({ rows: [{ id: 'build-1', image_name: 'old', version_id: null }] })
+        .mockRejectedValueOnce(new Error('insert failed')); // INSERT actor_builds
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/v2/acts/actor-1',
+        payload: { defaultRunOptions: { image: IMAGE } },
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(txLog).toEqual(['BEGIN', 'ROLLBACK', 'release']);
     });
   });
 

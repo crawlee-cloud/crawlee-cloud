@@ -25,6 +25,7 @@ import {
   markLongPoll,
 } from '../lib/wait-for-terminal.js';
 import { sendDatasetItems, type DatasetItemsQuery } from '../lib/dataset-items.js';
+import { selectRunBuildStamp } from '../lib/builds.js';
 
 export interface RunRow {
   id: string;
@@ -869,17 +870,12 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
         // the origin's stamp: the runner always executes the current
         // `:latest` image anyway (it never reads build_id), so copying a
         // pre-rebuild stamp would make the run row lie about what ran.
-        const buildLookup = await client.query<{ build_id: string; version_number: string | null }>(
-          `SELECT b.id AS build_id, v.version_number
-             FROM actor_builds b
-             LEFT JOIN actor_versions v ON v.id = b.version_id
-            WHERE b.actor_id = $1 AND b.status = 'SUCCEEDED'
-            ORDER BY b.created_at DESC
-            LIMIT 1`,
-          [originRun.actor_id]
-        );
-        const buildId = buildLookup.rows[0]?.build_id ?? null;
-        const buildNumber = buildLookup.rows[0]?.version_number ?? null;
+        // Same buildNumber as the builds API reports for this build.
+        const buildStamp = originRun.actor_id
+          ? await selectRunBuildStamp(originRun.actor_id, client)
+          : null;
+        const buildId = buildStamp?.build_id ?? null;
+        const buildNumber = buildStamp?.build_number ?? null;
 
         const result = await client.query<RunRow>(
           `

@@ -3,6 +3,7 @@
  */
 
 import type { FastifyPluginAsync } from 'fastify';
+import type pg from 'pg';
 import { nanoid } from 'nanoid';
 import {
   CreateActorSchema,
@@ -29,6 +30,7 @@ import { appendSearchCondition } from '../db/search.js';
 import { redis } from '../storage/redis.js';
 import { authenticate } from '../auth/middleware.js';
 import { resolveActor, ACTOR_NOT_FOUND, type ActorRow } from '../lib/resolve-actor.js';
+import { selectRunBuildStamp } from '../lib/builds.js';
 
 /** ActorRow as returned by the queries below, with the owner's username. */
 type ActorRowWithUsername = ActorRow & { username: string | null };
@@ -54,6 +56,7 @@ const RETURNING_WITH_USERNAME = `RETURNING *, (SELECT username FROM users WHERE 
  * implicitly want when they run an actor without specifying a tag.
  */
 async function findOrCreateActorVersion(
+  db: pg.PoolClient,
   actorId: string,
   versionNumber: string,
   buildTag = 'latest'
@@ -66,28 +69,32 @@ async function findOrCreateActorVersion(
   // this in test/integration/runs-list and the codex review on PR #18
   // both flagged it.
   //
-  // We claim-and-clear in a single statement so the tag is never on
-  // zero versions or two simultaneously.
-  const existing = await query<{ id: string }>(
-    `WITH cleared AS (
-       UPDATE actor_versions SET build_tag = NULL
-       WHERE actor_id = $1 AND build_tag = $3 AND version_number <> $2
-     )
-     UPDATE actor_versions SET build_tag = $3
+  // Clear first, then claim, as two statements. A single statement (the
+  // clear in a data-modifying CTE) can't be used here: both UPDATEs run on
+  // the same snapshot in an unspecified order, and when the claim runs
+  // first it violates the unique (actor_id, build_tag) index, so the
+  // rollback re-push silently recorded no build (#117). Runs on the
+  // caller's transaction (`db`), which holds the actor row lock, so
+  // concurrent pushes of one actor clear+claim one after the other and
+  // nobody sees the tag on no version.
+  await db.query(
+    `UPDATE actor_versions SET build_tag = NULL
+     WHERE actor_id = $1 AND build_tag = $3 AND version_number <> $2`,
+    [actorId, versionNumber, buildTag]
+  );
+  const existing = await db.query<{ id: string }>(
+    `UPDATE actor_versions SET build_tag = $3
      WHERE actor_id = $1 AND version_number = $2
      RETURNING id`,
     [actorId, versionNumber, buildTag]
   );
   if (existing.rows[0]) return existing.rows[0].id;
 
-  // Version doesn't exist yet — insert claiming the tag, clearing siblings.
+  // Version doesn't exist yet — insert claiming the tag (siblings were
+  // cleared above).
   const id = nanoid();
-  const inserted = await query<{ id: string }>(
-    `WITH cleared AS (
-       UPDATE actor_versions SET build_tag = NULL
-       WHERE actor_id = $2 AND build_tag = $4 AND version_number <> $3
-     )
-     INSERT INTO actor_versions (id, actor_id, version_number, build_tag)
+  const inserted = await db.query<{ id: string }>(
+    `INSERT INTO actor_versions (id, actor_id, version_number, build_tag)
      VALUES ($1, $2, $3, $4)
      ON CONFLICT (actor_id, version_number) DO UPDATE SET version_number = EXCLUDED.version_number
      RETURNING id`,
@@ -121,32 +128,68 @@ async function findOrCreateActorVersion(
  * The carry-over source is chosen by carryOverSourceSql. The definition is
  * written in the same statement as the insert/update.
  *
- * Best-effort when no definition was sent: failures are logged and
- * swallowed — the actor upsert is the user's actual intent and a missing
- * build row is a UI nicety. When a definition was sent the error is
- * rethrown, so the request fails instead of reporting a schema it never
- * stored.
+ * Atomic: everything (version clear+claim, dedup select, build insert or
+ * update, current_version_id) runs on one transaction that first locks the
+ * actor row, so concurrent pushes of one actor serialize instead of
+ * interleaving (a push whose tag claim lost the race used to hit the unique
+ * (actor_id, build_tag) index and silently record no build). The lock is
+ * an UPDATE's FOR NO KEY UPDATE, not FOR UPDATE, so run starts — which insert rows
+ * referencing the actor (FK KEY SHARE) — are not blocked. Nothing inside
+ * may use the pool `query()`: it would wait on this transaction's own
+ * row lock and hang.
+ *
+ * The image is decided under the same lock: a request that sent
+ * `defaultRunOptions` re-writes them on the locked actor row, one that
+ * didn't uses the row's current image. The route's own actor UPDATE runs
+ * before (outside) the lock, so without this two concurrent pushes could
+ * leave the actor on one push's image and the newest build on the other's.
+ *
+ * Not best-effort: the build row is what the default build, runs'
+ * buildNumber and MCP tools read, so a failure is rolled back, logged and
+ * rethrown (→ 500) rather than answering 200 with no build recorded.
  */
 async function recordBuildIfNew(
   actorId: string,
-  defaultRunOptions: unknown,
+  requestedRunOptions: Record<string, unknown> | undefined,
   versionNumber: string | undefined,
   log: (msg: string) => void = () => undefined,
   actorDefinition?: ActorDefinition
 ): Promise<void> {
-  const imageName = imageOf(defaultRunOptions);
-  if (!imageName) return;
   const definitionJson = actorDefinition === undefined ? null : JSON.stringify(actorDefinition);
+  // Nothing to record: no image sent, and no version/definition that would
+  // attach to the stored image.
+  if (!imageOf(requestedRunOptions) && versionNumber === undefined && definitionJson === null) {
+    return;
+  }
 
+  let client: pg.PoolClient | undefined;
   try {
-    const versionId = versionNumber ? await findOrCreateActorVersion(actorId, versionNumber) : null;
+    client = await getClient();
+    await client.query('BEGIN');
+    // Locks the actor row (an UPDATE takes FOR NO KEY UPDATE), serializing
+    // concurrent recordBuildIfNew calls for this actor (see above), and
+    // re-writes the requested defaultRunOptions under that lock.
+    const locked = await client.query<{ default_run_options: unknown }>(
+      `UPDATE actors SET default_run_options = COALESCE($2::jsonb, default_run_options)
+       WHERE id = $1 RETURNING default_run_options`,
+      [actorId, requestedRunOptions === undefined ? null : JSON.stringify(requestedRunOptions)]
+    );
+    const imageName = imageOf(locked.rows[0]?.default_run_options);
+    if (!imageName) {
+      await client.query('COMMIT');
+      return;
+    }
+
+    const versionId = versionNumber
+      ? await findOrCreateActorVersion(client, actorId, versionNumber)
+      : null;
 
     // Dedup: skip if the most recent deploy build for this actor already
     // matches both image and version. Older builds (different versions) stay
     // on record so the page shows full history. Only SUCCEEDED builds count:
     // POST /v2/acts/:id/builds inserts RUNNING rows with a generated image
     // name, which would otherwise make every later deploy look new.
-    const existing = await query<{
+    const existing = await client.query<{
       id: string;
       image_name: string | null;
       version_id: string | null;
@@ -169,7 +212,7 @@ async function recordBuildIfNew(
       if (definitionJson !== null) {
         // Keys missing from the request come from the row itself, or, if it
         // has no definition yet, from its carry-over source.
-        await query(
+        await client.query(
           `WITH src AS (${carryOverSourceSql('$3', '$4', '$5')})
            UPDATE actor_builds b
               SET actor_definition = ${definitionWithInheritedKeysSql(
@@ -180,15 +223,21 @@ async function recordBuildIfNew(
           [last.id, definitionJson, actorId, last.version_id, imageName]
         );
       }
+      await client.query('COMMIT');
       return;
     }
 
-    // The source subquery runs before the new row exists.
-    await query(
+    // The source subquery runs before the new row exists. Timestamps use
+    // clock_timestamp(), not NOW(): NOW() is the transaction start, taken
+    // before the actor lock, so a push that waited on the lock could get an
+    // older created_at than the build it waited for and sort below it.
+    await client.query(
       `WITH src AS (${carryOverSourceSql('$2', '$3', '$4')})
        INSERT INTO actor_builds
-         (id, actor_id, version_id, status, image_name, started_at, finished_at, actor_definition)
-       VALUES ($1, $2::varchar, $3::varchar, 'SUCCEEDED', $4::text, NOW(), NOW(),
+         (id, actor_id, version_id, status, image_name, started_at, finished_at, created_at,
+          actor_definition)
+       VALUES ($1, $2::varchar, $3::varchar, 'SUCCEEDED', $4::text, clock_timestamp(), clock_timestamp(),
+         clock_timestamp(),
          CASE WHEN $5::jsonb IS NULL THEN (SELECT actor_definition FROM src)
               ELSE ${definitionWithInheritedKeysSql('(SELECT actor_definition FROM src)', '$5')}
          END)`,
@@ -199,14 +248,27 @@ async function recordBuildIfNew(
     // (dashboard, runner) can find "the current source version" without
     // joining through builds.
     if (versionId) {
-      await query(`UPDATE actors SET current_version_id = $1, modified_at = NOW() WHERE id = $2`, [
-        versionId,
-        actorId,
-      ]);
+      await client.query(
+        `UPDATE actors SET current_version_id = $1, modified_at = NOW() WHERE id = $2`,
+        [versionId, actorId]
+      );
     }
+    await client.query('COMMIT');
   } catch (err) {
+    // A connection whose ROLLBACK failed is destroyed rather than returned
+    // to the pool mid-transaction.
+    let rollbackError: Error | undefined;
+    if (client) {
+      await client.query('ROLLBACK').catch((e: unknown) => {
+        rollbackError = e as Error;
+      });
+    }
     log(`recordBuildIfNew failed for ${actorId}: ${(err as Error).message}`);
-    if (definitionJson !== null) throw err;
+    client?.release(rollbackError);
+    client = undefined;
+    throw err;
+  } finally {
+    client?.release();
   }
 }
 
@@ -428,7 +490,7 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       // Record the deploy if the CLI sent a new image reference.
       await recordBuildIfNew(
         result.rows[0]!.id,
-        defaultRunOptions ?? existing.rows[0].default_run_options,
+        defaultRunOptions,
         version,
         (m) => fastify.log.warn(m),
         actorDefinition
@@ -581,7 +643,7 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
     ) {
       await recordBuildIfNew(
         result.rows[0].id,
-        updates.defaultRunOptions ?? result.rows[0].default_run_options,
+        updates.defaultRunOptions,
         updates.version,
         (m) => fastify.log.warn(m),
         updates.actorDefinition
@@ -826,18 +888,12 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
     // run row (and downstream webhook resource block) carries buildId /
     // buildNumber instead of null. NULL stays valid for actors that have
     // never been pushed — the runs API and webhook payload both tolerate
-    // it. Joined to actor_versions for the human-readable version_number.
-    const buildLookup = await query<{ build_id: string; version_number: string | null }>(
-      `SELECT b.id AS build_id, v.version_number
-         FROM actor_builds b
-         LEFT JOIN actor_versions v ON v.id = b.version_id
-        WHERE b.actor_id = $1 AND b.status = 'SUCCEEDED'
-        ORDER BY b.created_at DESC
-        LIMIT 1`,
-      [actor.rows[0].id]
-    );
-    const buildId = buildLookup.rows[0]?.build_id ?? null;
-    const buildNumber = buildLookup.rows[0]?.version_number ?? null;
+    // it.
+    // buildNumber is the build's own number ("0.1.3"), the same value GET
+    // /actor-builds/:id reports, not the bare version ("0.1").
+    const buildStamp = await selectRunBuildStamp(actor.rows[0].id);
+    const buildId = buildStamp?.build_id ?? null;
+    const buildNumber = buildStamp?.build_number ?? null;
 
     // Create run record with READY status so Runner picks it up (with user ownership)
     const result = await query<{
@@ -954,6 +1010,8 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
         defaultDatasetId: datasetId,
         defaultKeyValueStoreId: kvStoreId,
         defaultRequestQueueId: requestQueueId,
+        buildId,
+        buildNumber,
       },
     };
   });
