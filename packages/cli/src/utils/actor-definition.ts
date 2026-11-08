@@ -1,24 +1,26 @@
 /**
  * Resolves the Apify-style actor definition that `crc push` uploads as
- * `actorDefinition` (#116): the `.actor/actor.json` identity fields plus the
- * input schema and README inlined, the way the Apify CLI does it.
+ * `actorDefinition` (#116): the whole `.actor/actor.json` object, with the
+ * input schema and README inlined the way the Apify CLI does it.
  *
  * The API stores it per build and the Apify MCP server builds its per-actor
  * tools from `actorDefinition.input`, so the input must be the schema object
- * itself, never a file path.
+ * itself, never a file path. When no schema (or README) is found the key is
+ * left out entirely, never sent empty, so the API keeps the previous build's
+ * value.
  */
 
 import path from 'path';
 import fs from 'fs-extra';
 
 // Keep in sync with the API caps (packages/api/src/schemas/actors.ts). Over
-// the limit the push fails before the Docker build: the API would 400 the
-// definition anyway, and skipping the field would leave the actor without a
-// schema (or README) on the new build.
+// a limit the push fails before the Docker build: the API would 400 the
+// definition anyway.
 export const MAX_ACTOR_INPUT_SCHEMA_BYTES = 500 * 1024;
 export const MAX_ACTOR_README_BYTES = 1024 * 1024;
+export const MAX_ACTOR_DEFINITION_BYTES = 2 * 1024 * 1024;
 
-/** The subset of `.actor/actor.json` the resolver reads. */
+/** The `.actor/actor.json` fields the resolver interprets; all others pass through. */
 export interface ActorJsonDefinitionFields {
   actorSpecification?: number;
   name?: string;
@@ -29,12 +31,14 @@ export interface ActorJsonDefinitionFields {
   readme?: string;
 }
 
+/** `.actor/actor.json` with `input`/`readme` inlined; other fields pass through. */
 export interface ActorDefinition {
   actorSpecification?: number;
   name?: string;
   version?: string;
   input?: Record<string, unknown>;
   readme?: string;
+  [key: string]: unknown;
 }
 
 export interface ResolvedActorDefinition {
@@ -43,13 +47,13 @@ export interface ResolvedActorDefinition {
   inputSource: string;
   /** Where the README came from: a path relative to the actor root, or "none". */
   readmeSource: string;
-  /** Non-fatal problems (schema without type/properties). */
+  /** Non-fatal problems (unusable fallback schema files, schema without type/properties). */
   warnings: string[];
 }
 
 /**
- * A referenced file is missing or holds malformed JSON, or the input schema
- * or README is over its size cap. Fails the push.
+ * actor.json `input`/`readme` is invalid, a file it references is missing or
+ * malformed, or the definition is over a size cap. Fails the push.
  */
 export class ActorDefinitionError extends Error {
   constructor(message: string) {
@@ -70,37 +74,42 @@ const README_FALLBACKS = ['.actor/README.md', 'README.md'];
  * directory that contains `.actor/`). Paths are resolved against it, never
  * against `process.cwd()`.
  *
+ * - Every actor.json field is copied as is (title, description, storages,
+ *   environmentVariables, defaultRunOptions, dockerfile, ...).
  * - `input`: an inline object is used as is; a string is a path relative to
- *   `.actor/`; if absent, the first existing fallback file is used.
+ *   `.actor/`; if absent, the first usable fallback file is used.
  * - `readme`: the `readme` path (relative to `.actor/`), else
  *   `.actor/README.md`, else `./README.md`.
+ * - If no schema / README is found, that key is omitted.
  *
- * Missing fallback files are skipped silently. A referenced file that is
- * missing, or malformed JSON, throws an `ActorDefinitionError` naming the
- * file. An input schema or README over its size cap throws an
- * `ActorDefinitionError` naming the file and the limit.
+ * Throws an `ActorDefinitionError` when `input` is neither an object nor a
+ * path, `readme` is not a string, a path is empty, a file referenced by
+ * actor.json is missing or malformed, or a size cap is exceeded. Fallback
+ * files are best-effort: missing ones are skipped silently, malformed or
+ * non-object schemas are skipped with a warning.
  */
 export async function resolveActorDefinitionWithSources(
   actorDir: string,
   actorJson: ActorJsonDefinitionFields
 ): Promise<ResolvedActorDefinition> {
   const warnings: string[] = [];
-  const definition: ActorDefinition = {
-    actorSpecification: actorJson.actorSpecification,
-    name: actorJson.name,
-    version: actorJson.version,
-  };
+  const {
+    input: rawInput,
+    readme: rawReadme,
+    ...rest
+  } = actorJson as ActorJsonDefinitionFields & Record<string, unknown>;
+  const definition: ActorDefinition = { ...rest };
 
   // ---- input schema ----
   let input: Record<string, unknown> | undefined;
   let inputSource = 'none';
-  if (actorJson.input !== undefined && actorJson.input !== null) {
-    if (typeof actorJson.input === 'string') {
-      const file = path.resolve(actorDir, '.actor', actorJson.input);
-      input = await readJsonObject(file, actorDir, true);
+  if (rawInput !== undefined && rawInput !== null) {
+    if (typeof rawInput === 'string') {
+      const file = resolveReferencedPath(actorDir, 'input', rawInput);
+      input = await readJsonObject(file, actorDir);
       inputSource = displayPath(actorDir, file);
-    } else if (isPlainObject(actorJson.input)) {
-      input = actorJson.input;
+    } else if (isPlainObject(rawInput)) {
+      input = rawInput;
       inputSource = 'inline';
     } else {
       throw new ActorDefinitionError(
@@ -110,11 +119,16 @@ export async function resolveActorDefinitionWithSources(
   } else {
     for (const rel of INPUT_SCHEMA_FALLBACKS) {
       const file = path.join(actorDir, rel);
-      const found = await readJsonObject(file, actorDir, false);
-      if (found) {
-        input = found;
-        inputSource = displayPath(actorDir, file);
-        break;
+      try {
+        const found = await readJsonObject(file, actorDir, { optional: true });
+        if (found) {
+          input = found;
+          inputSource = displayPath(actorDir, file);
+          break;
+        }
+      } catch (err) {
+        if (!(err instanceof ActorDefinitionError)) throw err;
+        warnings.push(`${err.message} - skipping it.`);
       }
     }
   }
@@ -137,14 +151,19 @@ export async function resolveActorDefinitionWithSources(
   // ---- README ----
   let readmeSource = 'none';
   let readme: string | undefined;
-  if (typeof actorJson.readme === 'string') {
-    const file = path.resolve(actorDir, '.actor', actorJson.readme);
-    readme = await readText(file, actorDir, true);
+  if (rawReadme !== undefined && rawReadme !== null) {
+    if (typeof rawReadme !== 'string') {
+      throw new ActorDefinitionError(
+        '.actor/actor.json: "readme" must be a path to a Markdown file'
+      );
+    }
+    const file = resolveReferencedPath(actorDir, 'readme', rawReadme);
+    readme = await readText(file, actorDir);
     readmeSource = displayPath(actorDir, file);
   } else {
     for (const rel of README_FALLBACKS) {
       const file = path.join(actorDir, rel);
-      const found = await readText(file, actorDir, false);
+      const found = await readText(file, actorDir, { optional: true });
       if (found !== undefined) {
         readme = found;
         readmeSource = displayPath(actorDir, file);
@@ -163,15 +182,14 @@ export async function resolveActorDefinitionWithSources(
     definition.readme = readme;
   }
 
-  return { definition, inputSource, readmeSource, warnings };
-}
+  const totalBytes = Buffer.byteLength(JSON.stringify(definition));
+  if (totalBytes > MAX_ACTOR_DEFINITION_BYTES) {
+    throw new ActorDefinitionError(
+      `Actor definition (.actor/actor.json with the input schema and README inlined) is ${String(totalBytes)} bytes, over the ${String(MAX_ACTOR_DEFINITION_BYTES)}-byte limit.`
+    );
+  }
 
-/** `resolveActorDefinitionWithSources` without the source/warning details. */
-export async function resolveActorDefinition(
-  actorDir: string,
-  actorJson: ActorJsonDefinitionFields
-): Promise<ActorDefinition> {
-  return (await resolveActorDefinitionWithSources(actorDir, actorJson)).definition;
+  return { definition, inputSource, readmeSource, warnings };
 }
 
 // ---- Helpers ----
@@ -185,30 +203,45 @@ function displayPath(actorDir: string, file: string): string {
   return rel.startsWith('..') || path.isAbsolute(rel) ? file : rel;
 }
 
+function resolveReferencedPath(actorDir: string, field: string, value: string): string {
+  if (value.trim() === '') {
+    throw new ActorDefinitionError(`.actor/actor.json: "${field}" must not be an empty path`);
+  }
+  return path.resolve(actorDir, '.actor', value);
+}
+
+/**
+ * Read a text file. With `optional`, a missing file (or a directory) yields
+ * `undefined`; otherwise any read error throws an `ActorDefinitionError`.
+ */
 async function readText(
   file: string,
   actorDir: string,
-  required: boolean
+  opts: { optional?: boolean } = {}
 ): Promise<string | undefined> {
   try {
     return await fs.readFile(file, 'utf8');
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (!required && (code === 'ENOENT' || code === 'ENOTDIR' || code === 'EISDIR')) {
+    if (opts.optional && (code === 'ENOENT' || code === 'ENOTDIR' || code === 'EISDIR')) {
       return undefined;
     }
-    throw new ActorDefinitionError(
-      `Cannot read ${displayPath(actorDir, file)}: ${(err as Error).message}`
-    );
+    const reason =
+      code === 'ENOENT'
+        ? 'file not found'
+        : code === 'EISDIR'
+          ? 'is a directory'
+          : (err as Error).message;
+    throw new ActorDefinitionError(`Cannot read ${displayPath(actorDir, file)}: ${reason}`);
   }
 }
 
 async function readJsonObject(
   file: string,
   actorDir: string,
-  required: boolean
+  opts: { optional?: boolean } = {}
 ): Promise<Record<string, unknown> | undefined> {
-  const text = await readText(file, actorDir, required);
+  const text = await readText(file, actorDir, opts);
   if (text === undefined) return undefined;
   let parsed: unknown;
   try {

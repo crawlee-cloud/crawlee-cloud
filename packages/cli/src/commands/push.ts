@@ -170,6 +170,7 @@ export const pushCommand = new Command('push')
     console.log(chalk.dim(`Image: ${runtimeImage}`));
     console.log(chalk.dim(`Build: ${buildMode}`));
     console.log(chalk.dim(`Input schema: ${resolvedDefinition.inputSource}`));
+    console.log(chalk.dim(`README: ${resolvedDefinition.readmeSource}`));
     resolvedDefinition.warnings.forEach((w) => console.log(chalk.yellow(`⚠️  ${w}`)));
     console.log();
 
@@ -309,9 +310,11 @@ export const pushCommand = new Command('push')
             memoryMbytes: actorJsonDefaults.memoryMbytes,
           }),
         },
-        // Input schema + README (#116), stored by the API on this push's
-        // build. APIs older than #112 strip the unknown key, so no version
-        // gate is needed.
+        // The full actor.json with the input schema + README inlined (#116),
+        // stored by the API on this push's build. `input`/`readme` are left
+        // out when not found, so the API keeps the previous build's value.
+        // APIs older than #112 strip the unknown key, so no version gate is
+        // needed.
         actorDefinition: resolvedDefinition.definition,
       };
 
