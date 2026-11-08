@@ -1,6 +1,6 @@
 /**
- * Shared HTTP plumbing: CORS, compression, content-type parsers, and the
- * global error handler.
+ * Shared HTTP plumbing: CORS, compression, content-type parsers, the global
+ * error handler, and the platform 404 envelope for unknown routes.
  *
  * Production (`src/index.ts`) and the integration test app
  * (`test/integration/setup.ts`) both call this, so tests accept and reject
@@ -13,6 +13,7 @@ import cors from '@fastify/cors';
 import compress from '@fastify/compress';
 import { ZodError } from 'zod';
 import { config } from './config.js';
+import { setPlatformNotFoundHandler } from './routes/not-found.js';
 
 // Increase body limit for batch requests (10MB)
 export const API_BODY_LIMIT = 10 * 1024 * 1024;
@@ -91,4 +92,7 @@ export async function configureHttp(app: FastifyInstance): Promise<void> {
       },
     });
   });
+
+  // Unknown routes get the platform error envelope (page-not-found).
+  setPlatformNotFoundHandler(app);
 }

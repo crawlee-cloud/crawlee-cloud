@@ -12,7 +12,7 @@ import { setupAdminUserGated } from './setup-gated.js';
 import { initScheduler } from './scheduler.js';
 import { initRetention, unregisterRetention } from './retention.js';
 import { initScaler } from './scaler/index.js';
-import { registry, httpRequestsTotal, httpRequestDuration } from './metrics.js';
+import { registry, httpRequestsTotal, httpRequestDuration, metricsRouteLabel } from './metrics.js';
 import { registerHealthRoutes } from './health.js';
 import { getApiVersion } from './version.js';
 
@@ -35,7 +35,7 @@ app.addHook('onRequest', (request, _reply, done) => {
 
 app.addHook('onResponse', (request, reply, done) => {
   const startTime = (request as any).__startTime as bigint | undefined;
-  const route = request.routeOptions?.url ?? request.url;
+  const route = metricsRouteLabel(request.routeOptions?.url ?? request.url);
   const method = request.method;
   const statusCode = String(reply.statusCode);
 

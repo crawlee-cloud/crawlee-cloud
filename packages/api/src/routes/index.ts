@@ -21,13 +21,17 @@ import { scalerRoutes } from './scaler.js';
 import { systemRoutes } from './system.js';
 
 export async function registerV2Routes(app: FastifyInstance): Promise<void> {
-  await app.register(actorsRoutes, { prefix: '/v2' });
+  // apify-client >= 2.23.4 uses /v2/actors; older clients and our own CLI and
+  // dashboard use /v2/acts. Same handlers, registered once per segment.
+  await app.register(actorsRoutes, { prefix: '/v2', actorsSegment: 'acts' });
+  await app.register(actorsRoutes, { prefix: '/v2', actorsSegment: 'actors' });
   await app.register(runsRoutes, { prefix: '/v2' });
   await app.register(datasetsRoutes, { prefix: '/v2' });
   await app.register(keyValueStoresRoutes, { prefix: '/v2' });
   await app.register(requestQueuesRoutes, { prefix: '/v2' });
   await app.register(logsRoutes, { prefix: '/v2' });
-  await app.register(registryRoutes, { prefix: '/v2' });
+  await app.register(registryRoutes, { prefix: '/v2', actorsSegment: 'acts' });
+  await app.register(registryRoutes, { prefix: '/v2', actorsSegment: 'actors' });
   await app.register(usersRoutes, { prefix: '/v2' });
   await app.register(webhooksRoutes, { prefix: '/v2' });
   await app.register(schedulesRoutes, { prefix: '/v2' });
