@@ -46,6 +46,24 @@ export async function initDatabase(): Promise<void> {
     max: config.dbPoolMax,
   });
 
+  // When Postgres drops a connection (pg_terminate_backend, failover,
+  // restart), pg emits 'error'. With no listener, Node throws it and the
+  // whole process goes down.
+  //  - Idle client: pg-pool discards it and re-emits the error on the pool.
+  //  - Checked-out client between queries (getClient / withAdvisoryLock):
+  //    the error is emitted on the client itself. The client is marked
+  //    unqueryable, so its next query rejects and release() discards it.
+  // Either way the next pool query opens a fresh connection, so logging is
+  // all that's needed here.
+  p.on('error', (err: Error) => {
+    console.error(`[db] idle client error, client discarded: ${err.message}`);
+  });
+  p.on('connect', (client: pg.PoolClient) => {
+    client.on('error', (err: Error) => {
+      console.error(`[db] client connection error: ${err.message}`);
+    });
+  });
+
   pool = p;
   _dbState.pool = p;
 

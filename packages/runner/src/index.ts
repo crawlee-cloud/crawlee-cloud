@@ -25,6 +25,7 @@ import {
   getActiveRunIds,
 } from './queue.js';
 import { startHeartbeat, stopHeartbeat } from './heartbeat.js';
+import { logClientErrors } from './client-errors.js';
 
 async function main() {
   console.log('='.repeat(60));
@@ -63,7 +64,7 @@ async function main() {
   // Start heartbeat (publishes metrics to Redis for the scaler).
   // config.runnerId is the same identity claimNextRun stamps onto runs
   // (runner_id column) — heartbeats and cost attribution must agree.
-  const heartbeatRedis = new Redis(config.redisUrl);
+  const heartbeatRedis = logClientErrors(new Redis(config.redisUrl), 'redis-heartbeat');
   const runnerId = config.runnerId;
   startHeartbeat(
     heartbeatRedis,

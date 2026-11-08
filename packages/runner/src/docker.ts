@@ -14,6 +14,7 @@ import { Redis } from 'ioredis';
 import { config } from './config.js';
 import { getDiskUsageRatio } from './heartbeat.js';
 import { waitWithTimeout } from './wait.js';
+import { logClientErrors } from './client-errors.js';
 
 let warnedAboutDarwinTranslate = false;
 
@@ -107,7 +108,7 @@ const docker = new Docker({
 });
 
 // Redis for log streaming
-const redis = new Redis(config.redisUrl);
+const redis = logClientErrors(new Redis(config.redisUrl), 'redis-logs');
 
 /**
  * Minimal Redis surface the log writer needs — lets tests inject a mock
