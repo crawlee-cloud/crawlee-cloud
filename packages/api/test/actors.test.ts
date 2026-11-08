@@ -539,8 +539,54 @@ describe('Actor Routes', () => {
 
       expect(response.statusCode).toBe(200);
       const [sql, params] = mockQuery.mock.calls[3] as [string, unknown[]];
-      expect(sql).toContain('UPDATE actor_builds SET actor_definition = COALESCE');
-      expect(params).toEqual(['build-1', JSON.stringify(definition)]);
+      expect(sql).toMatch(/UPDATE actor_builds b\s+SET actor_definition =/);
+      expect(params).toEqual(['build-1', JSON.stringify(definition), 'actor-1', null, IMAGE]);
+    });
+
+    it('rejects a NUL character or a lone surrogate anywhere in the definition', () => {
+      for (const actorDefinition of [
+        { readme: 'a\u0000b' },
+        { storages: { dataset: { title: 'x\uD800' } } },
+        { input: { type: 'object', properties: { ['k\u0000']: {} } } },
+      ]) {
+        const result = UpdateActorSchema.safeParse({ actorDefinition });
+        expect(result.success).toBe(false);
+        expect(result.error?.issues[0].message).toContain('NUL');
+      }
+      expect(UpdateActorSchema.safeParse({ actorDefinition: { readme: 'ok 😀' } }).success).toBe(
+        true
+      );
+    });
+
+    it('fails the request when the build write fails and a definition was sent', async () => {
+      const row = createActorRow({ default_run_options: { image: IMAGE } });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ default_run_options: { image: IMAGE } }] })
+        .mockResolvedValueOnce({ rows: [row] }) // UPDATE actors
+        .mockRejectedValueOnce(new Error('db down')); // dedup SELECT
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/v2/acts/actor-1',
+        payload: { actorDefinition: definition },
+      });
+
+      expect(response.statusCode).toBe(500);
+    });
+
+    it('still swallows build write failures when no definition was sent', async () => {
+      const row = createActorRow({ default_run_options: { image: IMAGE } });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [row] }) // UPDATE actors
+        .mockRejectedValueOnce(new Error('db down')); // dedup SELECT
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: '/v2/acts/actor-1',
+        payload: { defaultRunOptions: { image: IMAGE } },
+      });
+
+      expect(response.statusCode).toBe(200);
     });
 
     it('PUT with only actorDefinition on an actor without an image returns 400 before updating', async () => {
@@ -618,9 +664,15 @@ describe('Actor Routes', () => {
       expect(response.statusCode).toBe(200);
       const [sql, params] = mockQuery.mock.calls[2] as [string, unknown[]];
       expect(sql).toContain('INSERT INTO actor_builds');
-      expect(sql).toMatch(/COALESCE\(\$5::jsonb,\s*\(\s*SELECT actor_definition FROM actor_builds/);
-      // Registry-created builds have no definition; skip them, don't inherit NULL.
-      expect(sql).toMatch(/WHERE actor_id = \$2::varchar AND actor_definition IS NOT NULL/);
+      expect(sql).toMatch(/CASE WHEN \$5::jsonb IS NULL THEN \(SELECT actor_definition FROM src\)/);
+      // Registry-created builds (RUNNING, no definition) never feed carry-over.
+      expect(sql).toMatch(
+        /WHERE actor_id = \$2::varchar AND status = 'SUCCEEDED'\s+AND actor_definition IS NOT NULL/
+      );
+      // Same version first, then same image, then newest.
+      expect(sql).toMatch(
+        /ORDER BY COALESCE\(version_id = \$3::varchar, false\) DESC,\s+COALESCE\(image_name = \$4::text, false\) DESC,\s+created_at DESC/
+      );
       expect(params[4]).toBeNull();
     });
   });

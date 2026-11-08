@@ -214,7 +214,7 @@ describe('Registry Routes', () => {
       });
       const [sql] = mockQuery.mock.calls[0] as [string];
       expect(sql).toContain('LEFT JOIN actor_versions');
-      // actor_definition can be ~1.5 MB per row (#112) — lists must select
+      // actor_definition can be up to ~3.5 MB per row (#112) — lists must select
       // explicit columns and never pull it.
       expect(sql).not.toMatch(/\bb\.\*|SELECT \*/);
       expect(sql).not.toContain('actor_definition');

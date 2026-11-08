@@ -105,16 +105,20 @@ async function findOrCreateActorVersion(
  *
  * actorDefinition (input schema, README — #112) lives on the build row:
  *   - a new build stores the definition sent with it, or, when none was sent
- *     (older CLI, plain image re-push), carries over the previous build's so
+ *     (older CLI, plain image re-push), carries over a previous build's so
  *     MCP tools generated from it don't disappear;
  *   - a deduped (same image + version) deploy updates the latest build's
- *     definition in place when one was sent, and leaves it alone otherwise.
- * The definition is written in the same statement as the insert/update, so a
- * build can never end up without the definition its request carried.
+ *     definition in place when one was sent, and leaves it alone otherwise;
+ *   - a sent definition that lacks `input` or `readme` keeps the stored ones
+ *     (see definitionWithInheritedKeysSql).
+ * The carry-over source is chosen by carryOverSourceSql. The definition is
+ * written in the same statement as the insert/update.
  *
- * Best-effort: failures are logged and swallowed. The actor upsert is the
- * user's actual intent; a missing build row is a UI nicety, not a
- * correctness issue.
+ * Best-effort when no definition was sent: failures are logged and
+ * swallowed — the actor upsert is the user's actual intent and a missing
+ * build row is a UI nicety. When a definition was sent the error is
+ * rethrown, so the request fails instead of reporting a schema it never
+ * stored.
  */
 async function recordBuildIfNew(
   actorId: string,
@@ -130,16 +134,18 @@ async function recordBuildIfNew(
   try {
     const versionId = versionNumber ? await findOrCreateActorVersion(actorId, versionNumber) : null;
 
-    // Dedup: skip if the most recent build for this actor already matches
-    // both image and version. Older builds (different versions) stay on
-    // record so the page shows full history.
+    // Dedup: skip if the most recent deploy build for this actor already
+    // matches both image and version. Older builds (different versions) stay
+    // on record so the page shows full history. Only SUCCEEDED builds count:
+    // POST /v2/acts/:id/builds inserts RUNNING rows with a generated image
+    // name, which would otherwise make every later deploy look new.
     const existing = await query<{
       id: string;
       image_name: string | null;
       version_id: string | null;
     }>(
       `SELECT id, image_name, version_id FROM actor_builds
-       WHERE actor_id = $1
+       WHERE actor_id = $1 AND status = 'SUCCEEDED'
        ORDER BY created_at DESC
        LIMIT 1`,
       [actorId]
@@ -154,31 +160,31 @@ async function recordBuildIfNew(
         : (last?.version_id ?? null) === versionId;
     if (last && last.image_name === imageName && versionMatches) {
       if (definitionJson !== null) {
-        // COALESCE keeps the stored definition if this ever runs without one.
+        // Keys missing from the request come from the row itself, or, if it
+        // has no definition yet, from its carry-over source.
         await query(
-          `UPDATE actor_builds SET actor_definition = COALESCE($2::jsonb, actor_definition)
-           WHERE id = $1`,
-          [last.id, definitionJson]
+          `WITH src AS (${carryOverSourceSql('$3', '$4', '$5')})
+           UPDATE actor_builds b
+              SET actor_definition = ${definitionWithInheritedKeysSql(
+                'COALESCE(b.actor_definition, (SELECT actor_definition FROM src))',
+                '$2'
+              )}
+            WHERE b.id = $1`,
+          [last.id, definitionJson, actorId, last.version_id, imageName]
         );
       }
       return;
     }
 
-    // No definition sent → inherit the newest previous build that has one
-    // (subquery runs before the new row exists). Builds created through the
-    // registry routes carry no definition, so skip NULLs rather than
-    // inheriting one from them. $2 is cast in both places so Postgres
-    // deduces one type for it.
+    // The source subquery runs before the new row exists.
     await query(
-      `INSERT INTO actor_builds
+      `WITH src AS (${carryOverSourceSql('$2', '$3', '$4')})
+       INSERT INTO actor_builds
          (id, actor_id, version_id, status, image_name, started_at, finished_at, actor_definition)
-       VALUES ($1, $2::varchar, $3, 'SUCCEEDED', $4, NOW(), NOW(),
-         COALESCE($5::jsonb, (
-           SELECT actor_definition FROM actor_builds
-            WHERE actor_id = $2::varchar AND actor_definition IS NOT NULL
-            ORDER BY created_at DESC
-            LIMIT 1
-         )))`,
+       VALUES ($1, $2::varchar, $3::varchar, 'SUCCEEDED', $4::text, NOW(), NOW(),
+         CASE WHEN $5::jsonb IS NULL THEN (SELECT actor_definition FROM src)
+              ELSE ${definitionWithInheritedKeysSql('(SELECT actor_definition FROM src)', '$5')}
+         END)`,
       [nanoid(), actorId, versionId, imageName, definitionJson]
     );
 
@@ -193,7 +199,39 @@ async function recordBuildIfNew(
     }
   } catch (err) {
     log(`recordBuildIfNew failed for ${actorId}: ${(err as Error).message}`);
+    if (definitionJson !== null) throw err;
   }
+}
+
+/**
+ * SQL selecting the definition a build inherits: from a SUCCEEDED build of
+ * the actor that has one (registry-created builds are RUNNING/ABORTED and
+ * have none), preferring the newest build of the same version, then the
+ * newest of the same image, then the newest overall. So re-pushing an older
+ * version, or rolling back to an older image, restores that build's schema
+ * rather than the latest one. Params: actor id, version id (nullable), image.
+ */
+function carryOverSourceSql(actorParam: string, versionParam: string, imageParam: string): string {
+  return `SELECT actor_definition FROM actor_builds
+           WHERE actor_id = ${actorParam}::varchar AND status = 'SUCCEEDED'
+             AND actor_definition IS NOT NULL
+           ORDER BY COALESCE(version_id = ${versionParam}::varchar, false) DESC,
+                    COALESCE(image_name = ${imageParam}::text, false) DESC,
+                    created_at DESC
+           LIMIT 1`;
+}
+
+/**
+ * SQL for a sent definition (`definitionParam`) with `input` and `readme`
+ * filled in from `baseExpr` when the request lacks them — the CLI omits an
+ * oversize README or a missing input_schema.json rather than sending an
+ * empty one, and that must not erase the stored value. Other keys are taken
+ * from the request only. jsonb `||` lets the request's keys win.
+ */
+function definitionWithInheritedKeysSql(baseExpr: string, definitionParam: string): string {
+  return `((SELECT COALESCE(jsonb_object_agg(e.key, e.value), '{}'::jsonb)
+              FROM jsonb_each(${baseExpr}) AS e(key, value)
+             WHERE e.key IN ('input', 'readme')) || ${definitionParam}::jsonb)`;
 }
 
 /** The image reference from a default_run_options value, if it has one. */

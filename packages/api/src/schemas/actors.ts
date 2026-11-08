@@ -11,6 +11,38 @@ export const MAX_ACTOR_INPUT_SCHEMA_BYTES = 500 * 1024;
 export const MAX_ACTOR_README_BYTES = 1024 * 1024;
 export const MAX_ACTOR_DEFINITION_BYTES = 2 * 1024 * 1024;
 
+// No `u` flag: matches UTF-16 code units, so it finds a high surrogate not
+// followed by a low one, or a low one not preceded by a high one.
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/**
+ * Path of the first string (value or object key) Postgres JSONB would refuse
+ * to store — a NUL character or an unpaired surrogate — or undefined. Caught
+ * here as a 400 instead of failing the build write after the actor update.
+ */
+function findJsonbUnsafeString(
+  value: unknown,
+  path: (string | number)[]
+): (string | number)[] | undefined {
+  const unsafe = (s: string) => s.includes('\u0000') || LONE_SURROGATE.test(s);
+  if (typeof value === 'string') return unsafe(value) ? path : undefined;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const found = findJsonbUnsafeString(value[i], [...path, i]);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (value && typeof value === 'object') {
+    for (const [key, child] of Object.entries(value)) {
+      if (unsafe(key)) return [...path, key];
+      const found = findJsonbUnsafeString(child, [...path, key]);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
 /**
  * Apify-shaped actor definition (`.actor/actor.json` with the input schema
  * and README inlined), stored per build on actor_builds.actor_definition.
@@ -44,6 +76,15 @@ export const ActorDefinitionSchema = z
         code: z.ZodIssueCode.custom,
         path: ['readme'],
         message: `actorDefinition.readme must be at most ${MAX_ACTOR_README_BYTES} bytes`,
+      });
+    }
+    const badPath = findJsonbUnsafeString(def, []);
+    if (badPath) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: badPath,
+        message:
+          'actorDefinition must not contain NUL (\\u0000) characters or unpaired UTF-16 surrogates',
       });
     }
     if (Buffer.byteLength(JSON.stringify(def)) > MAX_ACTOR_DEFINITION_BYTES) {

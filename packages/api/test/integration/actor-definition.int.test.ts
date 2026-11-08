@@ -3,8 +3,9 @@
  *
  * Covers the DB-state acceptance criteria: the definition lands on the build
  * row, definition-only updates mutate the latest build in place, updates
- * without a definition never clear it, new images carry the previous
- * definition over, and build lists never return the column.
+ * without a definition never clear it, new images carry a previous
+ * definition over (same version, then same image, then newest), missing
+ * input/readme keys are inherited, and build lists never return the column.
  */
 import { describe, it, expect, beforeAll, afterEach, afterAll } from 'vitest';
 import type { FastifyInstance } from 'fastify';
@@ -280,6 +281,122 @@ describe('Actor definition on builds (integration)', () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error.type).toBe('validation_error');
+    expect(JSON.stringify(res.json().error.details)).toContain('2097152 bytes serialized');
+    expect((await builds(actorId))[0].actor_definition).toBeNull();
+  });
+
+  it("rolling back to an older version without actorDefinition restores that version's definition", async () => {
+    const actorId = await createActor({
+      defaultRunOptions: { image: IMAGE_V1 },
+      version: '1.0',
+      actorDefinition: defA,
+    });
+    const v2 = await put(actorId, {
+      defaultRunOptions: { image: IMAGE_V2 },
+      version: '2.0',
+      actorDefinition: defB,
+    });
+    expect(v2.statusCode).toBe(200);
+    // Re-pushing an existing version trips the build_tag unique index in
+    // findOrCreateActorVersion's single-statement claim (fixed by #135, not
+    // this PR) — release the tag so the rollback below gets that far.
+    const { pool } = await import('../../src/db/index.js');
+    await pool.query('UPDATE actor_versions SET build_tag = NULL WHERE actor_id = $1', [actorId]);
+
+    // Same version, rebuilt image, older CLI (no definition): v1.0's schema, not v2.0's.
+    const rebuilt = 'ghcr.io/acme/actor-def:v1-rebuild';
+    const r1 = await put(actorId, { defaultRunOptions: { image: rebuilt }, version: '1.0' });
+    expect(r1.statusCode).toBe(200);
+    let rows = await builds(actorId);
+    expect(rows.find((r) => r.image_name === rebuilt)?.actor_definition).toEqual(defA);
+
+    // Image-only rollback (no version sent): the build of that image wins.
+    expect((await put(actorId, { defaultRunOptions: { image: IMAGE_V2 } })).statusCode).toBe(200);
+    expect((await put(actorId, { defaultRunOptions: { image: IMAGE_V1 } })).statusCode).toBe(200);
+    rows = await builds(actorId);
+    expect(rows.at(-1)?.image_name).toBe(IMAGE_V1);
+    expect(rows.at(-1)?.actor_definition).toEqual(defA);
+  });
+
+  it('registry-created RUNNING builds neither feed carry-over nor break dedup', async () => {
+    const actorId = await createActor({
+      defaultRunOptions: { image: IMAGE_V1 },
+      version: '0.1',
+      actorDefinition: defA,
+    });
+    const reg = await app.inject({
+      method: 'POST',
+      url: `/v2/acts/${actorId}/builds`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: {},
+    });
+    expect(reg.statusCode).toBe(201);
+
+    // Definition-only PUT updates the deploy build in place, no duplicate.
+    expect((await put(actorId, { actorDefinition: defB })).statusCode).toBe(200);
+    let rows = await builds(actorId);
+    expect(rows).toHaveLength(2);
+    expect(rows.find((r) => r.image_name === IMAGE_V1)?.actor_definition).toEqual(defB);
+
+    // Plain image push after the registry row: carries the deploy build's definition.
+    const res = await put(actorId, { defaultRunOptions: { image: IMAGE_V2 }, version: '0.1' });
+    expect(res.statusCode).toBe(200);
+    rows = await builds(actorId);
+    expect(rows.find((r) => r.image_name === IMAGE_V2)?.actor_definition).toEqual(defB);
+  });
+
+  it('a definition missing input or readme inherits them instead of erasing them', async () => {
+    const actorId = await createActor({
+      defaultRunOptions: { image: IMAGE_V1 },
+      version: '0.1',
+      actorDefinition: defA,
+    });
+    const { readme: _readme, ...noReadme } = defB;
+
+    // New build: readme inherited, input taken from the request.
+    const res = await put(actorId, {
+      defaultRunOptions: { image: IMAGE_V2 },
+      version: '0.1',
+      actorDefinition: noReadme,
+    });
+    expect(res.statusCode).toBe(200);
+    let rows = await builds(actorId);
+    expect(rows[1].actor_definition).toEqual({ ...defB, readme: defA.readme });
+
+    // In place: input inherited from the row itself.
+    const { input: _input, ...noInput } = defA;
+    const res2 = await put(actorId, { actorDefinition: { ...noInput, readme: 'new' } });
+    expect(res2.statusCode).toBe(200);
+    rows = await builds(actorId);
+    expect(rows).toHaveLength(2);
+    expect(rows[1].actor_definition).toEqual({ ...defA, input: defB.input, readme: 'new' });
+  });
+
+  it('rejects a NUL character in the definition with 400 and stores nothing', async () => {
+    const actorId = await createActor({
+      defaultRunOptions: { image: IMAGE_V1 },
+      version: '0.1',
+      actorDefinition: defA,
+    });
+    const res = await put(actorId, {
+      defaultRunOptions: { image: IMAGE_V2 },
+      version: '0.1',
+      actorDefinition: { ...defB, readme: 'bad\u0000readme' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.type).toBe('validation_error');
+    expect(JSON.stringify(res.json().error.details)).toContain('readme');
+    const rows = await builds(actorId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].actor_definition).toEqual(defA);
+  });
+
+  it('rejects a 5 MB passthrough key with 400', async () => {
+    const actorId = await createActor({ defaultRunOptions: { image: IMAGE_V1 } });
+    const res = await put(actorId, {
+      actorDefinition: { dockerfile: 'd'.repeat(5 * 1024 * 1024) },
+    });
+    expect(res.statusCode).toBe(400);
     expect(JSON.stringify(res.json().error.details)).toContain('2097152 bytes serialized');
     expect((await builds(actorId))[0].actor_definition).toBeNull();
   });
