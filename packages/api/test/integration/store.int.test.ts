@@ -1,0 +1,318 @@
+/**
+ * GET /v2/store over the real wire (#119).
+ *
+ * apify-client `store().list()` is what the Apify MCP `search-actors` tool
+ * calls (with `includeInputSchema` added to the client's params). Covers user
+ * isolation, literal `%` / `_` / `\` search, the username filter, ordering
+ * and the default build's input schema against Postgres.
+ */
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { ApifyClient } from 'apify-client';
+import type { FastifyInstance } from 'fastify';
+import { nanoid } from 'nanoid';
+import {
+  createTestApp,
+  runMigrations,
+  createTestUser,
+  cleanDatabase,
+  ensureS3Bucket,
+} from './setup.js';
+
+const inputSchema = {
+  title: 'Input',
+  type: 'object',
+  schemaVersion: 1,
+  properties: { message: { title: 'Message', type: 'string', editor: 'textfield' } },
+  required: ['message'],
+};
+
+type StoreItem = Record<string, unknown> & { id: string; name: string; inputSchema?: unknown };
+type StoreList = { total: number; count: number; limit: number; items: StoreItem[] };
+
+describe('GET /v2/store (integration)', () => {
+  let app: FastifyInstance;
+  let baseUrl: string;
+  let alice: { userId: string; token: string };
+  let bob: { userId: string; token: string };
+  let client: ApifyClient;
+  const ids: Record<string, string> = {};
+
+  const api = (token: string, method: string, path: string, body?: unknown) =>
+    fetch(`${baseUrl}/v2${path}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${token}`,
+        ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+
+  async function createActor(token: string, name: string, payload: Record<string, unknown> = {}) {
+    const res = await api(token, 'POST', '/acts', { name, ...payload });
+    expect(res.status).toBe(201);
+    return ((await res.json()) as { data: { id: string } }).data.id;
+  }
+
+  async function store(token: string, qs: string): Promise<StoreList> {
+    const res = await api(token, 'GET', `/store?${qs}`);
+    expect(res.status).toBe(200);
+    return ((await res.json()) as { data: StoreList }).data;
+  }
+
+  const names = (list: { items: { name: string }[] }) => list.items.map((i) => i.name);
+
+  beforeAll(async () => {
+    await ensureS3Bucket();
+    app = await createTestApp();
+    await runMigrations();
+    // Fixed usernames must not collide with other files' users.
+    await cleanDatabase();
+    baseUrl = (await app.listen({ port: 0, host: '127.0.0.1' })).replace(/\/$/, '');
+
+    alice = await createTestUser('alice-119@test.local', 'pw-alice-119', 'alice119');
+    bob = await createTestUser('bob-119@test.local', 'pw-bob-119', 'bob119');
+    client = new ApifyClient({ token: alice.token, baseUrl });
+
+    ids.echo = await createActor(alice.token, 'echo', {
+      title: 'Echo',
+      description: 'Echoes its input',
+      defaultRunOptions: { image: 'ghcr.io/alice/echo:1' },
+      version: '0.1',
+      actorDefinition: { actorSpecification: 1, name: 'echo', version: '0.1', input: inputSchema },
+    });
+    // Modified after `echo`, so it would sort first without the exact-match rule.
+    ids.echoPlus = await createActor(alice.token, 'echo-plus', { title: 'Echo plus' });
+    ids.percent = await createActor(alice.token, 'pct', { title: '100% done' });
+    ids.percentDecoy = await createActor(alice.token, 'pct-decoy', { title: '100x done' });
+    ids.underscore = await createActor(alice.token, 'under', { description: 'snake a_b case' });
+    ids.underscoreDecoy = await createActor(alice.token, 'under-decoy', {
+      description: 'snake axb case',
+    });
+    ids.backslash = await createActor(alice.token, 'slash', { description: 'path C:\\temp' });
+    ids.backslashDecoy = await createActor(alice.token, 'slash-decoy', {
+      description: 'path C:temp',
+    });
+    // Bob's actor matches every search alice runs below.
+    ids.bobEcho = await createActor(bob.token, 'echo-bob', {
+      title: 'Echo 100% a_b C:\\temp',
+    });
+
+    const { pool } = await import('../../src/db/index.js');
+    await pool.query(`UPDATE actors SET modified_at = NOW() - INTERVAL '1 hour' WHERE id = $1`, [
+      ids.echo,
+    ]);
+    await pool.query(
+      `INSERT INTO runs (id, actor_id, user_id, created_at, started_at)
+       VALUES ($1, $3, $4, '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z'),
+              ($2, $3, $4, '2026-07-02T00:00:00Z', '2026-07-02T00:00:00Z')`,
+      [nanoid(), nanoid(), ids.echo, alice.userId]
+    );
+  });
+
+  afterAll(async () => {
+    await cleanDatabase();
+    await app.close();
+  });
+
+  it("client.store().list({ search: 'echo' }) returns the caller's actors, exact name first", async () => {
+    const list = await client.store().list({ search: 'echo' });
+
+    expect(list.items.map((i) => i.name)).toEqual(['echo', 'echo-plus']);
+    expect(list).toMatchObject({ total: 2, count: 2, offset: 0, limit: 10 });
+    expect(list.items[0]).toMatchObject({
+      id: ids.echo,
+      name: 'echo',
+      username: 'alice119',
+      title: 'Echo',
+      description: 'Echoes its input',
+      currentPricingInfo: { pricingModel: 'FREE' },
+      url: null,
+      stats: { totalRuns: 2, lastRunStartedAt: new Date('2026-07-02T00:00:00Z') },
+    });
+    expect(list.items[0]).not.toHaveProperty('inputSchema');
+  });
+
+  it('includeInputSchema (as the MCP server sends it) adds the default build schema', async () => {
+    const storeClient = client.store();
+    storeClient.params = { ...storeClient.params, includeInputSchema: true };
+    const list = await storeClient.list({ search: 'echo', limit: 5, offset: 0 });
+
+    const items = list.items as unknown as StoreItem[];
+    expect(items.map((i) => i.name)).toEqual(['echo', 'echo-plus']);
+    expect(items[0].inputSchema).toEqual(inputSchema);
+    // No build → null, not absent.
+    expect(items[1].inputSchema).toBeNull();
+  });
+
+  it('caps limit at 10 with includeInputSchema', async () => {
+    expect((await store(alice.token, 'includeInputSchema=1&limit=50')).limit).toBe(10);
+    expect((await store(alice.token, 'limit=50')).limit).toBe(50);
+  });
+
+  it("never returns another user's actors", async () => {
+    const all = await store(alice.token, 'limit=100');
+    expect(all.total).toBe(8);
+    expect(names(all)).not.toContain('echo-bob');
+
+    const bobList = await store(bob.token, 'search=echo');
+    expect(names(bobList)).toEqual(['echo-bob']);
+  });
+
+  it.each([
+    ['%', ['pct']],
+    ['100%', ['pct']],
+    ['_', ['under']],
+    ['a_b', ['under']],
+    ['\\', ['slash']],
+    ['C:\\temp', ['slash']],
+  ])('search %j matches literally', async (search, expected) => {
+    const list = await store(alice.token, `search=${encodeURIComponent(search)}`);
+    expect(names(list)).toEqual(expected);
+  });
+
+  it('username filter: own username lists, anyone else is empty', async () => {
+    expect(names(await store(alice.token, 'username=alice119&search=echo'))).toEqual([
+      'echo',
+      'echo-plus',
+    ]);
+    const other = await client.store().list({ username: 'bob119' });
+    expect(other).toMatchObject({ total: 0, count: 0, items: [] });
+  });
+
+  it('pages with offset', async () => {
+    const page = await store(alice.token, 'search=echo&limit=1&offset=1');
+    expect(page).toMatchObject({ total: 2, count: 1, limit: 1 });
+    expect(names(page)).toEqual(['echo-plus']);
+  });
+
+  it('search matches the owner username and the `username/name` handle, exact handle first', async () => {
+    // Every one of alice's actors carries her username.
+    expect((await store(alice.token, 'search=alice119&limit=100')).total).toBe(8);
+    // `echo` is older than `echo-plus`; the exact handle still sorts first.
+    expect(names(await store(alice.token, 'search=alice119%2Fecho'))).toEqual([
+      'echo',
+      'echo-plus',
+    ]);
+    expect(names(await store(alice.token, 'search=ALICE119%2FEcho-Plus'))).toEqual(['echo-plus']);
+    expect(names(await client.store().list({ search: 'alice119/echo' }))).toEqual([
+      'echo',
+      'echo-plus',
+    ]);
+  });
+
+  it("searching another user's username or handle never leaks their actors", async () => {
+    for (const search of ['bob119', 'bob119/echo-bob', 'bob']) {
+      const list = await store(alice.token, `search=${encodeURIComponent(search)}`);
+      expect(list).toMatchObject({ total: 0, count: 0, items: [] });
+    }
+    expect(names(await store(bob.token, 'search=bob119%2Fecho-bob'))).toEqual(['echo-bob']);
+  });
+
+  it('pages before aggregating runs without changing order, paging or stats', async () => {
+    const { pool } = await import('../../src/db/index.js');
+    const expected = (
+      await pool.query<{ name: string }>(
+        'SELECT name FROM actors WHERE user_id = $1 ORDER BY modified_at DESC, id DESC',
+        [alice.userId]
+      )
+    ).rows.map((r) => r.name);
+    expect(expected).toHaveLength(8);
+
+    const all = await store(alice.token, 'limit=100');
+    expect(names(all)).toEqual(expected);
+
+    const paged: StoreItem[] = [];
+    for (let offset = 0; offset < expected.length; offset += 3) {
+      const page = await store(alice.token, `limit=3&offset=${offset}`);
+      expect(page).toMatchObject({ total: 8, count: Math.min(3, 8 - offset), limit: 3 });
+      paged.push(...page.items);
+    }
+    expect(paged).toEqual(all.items);
+    // `echo` is the oldest, so it lands on the last page with its runs counted.
+    expect(paged.at(-1)).toMatchObject({ name: 'echo', stats: { totalRuns: 2 } });
+    for (const item of paged.filter((i) => i.name !== 'echo')) {
+      expect(item.stats).toEqual({ totalRuns: 0, lastRunStartedAt: null });
+    }
+  });
+
+  it('multi-word search (as the MCP search-actors tool sends it) requires every term to match some field', async () => {
+    // "echo" matches the name, "input" the description, "alice119" the username.
+    expect(names(await store(alice.token, 'search=echo+input'))).toEqual(['echo']);
+    expect(
+      names(await store(alice.token, `search=${encodeURIComponent('Echoes  INPUT')}`))
+    ).toEqual(['echo']);
+    // No exact name/handle match for a multi-word search: newest first.
+    expect(names(await store(alice.token, 'search=alice119+echo'))).toEqual(['echo-plus', 'echo']);
+    expect(names(await store(alice.token, 'search=alice119%2Fecho+plus'))).toEqual(['echo-plus']);
+    expect(names(await store(alice.token, 'search=echo+100%25'))).toEqual([]);
+    expect(names(await store(alice.token, 'search=pct+100%25'))).toEqual(['pct']);
+    expect(names(await store(alice.token, 'search=echo+input+actor'))).toEqual([]);
+    // Every term still only sees the caller's actors.
+    expect(names(await store(alice.token, 'search=bob119+echo'))).toEqual([]);
+
+    const { pool } = await import('../../src/db/index.js');
+    const id = await createActor(alice.token, 'echo-mcp', {
+      title: 'Echo Input',
+      description: 'A test actor that returns its input',
+    });
+    try {
+      expect(names(await client.store().list({ search: 'echo input actor' }))).toEqual([
+        'echo-mcp',
+      ]);
+      expect(
+        names(await store(alice.token, `search=${encodeURIComponent('echo\tinput   actor')}`))
+      ).toEqual(['echo-mcp']);
+    } finally {
+      await pool.query('DELETE FROM actors WHERE id = $1', [id]);
+    }
+  });
+
+  it('username filter is case-insensitive', async () => {
+    expect(names(await store(alice.token, 'username=Alice119&search=echo'))).toEqual([
+      'echo',
+      'echo-plus',
+    ]);
+    expect((await store(alice.token, 'username=BOB119')).total).toBe(0);
+  });
+
+  it('clamps a huge offset and takes the first of repeated filter params', async () => {
+    const huge = await store(alice.token, 'offset=99999999999');
+    expect(huge).toMatchObject({ count: 0, items: [], offset: 1_000_000 });
+    const repeated = await store(
+      alice.token,
+      'category=a&category=b&sortBy=x&sortBy=y&pricingModel=FREE&pricingModel=PAID&search=echo&search=zzz&username=alice119&username=bob119'
+    );
+    expect(names(repeated)).toEqual(['echo', 'echo-plus']);
+  });
+
+  it('lastRunStartedAt is the newest started_at, ignoring runs that never started', async () => {
+    const { pool } = await import('../../src/db/index.js');
+    const id = await createActor(alice.token, 'started-runs');
+    await pool.query(
+      `INSERT INTO runs (id, actor_id, user_id, created_at, started_at) VALUES
+         ($1, $4, $5, '2026-08-01T00:00:00Z', '2026-08-01T00:05:00Z'),
+         ($2, $4, $5, '2026-08-03T00:00:00Z', NULL),
+         ($3, $4, $5, '2026-08-02T00:00:00Z', '2026-08-02T00:01:00Z')`,
+      [nanoid(), nanoid(), nanoid(), id, alice.userId]
+    );
+    const neverStarted = await createActor(alice.token, 'never-started');
+    await pool.query(
+      `INSERT INTO runs (id, actor_id, user_id, created_at) VALUES ($1, $2, $3, '2026-08-04T00:00:00Z')`,
+      [nanoid(), neverStarted, alice.userId]
+    );
+    try {
+      const [started] = (await store(alice.token, 'search=started-runs')).items;
+      expect(started.stats).toEqual({ totalRuns: 3, lastRunStartedAt: '2026-08-02T00:01:00.000Z' });
+      const [never] = (await store(alice.token, 'search=never-started')).items;
+      expect(never.stats).toEqual({ totalRuns: 1, lastRunStartedAt: null });
+    } finally {
+      await pool.query('DELETE FROM runs WHERE actor_id = ANY($1)', [[id, neverStarted]]);
+      await pool.query('DELETE FROM actors WHERE id = ANY($1)', [[id, neverStarted]]);
+    }
+  });
+
+  it('requires authentication', async () => {
+    const res = await fetch(`${baseUrl}/v2/store`);
+    expect(res.status).toBe(401);
+  });
+});
