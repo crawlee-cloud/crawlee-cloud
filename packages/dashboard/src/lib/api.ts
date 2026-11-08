@@ -512,12 +512,23 @@ export async function getCurrentUser(): Promise<User> {
   return res.data;
 }
 
+/** `id` of the stub `/v2/users/me` returns for requests without a valid token. */
+export const ANONYMOUS_USER_ID = 'anonymous';
+
 // Apify-compatible profile (includes the proxy field when set). Distinct from
 // /v2/auth/me, which is the dashboard's identity probe and doesn't carry proxy
 // state. The settings page reads from here so its "proxy set" badge reflects
 // what /v2/users/me actually serves to the Apify SDK.
+//
+// /v2/users/me uses optional auth (the Apify SDK calls it without a token),
+// so an expired or invalid token gets an anonymous stub (`id: 'anonymous'`,
+// `username: 'anonymous'`) instead of a 401. Treat that as signed out rather
+// than showing "anonymous" as the user's username.
 export async function getMyApifyProfile(): Promise<User> {
   const res = await fetchApi<{ data: User }>('/v2/users/me');
+  if (res.data.id === ANONYMOUS_USER_ID) {
+    throw new Error('Not signed in');
+  }
   return res.data;
 }
 

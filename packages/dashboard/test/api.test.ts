@@ -17,6 +17,7 @@ vi.hoisted(() => {
 
 import {
   getCurrentUser,
+  getMyApifyProfile,
   listRuns,
   getRun,
   deleteActor,
@@ -60,6 +61,29 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe('getMyApifyProfile', () => {
+  it('returns the profile for a signed-in user', async () => {
+    localStorage.setItem('token', 'jwt-123');
+    fetchMock.mockResolvedValue(
+      jsonResponse({ data: { id: 'u1', username: 'alice', email: 'alice@example.com' } })
+    );
+
+    await expect(getMyApifyProfile()).resolves.toMatchObject({ id: 'u1', username: 'alice' });
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe('http://localhost:3000/v2/users/me');
+  });
+
+  // /v2/users/me uses optional auth: an expired or invalid token gets the
+  // anonymous stub with 200, which must not show up as the username.
+  it('treats the anonymous stub as signed out', async () => {
+    localStorage.setItem('token', 'expired-jwt');
+    fetchMock.mockResolvedValue(
+      jsonResponse({ data: { id: 'anonymous', username: 'anonymous', profile: {} } })
+    );
+
+    await expect(getMyApifyProfile()).rejects.toThrow('Not signed in');
+  });
 });
 
 describe('fetchApi plumbing', () => {
