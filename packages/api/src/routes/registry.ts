@@ -38,6 +38,7 @@ import {
   buildSelectSql,
   formatBuild,
   loadBuild,
+  selectBuildStatus,
   selectDefaultBuild,
   type BuildRow,
 } from '../lib/builds.js';
@@ -81,29 +82,33 @@ const BUILD_NOT_FOUND = {
 } as const;
 
 /**
- * Load a build, long-polling while it is non-terminal when the request has
- * `waitForFinish=N` (same semantics as GET /actor-runs/:runId, #111). A
- * missing build (null) ends the wait immediately.
+ * Wait (`waitForFinish=N`, same semantics as GET /actor-runs/:runId, #111)
+ * while the build is non-terminal, polling only the light `status` query,
+ * then load the full row once. A missing build (null) ends the wait
+ * immediately. Builds from POST /builds stay RUNNING (nothing consumes
+ * build_queue), so such a wait always ends at the cap.
  */
 async function loadBuildWithWait(
   request: FastifyRequest,
   reply: FastifyReply,
   waitAbortSignal: (reply: FastifyReply) => WaitAbortHandle,
   waitSecs: number,
+  status: () => Promise<{ status: string } | null>,
   load: () => Promise<BuildRow | null>
 ): Promise<BuildRow | null> {
   if (waitSecs <= 0) return load();
 
   const abort = waitAbortSignal(reply);
   try {
-    return await waitForTerminal({
-      load,
+    const last = await waitForTerminal({
+      load: status,
       isTerminal: (b) => isTerminalStatus(b.status),
       waitSecs,
       signal: abort.signal,
       // Only a request that actually waits leaves the latency histogram.
       onWait: () => markLongPoll(request),
     });
+    return last ? load() : null;
   } finally {
     abort.dispose();
   }
@@ -116,7 +121,6 @@ export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
   const segment = opts.actorsSegment ?? 'acts';
   // All routes require authentication
   fastify.addHook('preHandler', authenticate);
-  const waitAbortSignal = createWaitAbortFactory(fastify);
 
   /**
    * GET /v2/acts/:actorId/versions - List all versions
@@ -369,13 +373,13 @@ export const registryRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
   fastify.get<{ Params: { actorId: string } }>(
     `/${segment}/:actorId/builds/default`,
     async (request, reply) => {
-      const waitSecs = parseWaitForFinish(request.query);
+      // Validated for a 400 on garbage, but never waited on: the default
+      // build is always SUCCEEDED (terminal), so there is nothing to wait for.
+      parseWaitForFinish(request.query);
       const actor = await ownedActor(request, reply);
       if (!actor) return ACTOR_NOT_FOUND;
 
-      const build = await loadBuildWithWait(request, reply, waitAbortSignal, waitSecs, () =>
-        selectDefaultBuild(actor.id)
-      );
+      const build = await selectDefaultBuild(actor.id);
       if (!build) {
         reply.status(404);
         return { error: { type: 'record-not-found', message: 'Default build not found' } };
@@ -494,8 +498,14 @@ export const actorBuildsRoutes: FastifyPluginAsync = async (fastify) => {
     const { buildId } = request.params;
     const waitSecs = parseWaitForFinish(request.query);
 
-    const build = await loadBuildWithWait(request, reply, waitAbortSignal, waitSecs, () =>
-      loadBuild(buildId, request.user!.id)
+    const userId = request.user!.id;
+    const build = await loadBuildWithWait(
+      request,
+      reply,
+      waitAbortSignal,
+      waitSecs,
+      () => selectBuildStatus(buildId, userId),
+      () => loadBuild(buildId, userId)
     );
     if (!build) {
       reply.status(404);

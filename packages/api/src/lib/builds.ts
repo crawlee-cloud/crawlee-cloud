@@ -148,6 +148,47 @@ export async function selectDefaultBuilds(
 }
 
 /**
+ * The build a new run is stamped with: the actor's newest SUCCEEDED build
+ * (by created_at), as `{ build_id, build_number }`, or null when the actor
+ * was never pushed. `build_number` is computed by BUILD_NUMBER_SQL, so the
+ * run's `buildNumber` matches what GET /actor-builds/:id reports for the
+ * same build ("0.1.3", not the bare version "0.1").
+ */
+export async function selectRunBuildStamp(
+  actorId: string,
+  db: Queryable = { query }
+): Promise<{ build_id: string; build_number: string | null } | null> {
+  const result = await db.query<{ build_id: string; build_number: string | null }>(
+    `SELECT b.id AS build_id, ${BUILD_NUMBER_SQL} AS build_number
+       FROM actor_builds b
+       LEFT JOIN actor_versions v ON v.id = b.version_id
+      WHERE b.actor_id = $1 AND b.status = 'SUCCEEDED'
+      ORDER BY b.created_at DESC, b.id DESC
+      LIMIT 1`,
+    [actorId]
+  );
+  return result.rows[0] ?? null;
+}
+
+/**
+ * Light status-only read of an owned build for `waitForFinish` polling: two
+ * primary-key lookups, no version join, no correlated build-number count,
+ * no actor_definition. Callers load the full row (loadBuild) once the wait
+ * ends.
+ */
+export async function selectBuildStatus(
+  buildId: string,
+  userId: string
+): Promise<{ status: string } | null> {
+  const result = await query<{ status: string }>(
+    `SELECT b.status FROM actor_builds b JOIN actors a ON a.id = b.actor_id
+      WHERE b.id = $1 AND a.user_id = $2`,
+    [buildId, userId]
+  );
+  return result.rows[0] ?? null;
+}
+
+/**
  * One build with its actor definition, scoped to the owner of its actor
  * (`actor_builds.actor_id → actors.user_id`), or null. Safe as a
  * `waitForTerminal` loader.

@@ -275,7 +275,11 @@ describe('GET /v2/actor-builds/:buildId?waitForFinish (fake timers)', () => {
     await vi.advanceTimersByTimeAsync(200);
     expect(probe.settled).toBe(true);
     expect(probe.value.json().data.status).toBe('FAILED');
-    expect(mockQuery).toHaveBeenCalledTimes(4);
+    // Four light status polls, then the full row once.
+    expect(mockQuery).toHaveBeenCalledTimes(5);
+    const sqls = mockQuery.mock.calls.map((c) => String(c[0]));
+    expect(sqls.slice(0, 4).every((sql) => sql.includes('SELECT b.status FROM'))).toBe(true);
+    expect(sqls[4]).toContain('COUNT(b2.id)');
     // It waited, so it is marked as a long-poll.
     expect(longPollFlags.at(-1)).toBe(true);
   });

@@ -6,7 +6,7 @@
  * `actorDefinition` from that. Covers the default-build choice against
  * Postgres: rollback, RUNNING orphans, no builds, cross-user scoping.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { ApifyClient } from 'apify-client';
 import type { FastifyInstance } from 'fastify';
 import {
@@ -244,6 +244,219 @@ describe('default build and /actor-builds (integration)', () => {
       expect(item).toHaveProperty('imageName');
       expect(item).toHaveProperty('versionNumber');
       expect(item.userId).toBe(alice.userId);
+    }
+  });
+
+  it('20 concurrent pushes with distinct versions each record a build; actor image is the newest build', async () => {
+    const actorId = await createActor('race20', {
+      defaultRunOptions: { image: 'ghcr.io/alice/race20:0' },
+      version: '0.0',
+    });
+    const { pool } = await import('../../src/db/index.js');
+
+    const versions = Array.from({ length: 20 }, (_, i) => `2.${String(i)}`);
+    const statuses = await Promise.all(
+      versions.map(async (v) => {
+        const res = await api(alice.token, 'PUT', `/acts/${actorId}`, {
+          defaultRunOptions: { image: `ghcr.io/alice/race20:${v}` },
+          version: v,
+        });
+        return res.status;
+      })
+    );
+    expect(statuses).toEqual(versions.map(() => 200));
+
+    const builds = await pool.query<{ version_number: string; image_name: string }>(
+      `SELECT v.version_number, b.image_name FROM actor_builds b
+         JOIN actor_versions v ON v.id = b.version_id
+        WHERE b.actor_id = $1 AND v.version_number = ANY($2)`,
+      [actorId, versions]
+    );
+    expect(builds.rows.map((r) => r.version_number).sort()).toEqual([...versions].sort());
+    for (const r of builds.rows) {
+      expect(r.image_name).toBe(`ghcr.io/alice/race20:${r.version_number}`);
+    }
+
+    const versionRows = await pool.query<{ build_tag: string | null }>(
+      'SELECT build_tag FROM actor_versions WHERE actor_id = $1',
+      [actorId]
+    );
+    expect(versionRows.rows).toHaveLength(21);
+    expect(versionRows.rows.filter((r) => r.build_tag === 'latest')).toHaveLength(1);
+
+    // The actor's image, the newest build, the latest tag and
+    // current_version_id all name the same push.
+    const newest = await pool.query<{ image_name: string; version_id: string }>(
+      `SELECT image_name, version_id FROM actor_builds WHERE actor_id = $1
+        ORDER BY created_at DESC, id DESC LIMIT 1`,
+      [actorId]
+    );
+    const actor = await pool.query<{
+      default_run_options: { image: string };
+      current_version_id: string;
+    }>('SELECT default_run_options, current_version_id FROM actors WHERE id = $1', [actorId]);
+    const latest = await pool.query<{ id: string }>(
+      `SELECT id FROM actor_versions WHERE actor_id = $1 AND build_tag = 'latest'`,
+      [actorId]
+    );
+    expect(actor.rows[0]!.default_run_options.image).toBe(newest.rows[0]!.image_name);
+    expect(actor.rows[0]!.current_version_id).toBe(newest.rows[0]!.version_id);
+    expect(latest.rows[0]!.id).toBe(newest.rows[0]!.version_id);
+  });
+
+  it('sequential rollback v1.0 -> v2.0 -> v1.0 records a third build and moves the tag back', async () => {
+    const actorId = await createActor('seqroll', {
+      defaultRunOptions: { image: 'ghcr.io/alice/seqroll:a' },
+      version: '1.0',
+    });
+    for (const [image, version] of [
+      ['ghcr.io/alice/seqroll:b', '2.0'],
+      ['ghcr.io/alice/seqroll:c', '1.0'],
+    ] as const) {
+      const res = await api(alice.token, 'PUT', `/acts/${actorId}`, {
+        defaultRunOptions: { image },
+        version,
+      });
+      expect(res.status).toBe(200);
+    }
+
+    const list = (await (await api(alice.token, 'GET', `/acts/${actorId}/builds`)).json()) as {
+      data: { items: Array<{ versionNumber: string; imageName: string; buildNumber: string }> };
+    };
+    expect(list.data.items.map((b) => [b.versionNumber, b.imageName, b.buildNumber])).toEqual([
+      ['1.0', 'ghcr.io/alice/seqroll:c', '1.0.2'],
+      ['2.0', 'ghcr.io/alice/seqroll:b', '2.0.1'],
+      ['1.0', 'ghcr.io/alice/seqroll:a', '1.0.1'],
+    ]);
+
+    const versions = (await (
+      await api(alice.token, 'GET', `/acts/${actorId}/versions`)
+    ).json()) as {
+      data: { items: Array<{ versionNumber: string; buildTag: string | null }> };
+    };
+    const tags = Object.fromEntries(versions.data.items.map((v) => [v.versionNumber, v.buildTag]));
+    expect(tags).toEqual({ '1.0': 'latest', '2.0': null });
+  });
+
+  it('a failing build record surfaces as a 5xx instead of a silent 200', async () => {
+    const actorId = await createActor('failrec', {
+      defaultRunOptions: { image: 'ghcr.io/alice/failrec:1' },
+      version: '0.1',
+    });
+    const { pool } = await import('../../src/db/index.js');
+    // Make the build insert fail for this actor only.
+    await pool.query(`CREATE OR REPLACE FUNCTION fail_failrec_build() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.actor_id = '${actorId}' THEN RAISE EXCEPTION 'injected build failure'; END IF;
+        RETURN NEW;
+      END $$ LANGUAGE plpgsql`);
+    await pool.query(`CREATE TRIGGER fail_failrec_build BEFORE INSERT ON actor_builds
+      FOR EACH ROW EXECUTE FUNCTION fail_failrec_build()`);
+    try {
+      const res = await api(alice.token, 'PUT', `/acts/${actorId}`, {
+        defaultRunOptions: { image: 'ghcr.io/alice/failrec:2' },
+        version: '0.2',
+      });
+      expect(res.status).toBeGreaterThanOrEqual(500);
+    } finally {
+      await pool.query('DROP TRIGGER IF EXISTS fail_failrec_build ON actor_builds');
+      await pool.query('DROP FUNCTION IF EXISTS fail_failrec_build()');
+    }
+  });
+
+  it('run start and rerun store the same buildNumber the builds API reports', async () => {
+    const actorId = await createActor('bnum', {
+      defaultRunOptions: { image: 'ghcr.io/alice/bnum:1' },
+      version: '0.1',
+    });
+    for (const tag of ['2', '3']) {
+      const res = await api(alice.token, 'PUT', `/acts/${actorId}`, {
+        defaultRunOptions: { image: `ghcr.io/alice/bnum:${tag}` },
+        version: '0.1',
+      });
+      expect(res.status).toBe(200);
+    }
+
+    const started = await api(alice.token, 'POST', `/acts/${actorId}/runs`, {});
+    expect(started.status).toBe(201);
+    const run = ((await started.json()) as { data: { id: string; buildNumber: string } }).data;
+    const got = (
+      (await (await api(alice.token, 'GET', `/actor-runs/${run.id}`)).json()) as {
+        data: { buildId: string; buildNumber: string };
+      }
+    ).data;
+    const build = (
+      (await (await api(alice.token, 'GET', `/actor-builds/${got.buildId}`)).json()) as {
+        data: { buildNumber: string };
+      }
+    ).data;
+    expect(build.buildNumber).toBe('0.1.3');
+    expect(run.buildNumber).toBe('0.1.3');
+    expect(got.buildNumber).toBe(build.buildNumber);
+
+    // Rerun needs a failed/aborted/timed-out origin.
+    const { pool } = await import('../../src/db/index.js');
+    await pool.query(`UPDATE runs SET status = 'FAILED', finished_at = NOW() WHERE id = $1`, [
+      run.id,
+    ]);
+    const rerun = await api(alice.token, 'POST', `/actor-runs/${run.id}/rerun`);
+    expect(rerun.status).toBe(201);
+    const rerunData = ((await rerun.json()) as { data: { buildId: string; buildNumber: string } })
+      .data;
+    expect(rerunData.buildId).toBe(got.buildId);
+    expect(rerunData.buildNumber).toBe('0.1.3');
+  });
+
+  it('POST /builds with no body creates a build instead of a 500; bad fields are a 400', async () => {
+    const res = await fetch(`${baseUrl}/v2/acts/alice~x/builds`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${alice.token}` },
+    });
+    expect(res.status).toBe(201);
+    const bad = await api(alice.token, 'POST', '/acts/alice~x/builds', { versionId: 42 });
+    expect(bad.status).toBe(400);
+  });
+
+  it("POST /builds rejects another user's versionId", async () => {
+    const bobActor = await api(bob.token, 'POST', '/acts', {
+      name: 'bobs',
+      defaultRunOptions: { image: 'ghcr.io/bob/bobs:1' },
+      version: '0.1',
+    });
+    expect(bobActor.status).toBe(201);
+    const bobId = ((await bobActor.json()) as { data: { id: string } }).data.id;
+    const bobVersions = (await (await api(bob.token, 'GET', `/acts/${bobId}/versions`)).json()) as {
+      data: { items: Array<{ id: string }> };
+    };
+    const res = await api(alice.token, 'POST', '/acts/alice~x/builds', {
+      versionId: bobVersions.data.items[0].id,
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('waitForFinish on a RUNNING build polls a light status query and returns at the cap', async () => {
+    const created = await api(alice.token, 'POST', '/acts/alice~x/builds', {});
+    expect(created.status).toBe(201);
+    const id = ((await created.json()) as { data: { id: string } }).data.id;
+    const { _dbState } = await import('../../src/db/index.js');
+    const spy = vi.spyOn(_dbState.pool, 'query');
+    try {
+      const started = Date.now();
+      const res = await api(alice.token, 'GET', `/actor-builds/${id}?waitForFinish=3`);
+      const elapsed = Date.now() - started;
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { data: { status: string } }).data.status).toBe('RUNNING');
+      expect(elapsed).toBeGreaterThanOrEqual(2900);
+      expect(elapsed).toBeLessThan(6000);
+
+      const sqls = spy.mock.calls.map((c) => String(c[0]));
+      // The full row (with its correlated build-number count) is read once.
+      expect(sqls.filter((s) => s.includes('COUNT(b2.id)'))).toHaveLength(1);
+      expect(
+        sqls.filter((s) => s.trim().startsWith('SELECT b.status FROM actor_builds')).length
+      ).toBeGreaterThanOrEqual(3);
+    } finally {
+      spy.mockRestore();
     }
   });
 });

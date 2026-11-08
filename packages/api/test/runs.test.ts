@@ -693,7 +693,7 @@ describe('Actor Runs Routes', () => {
         .mockResolvedValueOnce({ rows: [] }) // INSERT dataset
         .mockResolvedValueOnce({ rows: [] }) // INSERT kv store
         .mockResolvedValueOnce({ rows: [] }) // INSERT request queue
-        .mockResolvedValueOnce({ rows: [{ build_id: 'b-2', version_number: '1.0.1' }] })
+        .mockResolvedValueOnce({ rows: [{ build_id: 'b-2', build_number: '1.0.1' }] })
         .mockResolvedValueOnce({ rows: [insertedRun] })
         .mockResolvedValueOnce({ rows: webhookRows });
       for (let i = 0; i < webhookRows.length; i++) {
@@ -781,7 +781,7 @@ describe('Actor Runs Routes', () => {
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [] })
-        .mockResolvedValueOnce({ rows: [{ build_id: 'b-2', version_number: '1.0.1' }] })
+        .mockResolvedValueOnce({ rows: [{ build_id: 'b-2', build_number: '1.0.1' }] })
         .mockResolvedValueOnce({ rows: [newRunRow({ origin_run_id: 'run-0' })] })
         .mockResolvedValueOnce({ rows: [] });
 
@@ -863,7 +863,7 @@ describe('Actor Runs Routes', () => {
         .mockResolvedValueOnce({ rows: [] }) // INSERT dataset
         .mockResolvedValueOnce({ rows: [] }) // INSERT kv store
         .mockResolvedValueOnce({ rows: [] }) // INSERT request queue
-        .mockResolvedValueOnce({ rows: [{ build_id: 'b-2', version_number: '1.0.1' }] })
+        .mockResolvedValueOnce({ rows: [{ build_id: 'b-2', build_number: '1.0.1' }] })
         .mockRejectedValueOnce(new Error('run INSERT blew up'));
 
       const response = await app.inject({ method: 'POST', url: '/v2/actor-runs/run-1/rerun' });
