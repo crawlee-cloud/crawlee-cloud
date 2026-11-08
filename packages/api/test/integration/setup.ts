@@ -6,6 +6,7 @@
  *   import { createTestApp, runMigrations, createTestUser } from './setup.js';
  */
 import Fastify, { type FastifyInstance } from 'fastify';
+import { MAX_PARAM_LENGTH } from '../../src/lib/resolve-actor.js';
 import { S3Client, CreateBucketCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
 
 export const TEST_CONFIG = {
@@ -49,7 +50,13 @@ export async function createTestApp(): Promise<FastifyInstance> {
   await initS3();
   await initRedis();
 
-  const app = Fastify({ logger: false, bodyLimit: API_BODY_LIMIT });
+  // Mirror production's maxParamLength (src/index.ts) so long
+  // `username~name` actor IDs route the same way in tests.
+  const app = Fastify({
+    logger: false,
+    bodyLimit: API_BODY_LIMIT,
+    maxParamLength: MAX_PARAM_LENGTH,
+  });
 
   // Same plugins, parsers, and error handler as production (src/index.ts).
   await configureHttp(app);
@@ -109,6 +116,8 @@ export async function createTestUser(
 export async function cleanDatabase(): Promise<void> {
   const { pool } = await import('../../src/db/index.js');
   // Order matters: child rows before parents.
+  // actors.current_version_id references actor_versions without a cascade,
+  // so it's cleared before actor_versions is emptied.
   // runs references actors/datasets/key_value_stores/request_queues with default RESTRICT,
   // so those parents must be deleted AFTER runs, not before.
   await pool.query(`
@@ -117,6 +126,7 @@ export async function cleanDatabase(): Promise<void> {
     DELETE FROM webhooks;
     DELETE FROM runs;
     DELETE FROM actor_builds;
+    UPDATE actors SET current_version_id = NULL WHERE current_version_id IS NOT NULL;
     DELETE FROM actor_versions;
     DELETE FROM requests;
     DELETE FROM request_queues;

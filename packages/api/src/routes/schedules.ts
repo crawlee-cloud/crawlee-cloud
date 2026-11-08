@@ -9,6 +9,7 @@ import { query } from '../db/index.js';
 import { appendSearchCondition } from '../db/search.js';
 import { authenticate } from '../auth/middleware.js';
 import { computeNextRun } from '../scheduler.js';
+import { resolveActor, ACTOR_NOT_FOUND } from '../lib/resolve-actor.js';
 
 interface ScheduleRow {
   id: string;
@@ -43,18 +44,15 @@ export const schedulesRoutes: FastifyPluginAsync = async (fastify) => {
   }>('/schedules', async (request, reply) => {
     const data = CreateScheduleSchema.parse(request.body);
 
-    // Verify actor exists and belongs to user
-    const actor = await query(
-      'SELECT id FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2',
-      [data.actorId, request.user!.id]
-    );
+    // Verify actor exists and belongs to user (ID, name or username~name)
+    const actor = await resolveActor(data.actorId, request.user!.id);
 
-    if (!actor.rows[0]) {
+    if (!actor) {
       reply.status(404);
-      return { error: { type: 'record-not-found', message: 'Actor not found' } };
+      return ACTOR_NOT_FOUND;
     }
 
-    const actorId = (actor.rows[0] as { id: string }).id;
+    const actorId = actor.id;
 
     // Compute next_run_at so the next scheduler tick can pick it up without
     // a warm-up cycle. Invalid cron expressions are rejected at the route
@@ -171,17 +169,14 @@ export const schedulesRoutes: FastifyPluginAsync = async (fastify) => {
 
     // If actorId is being changed, verify new actor belongs to user
     if (updates.actorId !== undefined) {
-      const actor = await query(
-        'SELECT id FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2',
-        [updates.actorId, request.user!.id]
-      );
+      const actor = await resolveActor(updates.actorId, request.user!.id);
 
-      if (!actor.rows[0]) {
+      if (!actor) {
         reply.status(404);
-        return { error: { type: 'record-not-found', message: 'Actor not found' } };
+        return ACTOR_NOT_FOUND;
       }
 
-      updates.actorId = (actor.rows[0] as { id: string }).id;
+      updates.actorId = actor.id;
     }
 
     // Pre-validation: when cron_expression or timezone is changing, OR

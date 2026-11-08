@@ -158,7 +158,9 @@ const cases: AliasCase[] = [
     path: '/actor-1',
     payload: { title: 'New Title' },
     setup: () => {
-      mockQuery.mockResolvedValueOnce({ rows: [actorRow({ title: 'New Title' })] });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [actorRow()] }) // resolve actor
+        .mockResolvedValueOnce({ rows: [actorRow({ title: 'New Title' })] });
     },
     expectedStatus: 200,
   },
@@ -211,7 +213,9 @@ const cases: AliasCase[] = [
     method: 'GET',
     path: '/actor-1/versions',
     setup: () => {
-      mockQuery.mockResolvedValueOnce({ rows: [versionRow] });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [actorRow()] }) // resolve actor
+        .mockResolvedValueOnce({ rows: [versionRow] });
     },
     expectedStatus: 200,
   },
@@ -220,7 +224,9 @@ const cases: AliasCase[] = [
     method: 'GET',
     path: '/actor-1/builds',
     setup: () => {
-      mockQuery.mockResolvedValueOnce({ rows: [buildRow] });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [actorRow()] }) // resolve actor
+        .mockResolvedValueOnce({ rows: [buildRow] });
     },
     expectedStatus: 200,
   },
@@ -229,7 +235,9 @@ const cases: AliasCase[] = [
     method: 'GET',
     path: '/actor-1/builds/build-1',
     setup: () => {
-      mockQuery.mockResolvedValueOnce({ rows: [buildRow] });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [actorRow()] }) // resolve actor
+        .mockResolvedValueOnce({ rows: [buildRow] });
     },
     expectedStatus: 200,
   },

@@ -1,0 +1,651 @@
+/**
+ * username~name actor resolution and registry user scoping (#114, #77).
+ *
+ * Runs against real Postgres and a real HTTP listener so apify-client 2.25
+ * (which sends `username/name` as `username~name`) is exercised on the wire.
+ */
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
+import { ApifyClient } from 'apify-client';
+import type { FastifyInstance } from 'fastify';
+import {
+  createTestApp,
+  runMigrations,
+  createTestUser,
+  cleanDatabase,
+  ensureS3Bucket,
+} from './setup.js';
+
+describe('actor resolution by username~name (integration)', () => {
+  let app: FastifyInstance;
+  let baseUrl: string;
+  let alice: { userId: string; token: string };
+  let bob: { userId: string; token: string };
+
+  beforeAll(async () => {
+    await ensureS3Bucket();
+    app = await createTestApp();
+    await runMigrations();
+    const address = await app.listen({ port: 0, host: '127.0.0.1' });
+    baseUrl = address.replace(/\/$/, '');
+  });
+
+  beforeEach(async () => {
+    alice = await createTestUser('alice@resolve.local', 'pw-alice-1', 'alice');
+    bob = await createTestUser('bob@resolve.local', 'pw-bob-1', 'bob');
+  });
+
+  afterEach(async () => {
+    await cleanDatabase();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  const auth = (token: string) => ({ authorization: `Bearer ${token}` });
+
+  async function createActor(token: string, name: string): Promise<{ id: string }> {
+    const r = await app.inject({
+      method: 'POST',
+      url: '/v2/acts',
+      headers: auth(token),
+      payload: { name },
+    });
+    expect(r.statusCode).toBe(201);
+    return r.json().data;
+  }
+
+  it('resolves id, name, username~name and username%2Fname for the owner', async () => {
+    const actor = await createActor(alice.token, 'my-actor');
+
+    for (const ref of [actor.id, 'my-actor', 'alice~my-actor', 'alice%2Fmy-actor']) {
+      const r = await app.inject({
+        method: 'GET',
+        url: `/v2/acts/${ref}`,
+        headers: auth(alice.token),
+      });
+      expect(r.statusCode, ref).toBe(200);
+      expect(r.json().data).toMatchObject({ id: actor.id, name: 'my-actor', username: 'alice' });
+    }
+  });
+
+  it("returns 404 record-not-found for another user's username", async () => {
+    await createActor(bob.token, 'my-actor');
+    await createActor(alice.token, 'my-actor');
+
+    const r = await app.inject({
+      method: 'GET',
+      url: '/v2/acts/bob~my-actor',
+      headers: auth(alice.token),
+    });
+    expect(r.statusCode).toBe(404);
+    expect(r.json().error.type).toBe('record-not-found');
+  });
+
+  it('names containing . and - resolve exactly (no LIKE)', async () => {
+    const dotted = await createActor(alice.token, 'my.actor-v1');
+    await createActor(alice.token, 'myxactor-v1');
+
+    const r = await app.inject({
+      method: 'GET',
+      url: '/v2/acts/alice~my.actor-v1',
+      headers: auth(alice.token),
+    });
+    expect(r.statusCode).toBe(200);
+    expect(r.json().data.id).toBe(dotted.id);
+  });
+
+  it("an id match wins over an actor named after another of the caller's actor ids", async () => {
+    const target = await createActor(alice.token, 'target-actor');
+    // Created after `target`, named exactly like its id: both rows match.
+    const impostor = await createActor(alice.token, target.id);
+    expect(impostor.id).not.toBe(target.id);
+    // Rewrite target's row so it sits after the impostor's in the heap: an
+    // unordered lookup would then return the impostor first.
+    const { pool } = await import('../../src/db/index.js');
+    await pool.query(`UPDATE actors SET title = 'touched' WHERE id = $1`, [target.id]);
+
+    const r = await app.inject({
+      method: 'GET',
+      url: `/v2/acts/${target.id}`,
+      headers: auth(alice.token),
+    });
+    expect(r.statusCode).toBe(200);
+    expect(r.json().data.id).toBe(target.id);
+    expect(r.json().data.name).toBe('target-actor');
+  });
+
+  it('starts a run via POST /v2/acts/username~name/runs', async () => {
+    const actor = await createActor(alice.token, 'my-actor');
+
+    const r = await app.inject({
+      method: 'POST',
+      url: '/v2/acts/alice~my-actor/runs',
+      headers: auth(alice.token),
+      payload: {},
+    });
+    expect(r.statusCode).toBe(201);
+    expect(r.json().data.actId).toBe(actor.id);
+  });
+
+  it('resolves a 30-character username with a 100-character actor name', async () => {
+    const username = 'u'.repeat(30);
+    const long = await createTestUser('long@resolve.local', 'pw-long-1', username);
+    const name = 'a'.repeat(100);
+    const actor = await createActor(long.token, name);
+
+    for (const ref of [`${username}~${name}`, `${username}%2F${name}`]) {
+      const r = await app.inject({
+        method: 'GET',
+        url: `/v2/acts/${ref}`,
+        headers: auth(long.token),
+      });
+      expect(r.statusCode).toBe(200);
+      expect(r.json().data.id).toBe(actor.id);
+    }
+  });
+
+  it('PUT/DELETE and schedules accept username~name', async () => {
+    const actor = await createActor(alice.token, 'my-actor');
+
+    const put = await app.inject({
+      method: 'PUT',
+      url: '/v2/acts/alice~my-actor',
+      headers: auth(alice.token),
+      payload: { title: 'Renamed' },
+    });
+    expect(put.statusCode).toBe(200);
+    expect(put.json().data).toMatchObject({ title: 'Renamed', username: 'alice' });
+
+    const sched = await app.inject({
+      method: 'POST',
+      url: '/v2/schedules',
+      headers: auth(alice.token),
+      payload: { actorId: 'alice~my-actor', name: 'nightly', cronExpression: '0 0 * * *' },
+    });
+    expect(sched.statusCode).toBe(201);
+    expect(sched.json().data.actorId).toBe(actor.id);
+
+    const foreignSched = await app.inject({
+      method: 'POST',
+      url: '/v2/schedules',
+      headers: auth(bob.token),
+      payload: { actorId: 'alice~my-actor', name: 'nope', cronExpression: '0 0 * * *' },
+    });
+    expect(foreignSched.statusCode).toBe(404);
+
+    // Remove the schedule first so the actor delete isn't blocked by it.
+    await app.inject({
+      method: 'DELETE',
+      url: `/v2/schedules/${sched.json().data.id}`,
+      headers: auth(alice.token),
+    });
+    const del = await app.inject({
+      method: 'DELETE',
+      url: '/v2/acts/alice~my-actor',
+      headers: auth(alice.token),
+    });
+    expect(del.statusCode).toBe(204);
+  });
+
+  it('list items include username and stats.lastRunStartedAt; ?my=1 is ignored', async () => {
+    const withRun = await createActor(alice.token, 'with-run');
+    await createActor(alice.token, 'no-run');
+    await createActor(bob.token, 'bobs-actor');
+    const run = await app.inject({
+      method: 'POST',
+      url: `/v2/acts/${withRun.id}/runs`,
+      headers: auth(alice.token),
+      payload: {},
+    });
+    expect(run.statusCode).toBe(201);
+
+    const r = await app.inject({ method: 'GET', url: '/v2/acts?my=1', headers: auth(alice.token) });
+    expect(r.statusCode).toBe(200);
+    const items = r.json().data.items as Array<{
+      name: string;
+      username: string;
+      stats: { lastRunStartedAt: string | null };
+    }>;
+    expect(items.map((i) => i.name).sort()).toEqual(['no-run', 'with-run']);
+    for (const i of items) expect(i.username).toBe('alice');
+    expect(items.find((i) => i.name === 'with-run').stats.lastRunStartedAt).toEqual(
+      expect.any(String)
+    );
+    expect(items.find((i) => i.name === 'no-run').stats.lastRunStartedAt).toBeNull();
+  });
+
+  it('apify-client 2.25: client.actor("alice/my-actor").get() returns the actor', async () => {
+    const actor = await createActor(alice.token, 'my-actor');
+    const client = new ApifyClient({ token: alice.token, baseUrl });
+
+    const got = await client.actor('alice/my-actor').get();
+    expect(got).toMatchObject({ id: actor.id, name: 'my-actor', username: 'alice' });
+
+    // Another user's actor is not found (SDK maps record-not-found → undefined).
+    const bobClient = new ApifyClient({ token: bob.token, baseUrl });
+    expect(await bobClient.actor('alice/my-actor').get()).toBeUndefined();
+  });
+
+  describe("registry routes on another user's actor (#77)", () => {
+    let bobActorId: string;
+    let bobVersionId: string;
+    let bobBuildId: string;
+    let aliceActorId: string;
+
+    beforeEach(async () => {
+      bobActorId = (await createActor(bob.token, 'bobs-actor')).id;
+      aliceActorId = (await createActor(alice.token, 'alices-actor')).id;
+
+      const v = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${bobActorId}/versions`,
+        headers: auth(bob.token),
+        payload: { versionNumber: '0.1' },
+      });
+      expect(v.statusCode).toBe(201);
+      bobVersionId = v.json().data.id;
+
+      const b = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${bobActorId}/builds`,
+        headers: auth(bob.token),
+        payload: {},
+      });
+      expect(b.statusCode).toBe(201);
+      bobBuildId = b.json().data.id;
+    });
+
+    const routes = (): Array<{
+      method: 'GET' | 'POST' | 'DELETE';
+      path: string;
+      payload?: object;
+    }> => [
+      { method: 'GET', path: 'versions' },
+      { method: 'POST', path: 'versions', payload: { versionNumber: '9.9' } },
+      { method: 'GET', path: `versions/${bobVersionId}` },
+      { method: 'DELETE', path: `versions/${bobVersionId}` },
+      { method: 'GET', path: 'builds' },
+      { method: 'POST', path: 'builds', payload: {} },
+      { method: 'GET', path: `builds/${bobBuildId}` },
+      { method: 'POST', path: `builds/${bobBuildId}/abort` },
+      { method: 'GET', path: `builds/${bobBuildId}/logs` },
+    ];
+
+    it("every registry route 404s for bob's actor ID, under /acts and /actors", async () => {
+      for (const segment of ['acts', 'actors']) {
+        for (const route of routes()) {
+          const r = await app.inject({
+            method: route.method,
+            url: `/v2/${segment}/${bobActorId}/${route.path}`,
+            headers: auth(alice.token),
+            ...(route.payload ? { payload: route.payload } : {}),
+          });
+          expect(r.statusCode, `${route.method} ${segment}/${route.path}`).toBe(404);
+          expect(r.json().error.type).toBe('record-not-found');
+        }
+      }
+
+      // Nothing of bob's was changed: the version survives, the build still runs.
+      const { pool } = await import('../../src/db/index.js');
+      const v = await pool.query('SELECT 1 FROM actor_versions WHERE id = $1', [bobVersionId]);
+      expect(v.rowCount).toBe(1);
+      const b = await pool.query('SELECT status FROM actor_builds WHERE id = $1', [bobBuildId]);
+      expect(b.rows[0].status).toBe('RUNNING');
+      const versions = await pool.query('SELECT 1 FROM actor_versions WHERE actor_id = $1', [
+        bobActorId,
+      ]);
+      expect(versions.rowCount).toBe(1);
+    });
+
+    it("POST builds on alice's own actor 404s for bob's versionId and stores nothing", async () => {
+      for (const versionId of [bobVersionId, 'no-such-version']) {
+        const r = await app.inject({
+          method: 'POST',
+          url: `/v2/acts/${aliceActorId}/builds`,
+          headers: auth(alice.token),
+          payload: { versionId },
+        });
+        expect(r.statusCode, versionId).toBe(404);
+        expect(r.json().error).toEqual({ type: 'record-not-found', message: 'Version not found' });
+      }
+
+      const { pool } = await import('../../src/db/index.js');
+      const b = await pool.query('SELECT 1 FROM actor_builds WHERE actor_id = $1', [aliceActorId]);
+      expect(b.rowCount).toBe(0);
+
+      // Her own version is still accepted.
+      const v = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${aliceActorId}/versions`,
+        headers: auth(alice.token),
+        payload: { versionNumber: '0.1' },
+      });
+      const ok = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${aliceActorId}/builds`,
+        headers: auth(alice.token),
+        payload: { versionId: v.json().data.id },
+      });
+      expect(ok.statusCode).toBe(201);
+      expect(ok.json().data.versionId).toBe(v.json().data.id);
+    });
+
+    it("build routes 404 for bob's build ID under alice's own actor", async () => {
+      for (const path of [`builds/${bobBuildId}`, `builds/${bobBuildId}/logs`]) {
+        const r = await app.inject({
+          method: 'GET',
+          url: `/v2/acts/${aliceActorId}/${path}`,
+          headers: auth(alice.token),
+        });
+        expect(r.statusCode, path).toBe(404);
+        expect(r.json().error.type).toBe('record-not-found');
+      }
+      const abort = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${aliceActorId}/builds/${bobBuildId}/abort`,
+        headers: auth(alice.token),
+      });
+      expect(abort.statusCode).toBe(404);
+
+      const { pool } = await import('../../src/db/index.js');
+      const b = await pool.query('SELECT status FROM actor_builds WHERE id = $1', [bobBuildId]);
+      expect(b.rows[0].status).toBe('RUNNING');
+    });
+
+    it('apify-client: another user’s versions and builds are not found', async () => {
+      const client = new ApifyClient({ token: alice.token, baseUrl });
+      expect(await client.actor('bob/bobs-actor').get()).toBeUndefined();
+      await expect(client.actor(bobActorId).versions().list()).rejects.toMatchObject({
+        statusCode: 404,
+      });
+      await expect(client.actor(bobActorId).builds().list()).rejects.toMatchObject({
+        statusCode: 404,
+      });
+    });
+
+    it('the owner still reaches every registry route via username~name', async () => {
+      const ok = await app.inject({
+        method: 'GET',
+        url: `/v2/acts/bob~bobs-actor/builds/${bobBuildId}`,
+        headers: auth(bob.token),
+      });
+      expect(ok.statusCode).toBe(200);
+      const versions = await app.inject({
+        method: 'GET',
+        url: '/v2/actors/bob~bobs-actor/versions',
+        headers: auth(bob.token),
+      });
+      expect(versions.statusCode).toBe(200);
+      expect(versions.json().data.total).toBe(1);
+    });
+  });
+
+  describe('verification feedback', () => {
+    async function shadowed(): Promise<{ target: { id: string }; impostor: { id: string } }> {
+      const target = await createActor(alice.token, 'target-actor');
+      const impostor = await createActor(alice.token, target.id);
+      // Put target's row after the impostor's in the heap (see above).
+      const { pool } = await import('../../src/db/index.js');
+      await pool.query(`UPDATE actors SET title = 'touched' WHERE id = $1`, [target.id]);
+      return { target, impostor };
+    }
+
+    it('PUT, runs and DELETE prefer the id match over a same-named actor', async () => {
+      const { target, impostor } = await shadowed();
+      const { pool } = await import('../../src/db/index.js');
+
+      const put = await app.inject({
+        method: 'PUT',
+        url: `/v2/acts/${target.id}`,
+        headers: auth(alice.token),
+        payload: { title: 'via-id' },
+      });
+      expect(put.statusCode).toBe(200);
+      expect(put.json().data.id).toBe(target.id);
+      const titles = await pool.query<{ id: string; title: string | null }>(
+        'SELECT id, title FROM actors WHERE id = ANY($1)',
+        [[target.id, impostor.id]]
+      );
+      expect(Object.fromEntries(titles.rows.map((r) => [r.id, r.title]))).toEqual({
+        [target.id]: 'via-id',
+        [impostor.id]: null,
+      });
+
+      const run = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${target.id}/runs`,
+        headers: auth(alice.token),
+        payload: {},
+      });
+      expect(run.statusCode).toBe(201);
+      expect(run.json().data.actId).toBe(target.id);
+
+      const runs = await app.inject({
+        method: 'GET',
+        url: `/v2/acts/${target.id}/runs`,
+        headers: auth(alice.token),
+      });
+      expect(runs.statusCode).toBe(200);
+      expect(runs.json().data.items.map((r: { actId: string }) => r.actId)).toEqual([target.id]);
+
+      // The impostor has no runs, so deleting it would succeed; the target
+      // has one, so resolving to the target yields 409 without force.
+      const del = await app.inject({
+        method: 'DELETE',
+        url: `/v2/acts/${target.id}`,
+        headers: auth(alice.token),
+      });
+      expect(del.statusCode).toBe(409);
+      expect(del.json().error.type).toBe('actor-has-runs');
+      await pool.query(`UPDATE runs SET status = 'SUCCEEDED' WHERE actor_id = $1`, [target.id]);
+      const forced = await app.inject({
+        method: 'DELETE',
+        url: `/v2/acts/${target.id}?force=true`,
+        headers: auth(alice.token),
+      });
+      expect(forced.statusCode).toBe(204);
+      const left = await pool.query('SELECT id FROM actors WHERE id = ANY($1)', [
+        [target.id, impostor.id],
+      ]);
+      expect(left.rows.map((r) => r.id)).toEqual([impostor.id]);
+    });
+
+    it('matches username and actor name case-insensitively', async () => {
+      const actor = await createActor(alice.token, 'Web-Scraper');
+
+      for (const ref of [
+        'alice~web-scraper',
+        'ALICE~WEB-SCRAPER',
+        'Alice%2FWeb-Scraper',
+        'web-SCRAPER',
+      ]) {
+        const r = await app.inject({
+          method: 'GET',
+          url: `/v2/acts/${ref}`,
+          headers: auth(alice.token),
+        });
+        expect(r.statusCode, ref).toBe(200);
+        expect(r.json().data.id, ref).toBe(actor.id);
+      }
+
+      // Bob still can't reach it, whatever the case.
+      const foreign = await app.inject({
+        method: 'GET',
+        url: '/v2/acts/ALICE~web-scraper',
+        headers: auth(bob.token),
+      });
+      expect(foreign.statusCode).toBe(404);
+    });
+
+    it('the exact id, then the exact-case name, win over case-insensitive matches', async () => {
+      const upper = await createActor(alice.token, 'Foo');
+      const lower = await createActor(alice.token, 'foo');
+      // Named like upper's id with flipped case: matches it case-insensitively.
+      const flipped = upper.id.replace(/[a-zA-Z]/g, (c) =>
+        c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase()
+      );
+      const caseTwin = await createActor(alice.token, flipped);
+
+      for (const [ref, id] of [
+        ['Foo', upper.id],
+        ['foo', lower.id],
+        ['alice~Foo', upper.id],
+        ['alice~foo', lower.id],
+        [upper.id, upper.id],
+        [flipped, caseTwin.id],
+      ] as const) {
+        const r = await app.inject({
+          method: 'GET',
+          url: `/v2/acts/${ref}`,
+          headers: auth(alice.token),
+        });
+        expect(r.statusCode, ref).toBe(200);
+        expect(r.json().data.id, ref).toBe(id);
+      }
+    });
+
+    it('schedules accept a 30-char username + 100-char name on create and update', async () => {
+      const username = 'u'.repeat(30);
+      const long = await createTestUser('sched@resolve.local', 'pw-sched-1', username);
+      const first = await createActor(long.token, 'a'.repeat(100));
+      const second = await createActor(long.token, 'b'.repeat(100));
+
+      const created = await app.inject({
+        method: 'POST',
+        url: '/v2/schedules',
+        headers: auth(long.token),
+        payload: {
+          actorId: `${username}~${'a'.repeat(100)}`,
+          name: 'nightly',
+          cronExpression: '0 0 * * *',
+        },
+      });
+      expect(created.statusCode).toBe(201);
+      expect(created.json().data.actorId).toBe(first.id);
+
+      const updated = await app.inject({
+        method: 'PUT',
+        url: `/v2/schedules/${created.json().data.id}`,
+        headers: auth(long.token),
+        payload: { actorId: `${username}/${'b'.repeat(100)}` },
+      });
+      expect(updated.statusCode).toBe(200);
+      expect(updated.json().data.actorId).toBe(second.id);
+
+      const tooLong = await app.inject({
+        method: 'POST',
+        url: '/v2/schedules',
+        headers: auth(long.token),
+        payload: { actorId: 'x'.repeat(132), name: 'n', cronExpression: '0 0 * * *' },
+      });
+      expect(tooLong.statusCode).toBe(400);
+    });
+
+    it("a forged versionId never surfaces alice's version in bob's builds", async () => {
+      const aliceActor = await createActor(alice.token, 'alices-actor');
+      const v = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${aliceActor.id}/versions`,
+        headers: auth(alice.token),
+        payload: { versionNumber: '7.7', buildTag: 'secret-tag' },
+      });
+      expect(v.statusCode).toBe(201);
+      const aliceVersionId = v.json().data.id;
+      const bobActor = await createActor(bob.token, 'bobs-actor');
+
+      const forged = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${bobActor.id}/builds`,
+        headers: auth(bob.token),
+        payload: { versionId: aliceVersionId },
+      });
+      expect(forged.statusCode).toBe(404);
+
+      const list = await app.inject({
+        method: 'GET',
+        url: `/v2/acts/${bobActor.id}/builds`,
+        headers: auth(bob.token),
+      });
+      expect(list.statusCode).toBe(200);
+      expect(list.json().data.items).toEqual([]);
+      expect(JSON.stringify(list.json())).not.toContain('secret-tag');
+      const { redis } = await import('../../src/storage/redis.js');
+      const jobs = await redis.lrange('build_queue', 0, -1);
+      expect(jobs.some((j) => j.includes(aliceVersionId))).toBe(false);
+    });
+
+    it('POST builds/versions without a body never 500', async () => {
+      const actor = await createActor(alice.token, 'my-actor');
+      const { pool } = await import('../../src/db/index.js');
+
+      // A version needs versionNumber: 400.
+      const version = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${actor.id}/versions`,
+        headers: auth(alice.token),
+      });
+      expect(version.statusCode).toBe(400);
+      expect(version.json().error.type).toBe('validation_error');
+
+      // Every build field is optional, and apify-client's actor.build()
+      // sends no body (options go in the query string): starts a build.
+      const build = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${actor.id}/builds`,
+        headers: auth(alice.token),
+      });
+      expect(build.statusCode).toBe(201);
+      expect(build.json().data).toMatchObject({ actorId: actor.id, versionId: null });
+      await pool.query('DELETE FROM actor_builds WHERE actor_id = $1', [actor.id]);
+    });
+
+    it('POST builds/versions with a malformed body return 400 and store nothing', async () => {
+      const actor = await createActor(alice.token, 'my-actor');
+      for (const [path, payload] of [
+        ['builds', { versionId: 42 }],
+        ['versions', {}],
+      ] as const) {
+        const r = await app.inject({
+          method: 'POST',
+          url: `/v2/acts/${actor.id}/${path}`,
+          headers: auth(alice.token),
+          payload,
+        });
+        expect(r.statusCode, path).toBe(400);
+      }
+      const { pool } = await import('../../src/db/index.js');
+      const b = await pool.query('SELECT 1 FROM actor_builds WHERE actor_id = $1', [actor.id]);
+      expect(b.rowCount).toBe(0);
+    });
+
+    it("deleting the actor's current version succeeds and clears the pointer", async () => {
+      const actor = await createActor(alice.token, 'my-actor');
+      const v = await app.inject({
+        method: 'POST',
+        url: `/v2/acts/${actor.id}/versions`,
+        headers: auth(alice.token),
+        payload: { versionNumber: '0.1' },
+      });
+      const versionId = v.json().data.id;
+      const { pool } = await import('../../src/db/index.js');
+      await pool.query('UPDATE actors SET current_version_id = $1 WHERE id = $2', [
+        versionId,
+        actor.id,
+      ]);
+
+      const del = await app.inject({
+        method: 'DELETE',
+        url: `/v2/acts/alice~my-actor/versions/${versionId}`,
+        headers: auth(alice.token),
+      });
+      expect(del.statusCode).toBe(204);
+      const row = await pool.query('SELECT current_version_id FROM actors WHERE id = $1', [
+        actor.id,
+      ]);
+      expect(row.rows[0].current_version_id).toBeNull();
+      const gone = await pool.query('SELECT 1 FROM actor_versions WHERE id = $1', [versionId]);
+      expect(gone.rowCount).toBe(0);
+    });
+  });
+});
