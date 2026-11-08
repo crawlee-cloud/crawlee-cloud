@@ -20,6 +20,11 @@ import fs from 'fs-extra';
 import { spawn } from 'child_process';
 import { getConfig } from '../utils/config.js';
 import { maybeShowFeedbackNote } from '../utils/feedback.js';
+import {
+  ActorDefinitionError,
+  resolveActorDefinitionWithSources,
+  type ResolvedActorDefinition,
+} from '../utils/actor-definition.js';
 
 interface ActorJson {
   actorSpecification?: number;
@@ -28,7 +33,10 @@ interface ActorJson {
   description?: string;
   version?: string;
   dockerfile?: string;
-  input?: string;
+  // Input schema: an inline object, or a path relative to `.actor/`.
+  input?: string | Record<string, unknown>;
+  // README path relative to `.actor/`.
+  readme?: string;
   output?: string;
   storages?: {
     dataset?: string;
@@ -126,6 +134,20 @@ export const pushCommand = new Command('push')
     }
 
     const actorName = actorJson.name!;
+
+    // Resolve the input schema and README before building, so a missing,
+    // malformed or oversize schema (or README) fails fast instead of after a
+    // Docker build.
+    let resolvedDefinition: ResolvedActorDefinition;
+    try {
+      resolvedDefinition = await resolveActorDefinitionWithSources(cwd, actorJson);
+    } catch (err) {
+      if (err instanceof ActorDefinitionError) {
+        console.log(chalk.red(`❌ ${err.message}`));
+        process.exit(1);
+      }
+      throw err;
+    }
     const imageName = `crawlee-cloud/actor-${actorName}:${options.tag as string}`;
 
     // Determine build mode and the image runners will pull. We resolve
@@ -147,6 +169,9 @@ export const pushCommand = new Command('push')
     if (actorJson.version) console.log(chalk.dim(`Version: ${actorJson.version}`));
     console.log(chalk.dim(`Image: ${runtimeImage}`));
     console.log(chalk.dim(`Build: ${buildMode}`));
+    console.log(chalk.dim(`Input schema: ${resolvedDefinition.inputSource}`));
+    console.log(chalk.dim(`README: ${resolvedDefinition.readmeSource}`));
+    resolvedDefinition.warnings.forEach((w) => console.log(chalk.yellow(`⚠️  ${w}`)));
     console.log();
 
     // Check Dockerfile exists
@@ -285,6 +310,12 @@ export const pushCommand = new Command('push')
             memoryMbytes: actorJsonDefaults.memoryMbytes,
           }),
         },
+        // The full actor.json with the input schema + README inlined (#116),
+        // stored by the API on this push's build. `input`/`readme` are left
+        // out when not found, so the API keeps the previous build's value.
+        // APIs older than #112 strip the unknown key, so no version gate is
+        // needed.
+        actorDefinition: resolvedDefinition.definition,
       };
 
       if (existingId) {
