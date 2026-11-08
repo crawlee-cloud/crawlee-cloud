@@ -6,6 +6,7 @@ import { initDatabase } from './db/index.js';
 import { initS3 } from './storage/s3.js';
 import { initRedis } from './storage/redis.js';
 import { authRoutes } from './routes/auth.js';
+import { serializeRequestForLog } from './lib/log-redact.js';
 import { registerV2Routes } from './routes/index.js';
 import { requireAdmin } from './auth/middleware.js';
 import { setupAdminUserGated } from './setup-gated.js';
@@ -22,7 +23,8 @@ import { MAX_PARAM_LENGTH } from './lib/resolve-actor.js';
 enforceSecurityConfig();
 
 const app = Fastify({
-  logger: { level: config.logLevel },
+  // Redact secret-bearing query params (?envVars=, ?webhooks=) from request logs.
+  logger: { level: config.logLevel, serializers: { req: serializeRequestForLog } },
   bodyLimit: API_BODY_LIMIT,
   // Also used by createTestApp (test/integration/setup.ts). Fastify's default
   // (100) is too short for `username~name` actor IDs.

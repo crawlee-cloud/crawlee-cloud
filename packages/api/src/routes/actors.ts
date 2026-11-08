@@ -7,12 +7,22 @@ import { nanoid } from 'nanoid';
 import {
   CreateActorSchema,
   UpdateActorSchema,
-  ActorRunSchema,
   DeleteActorQuerySchema,
   type ActorDefinition,
 } from '../schemas/actors.js';
 import { ListRunsQuerySchema } from '../schemas/runs.js';
-import { listRuns } from './runs.js';
+import { listRuns, loadRun, formatRun } from './runs.js';
+import {
+  parseRunStartRequest,
+  unsupportedRunBodyMessage,
+  isNonEmptyFormBody,
+} from '../lib/run-body.js';
+import {
+  waitForTerminal,
+  createWaitAbortFactory,
+  isTerminalStatus,
+  markLongPoll,
+} from '../lib/wait-for-terminal.js';
 import { query, getClient } from '../db/index.js';
 import { encryptProxyPassword } from '../lib/proxy-crypto.js';
 import { appendSearchCondition } from '../db/search.js';
@@ -265,6 +275,7 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
 ) => {
   const segment = opts.actorsSegment ?? 'acts';
   fastify.addHook('preHandler', authenticate);
+  const waitAbortSignal = createWaitAbortFactory(fastify);
 
   /**
    * GET /v2/acts - List actors (filtered by user)
@@ -731,25 +742,30 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
 
   /**
    * POST /v2/acts/:actorId/runs - Start actor run
+   *
+   * Apify contract: the body is the actor input and run options come from
+   * the query string (`timeout`, `memory`, `waitForFinish`, base64
+   * `webhooks` / `envVars`). The legacy wrapper body `{ input, timeout,
+   * memory, envVars, webhooks }` is also accepted, as a documented
+   * extension — see lib/run-body.ts. `waitForFinish=N` (clamped to 60) holds the response
+   * until the new run is terminal or N seconds pass, like GET
+   * /actor-runs/:runId, and then returns the full run object.
    */
   fastify.post<{
     Params: { actorId: string };
-    Body: {
-      input?: unknown;
-      timeout?: number;
-      memory?: number;
-      envVars?: Record<string, string>;
-      webhooks?: Array<{
-        eventTypes: string[];
-        requestUrl: string;
-        payloadTemplate?: string;
-        headersTemplate?: string;
-      }>;
-    };
+    Body: unknown;
   }>(`/${segment}/:actorId/runs`, async (request, reply) => {
     const { actorId } = request.params;
-    const parsed = ActorRunSchema.parse(request.body || {});
+    const unsupported = unsupportedRunBodyMessage(request.headers['content-type'], request.body);
+    if (unsupported) {
+      reply.status(415);
+      return { error: { type: 'unsupported-media-type', message: unsupported } };
+    }
+    const parsed = parseRunStartRequest(request.body, request.query);
     const { input, envVars, webhooks } = parsed;
+    if (parsed.legacy) {
+      request.log.info({ actorId }, 'run-body: legacy');
+    }
 
     // Get actor by ID, name or username~name, scoped to user. We need the actor's
     // default_run_options before we can resolve the run's timeout/memory.
@@ -762,7 +778,8 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       return { error: { type: 'record-not-found', message: 'Actor not found' } };
     }
 
-    // Resolution order for timeout/memory: request body override → actor's
+    // Resolution order for timeout/memory: request override (query string,
+    // or the legacy wrapper body) → actor's
     // default_run_options (set via `crc push` or PUT /v2/acts/:id) → the
     // platform fallback (3600s / 1024 MB). Previously the handler ignored
     // the actor's defaults and always fell back to 3600/1024 when the
@@ -784,7 +801,9 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
     // Create storages with user ownership.
     // KEEP-IN-SYNC: the rerun endpoint (routes/runs.ts POST
     // /actor-runs/:runId/rerun) clones this creation flow — storage trio,
-    // INPUT write, build stamp. Update both together.
+    // INPUT write, build stamp. Update both together. (Rerun copies the
+    // origin's stored INPUT record as-is, so the body/query parsing in
+    // lib/run-body.ts has no rerun counterpart.)
     await query('INSERT INTO datasets (id, user_id) VALUES ($1, $2)', [
       datasetId,
       request.user!.id,
@@ -798,9 +817,10 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       request.user!.id,
     ]);
 
-    // Always store input in the KV store (empty object if not provided)
+    // Always store input in the KV store (parseRunStartRequest turns a
+    // missing input into an empty object)
     const { putKVRecord } = await import('../storage/s3.js');
-    await putKVRecord(kvStoreId, 'INPUT', JSON.stringify(input ?? {}), 'application/json');
+    await putKVRecord(kvStoreId, 'INPUT', JSON.stringify(input), 'application/json');
 
     // Stamp the run with the actor's most recent SUCCEEDED build so the
     // run row (and downstream webhook resource block) carries buildId /
@@ -897,6 +917,34 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
     await redis.publish('run:new', runId);
 
     reply.status(201);
+
+    // The run exists from here on: a failure while waiting must not turn
+    // into a 5xx, or apify-client retries the POST and starts a duplicate
+    // run. Any wait error falls through to the creation response.
+    if (parsed.waitForFinish > 0) {
+      const abort = waitAbortSignal(reply);
+      try {
+        const run = await waitForTerminal({
+          load: () => loadRun(runId, request.user!.id),
+          isTerminal: (r) => isTerminalStatus(r.status),
+          waitSecs: parsed.waitForFinish,
+          signal: abort.signal,
+          // Only a request that actually waits leaves the latency histogram.
+          onWait: () => markLongPoll(request),
+        });
+        // Only null if the run was deleted mid-wait; fall through to the
+        // creation response below.
+        if (run) return { data: formatRun(run) };
+      } catch (err) {
+        request.log.warn(
+          { err, runId },
+          'waitForFinish failed after run start; returning the created run'
+        );
+      } finally {
+        abort.dispose();
+      }
+    }
+
     return {
       data: {
         id: result.rows[0]!.id,
@@ -916,15 +964,47 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
    */
   fastify.post<{
     Params: { actorId: string };
-    Body: { input?: unknown };
-  }>(`/${segment}/:actorId/run-sync`, async (request, _reply) => {
-    // For now, just create the run - actual execution would be handled by runner service.
+    Body: unknown;
+  }>(`/${segment}/:actorId/run-sync`, async (request, reply) => {
+    // For now, just create the run - it does not wait for the run to finish.
+    // Forwards body, query string (run options, `?token=`), Authorization
+    // and Content-Type so the start route sees the request as sent.
     // Always targets /acts, which stays registered alongside the /actors alias.
-    return (fastify as any).inject({
+    const queryIndex = request.url.indexOf('?');
+    const search = queryIndex === -1 ? '' : request.url.slice(queryIndex);
+    const headers: Record<string, string> = {};
+    if (request.headers.authorization) headers.authorization = request.headers.authorization;
+    if (request.headers['content-type']) headers['content-type'] = request.headers['content-type'];
+
+    // Re-serialize the parsed body: injecting a parsed JSON string or number
+    // would send it raw. A re-serialized body is sent as JSON, whatever it
+    // arrived as — the form parser has already turned an empty
+    // form-urlencoded body into `{}`, and re-sending that with the form
+    // content type would store INPUT as the string "{}". Bodies the start
+    // route refuses keep their raw form and content type so it answers them
+    // with the same 415: Buffers (text/plain, octet-stream) and non-empty
+    // form-urlencoded strings.
+    let payload: string | Buffer | undefined;
+    if (
+      Buffer.isBuffer(request.body) ||
+      isNonEmptyFormBody(request.headers['content-type'], request.body)
+    ) {
+      payload = request.body as string | Buffer;
+    } else if (request.body !== undefined) {
+      payload = JSON.stringify(request.body);
+      headers['content-type'] = 'application/json';
+    }
+
+    const res = await fastify.inject({
       method: 'POST',
-      url: `/v2/acts/${request.params.actorId}/runs`,
-      payload: request.body,
+      url: `/v2/acts/${encodeURIComponent(request.params.actorId)}/runs${search}`,
+      headers,
+      ...(payload !== undefined ? { payload } : {}),
     });
+    reply.status(res.statusCode);
+    const contentType = res.headers['content-type'];
+    if (contentType) reply.header('content-type', contentType);
+    return reply.send(res.payload);
   });
 };
 
