@@ -64,9 +64,22 @@ describe('Users routes — GET /v2/users/me', () => {
     expect(body.data.proxy).toBeUndefined();
   });
 
+  it('returns 404 record-not-found when the authenticated user row is gone', async () => {
+    // A still-valid JWT or a cached API key can outlive the user row.
+    // Reporting username '' would make MCP build broken tool names.
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v2/users/me',
+      headers: { authorization: 'Bearer valid-token' },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.type).toBe('record-not-found');
+  });
+
   it('returns no proxy field when authed user has no password set', async () => {
     mockQuery.mockResolvedValueOnce({
-      rows: [{ email: 'a@b.com', proxy_password_encrypted: null }],
+      rows: [{ email: 'a@b.com', username: 'a', proxy_password_encrypted: null }],
     });
     const res = await app.inject({
       method: 'GET',
@@ -76,14 +89,15 @@ describe('Users routes — GET /v2/users/me', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.data.id).toBe('user-1');
-    expect(body.data.username).toBe('a@b.com');
+    expect(body.data.username).toBe('a');
+    expect(body.data.email).toBe('a@b.com');
     expect(body.data.proxy).toBeUndefined();
   });
 
   it('returns proxy.password (decrypted) when authed user has it set', async () => {
     const stored = encryptProxyPassword('apify_pw_xyz');
     mockQuery.mockResolvedValueOnce({
-      rows: [{ email: 'a@b.com', proxy_password_encrypted: stored }],
+      rows: [{ email: 'a@b.com', username: 'a', proxy_password_encrypted: stored }],
     });
     const res = await app.inject({
       method: 'GET',

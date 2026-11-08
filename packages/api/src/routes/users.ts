@@ -36,7 +36,7 @@ export const usersRoutes: FastifyPluginAsync = async (fastify) => {
   /**
    * GET /v2/users/me — Apify-compatible.
    */
-  fastify.get('/users/me', async (request) => {
+  fastify.get('/users/me', async (request, reply) => {
     if (!request.user) {
       return {
         data: {
@@ -49,15 +49,28 @@ export const usersRoutes: FastifyPluginAsync = async (fastify) => {
       };
     }
 
-    const row = await pool.query<{ email: string; proxy_password_encrypted: string | null }>(
-      'SELECT email, proxy_password_encrypted FROM users WHERE id = $1',
-      [request.user.id]
-    );
+    const row = await pool.query<{
+      email: string;
+      username: string;
+      proxy_password_encrypted: string | null;
+    }>('SELECT email, username, proxy_password_encrypted FROM users WHERE id = $1', [
+      request.user.id,
+    ]);
     const u = row.rows[0];
+    // Authenticated, but the user row is gone (a still-valid JWT or a
+    // cached API key outlived it). Don't report an empty username: the
+    // MCP server builds tool names from it.
+    if (!u) {
+      reply.status(404);
+      return { error: { type: 'record-not-found', message: 'User not found' } };
+    }
 
+    // `username` is the URL- and tool-name-safe slug (src/auth/username.ts);
+    // before #110 it carried the email, which now has its own field.
     const data: Record<string, unknown> = {
       id: request.user.id,
-      username: u?.email ?? '',
+      username: u.username,
+      email: u.email,
       profile: {},
       isPaidUser: false,
       plan: 'FREE',
@@ -71,7 +84,7 @@ export const usersRoutes: FastifyPluginAsync = async (fastify) => {
     // 500 the SDK fallback / dashboard probe over it — log server-side
     // and omit the proxy field so the caller treats this user as "no
     // proxy configured" until the row is repaired.
-    if (u?.proxy_password_encrypted) {
+    if (u.proxy_password_encrypted) {
       try {
         data.proxy = {
           password: decryptProxyPassword(u.proxy_password_encrypted),
