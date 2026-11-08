@@ -102,8 +102,9 @@ describe('GET /v2/store (integration)', () => {
       ids.echo,
     ]);
     await pool.query(
-      `INSERT INTO runs (id, actor_id, user_id, created_at)
-       VALUES ($1, $3, $4, '2026-07-01T00:00:00Z'), ($2, $3, $4, '2026-07-02T00:00:00Z')`,
+      `INSERT INTO runs (id, actor_id, user_id, created_at, started_at)
+       VALUES ($1, $3, $4, '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z'),
+              ($2, $3, $4, '2026-07-02T00:00:00Z', '2026-07-02T00:00:00Z')`,
       [nanoid(), nanoid(), ids.echo, alice.userId]
     );
   });
@@ -231,6 +232,82 @@ describe('GET /v2/store (integration)', () => {
     expect(paged.at(-1)).toMatchObject({ name: 'echo', stats: { totalRuns: 2 } });
     for (const item of paged.filter((i) => i.name !== 'echo')) {
       expect(item.stats).toEqual({ totalRuns: 0, lastRunStartedAt: null });
+    }
+  });
+
+  it('multi-word search (as the MCP search-actors tool sends it) requires every term to match some field', async () => {
+    // "echo" matches the name, "input" the description, "alice119" the username.
+    expect(names(await store(alice.token, 'search=echo+input'))).toEqual(['echo']);
+    expect(
+      names(await store(alice.token, `search=${encodeURIComponent('Echoes  INPUT')}`))
+    ).toEqual(['echo']);
+    // No exact name/handle match for a multi-word search: newest first.
+    expect(names(await store(alice.token, 'search=alice119+echo'))).toEqual(['echo-plus', 'echo']);
+    expect(names(await store(alice.token, 'search=alice119%2Fecho+plus'))).toEqual(['echo-plus']);
+    expect(names(await store(alice.token, 'search=echo+100%25'))).toEqual([]);
+    expect(names(await store(alice.token, 'search=pct+100%25'))).toEqual(['pct']);
+    expect(names(await store(alice.token, 'search=echo+input+actor'))).toEqual([]);
+    // Every term still only sees the caller's actors.
+    expect(names(await store(alice.token, 'search=bob119+echo'))).toEqual([]);
+
+    const { pool } = await import('../../src/db/index.js');
+    const id = await createActor(alice.token, 'echo-mcp', {
+      title: 'Echo Input',
+      description: 'A test actor that returns its input',
+    });
+    try {
+      expect(names(await client.store().list({ search: 'echo input actor' }))).toEqual([
+        'echo-mcp',
+      ]);
+      expect(
+        names(await store(alice.token, `search=${encodeURIComponent('echo\tinput   actor')}`))
+      ).toEqual(['echo-mcp']);
+    } finally {
+      await pool.query('DELETE FROM actors WHERE id = $1', [id]);
+    }
+  });
+
+  it('username filter is case-insensitive', async () => {
+    expect(names(await store(alice.token, 'username=Alice119&search=echo'))).toEqual([
+      'echo',
+      'echo-plus',
+    ]);
+    expect((await store(alice.token, 'username=BOB119')).total).toBe(0);
+  });
+
+  it('clamps a huge offset and takes the first of repeated filter params', async () => {
+    const huge = await store(alice.token, 'offset=99999999999');
+    expect(huge).toMatchObject({ count: 0, items: [], offset: 1_000_000 });
+    const repeated = await store(
+      alice.token,
+      'category=a&category=b&sortBy=x&sortBy=y&pricingModel=FREE&pricingModel=PAID&search=echo&search=zzz&username=alice119&username=bob119'
+    );
+    expect(names(repeated)).toEqual(['echo', 'echo-plus']);
+  });
+
+  it('lastRunStartedAt is the newest started_at, ignoring runs that never started', async () => {
+    const { pool } = await import('../../src/db/index.js');
+    const id = await createActor(alice.token, 'started-runs');
+    await pool.query(
+      `INSERT INTO runs (id, actor_id, user_id, created_at, started_at) VALUES
+         ($1, $4, $5, '2026-08-01T00:00:00Z', '2026-08-01T00:05:00Z'),
+         ($2, $4, $5, '2026-08-03T00:00:00Z', NULL),
+         ($3, $4, $5, '2026-08-02T00:00:00Z', '2026-08-02T00:01:00Z')`,
+      [nanoid(), nanoid(), nanoid(), id, alice.userId]
+    );
+    const neverStarted = await createActor(alice.token, 'never-started');
+    await pool.query(
+      `INSERT INTO runs (id, actor_id, user_id, created_at) VALUES ($1, $2, $3, '2026-08-04T00:00:00Z')`,
+      [nanoid(), neverStarted, alice.userId]
+    );
+    try {
+      const [started] = (await store(alice.token, 'search=started-runs')).items;
+      expect(started.stats).toEqual({ totalRuns: 3, lastRunStartedAt: '2026-08-02T00:01:00.000Z' });
+      const [never] = (await store(alice.token, 'search=never-started')).items;
+      expect(never.stats).toEqual({ totalRuns: 1, lastRunStartedAt: null });
+    } finally {
+      await pool.query('DELETE FROM runs WHERE actor_id = ANY($1)', [[id, neverStarted]]);
+      await pool.query('DELETE FROM actors WHERE id = ANY($1)', [[id, neverStarted]]);
     }
   });
 

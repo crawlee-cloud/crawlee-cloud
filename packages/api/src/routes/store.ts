@@ -10,7 +10,7 @@
 
 import type { FastifyPluginAsync } from 'fastify';
 import { query } from '../db/index.js';
-import { appendSearchCondition } from '../db/search.js';
+import { escapeLikePattern } from '../db/like.js';
 import { authenticate } from '../auth/middleware.js';
 import { selectDefaultInputSchemas } from '../lib/builds.js';
 import { StoreListQuerySchema } from '../schemas/store.js';
@@ -66,6 +66,14 @@ export function formatStoreItem(row: StoreActorRow, inputSchema?: Record<string,
   };
 }
 
+const SEARCH_COLUMNS = [
+  'a.name',
+  'a.title',
+  'a.description',
+  'u.username',
+  "(u.username || '/' || a.name)",
+];
+
 export const storeRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.addHook('preHandler', authenticate);
 
@@ -76,20 +84,22 @@ export const storeRoutes: FastifyPluginAsync = async (fastify) => {
     const q = StoreListQuerySchema.parse(request.query);
 
     const params: unknown[] = [request.user!.id];
-    // Apify's store search also matches the owner's username; the combined
-    // `username/name` handle is our extension (agents search with the handle
-    // they saw elsewhere). One bind serves every column.
-    let where = appendSearchCondition('a.user_id = $1', params, q.search, [
-      'a.name',
-      'a.title',
-      'a.description',
-      'u.username',
-      "(u.username || '/' || a.name)",
-    ]);
+    let where = 'a.user_id = $1';
+    // Apify's store search is keyword search: the MCP `search-actors` tool
+    // sends space-separated keywords ("echo input actor"). Every term must
+    // match at least one field. Apify also matches the owner's username; the
+    // combined `username/name` handle is our extension (agents search with
+    // the handle they saw elsewhere).
+    for (const term of q.search.split(/\s+/).filter(Boolean)) {
+      params.push(`%${escapeLikePattern(term)}%`);
+      const p = `$${params.length}`;
+      where += ` AND (${SEARCH_COLUMNS.map((c) => `${c} ILIKE ${p}`).join(' OR ')})`;
+    }
     // Only the caller's actors are listed, so any other username is empty.
+    // Usernames are case-insensitive, like Apify's.
     if (q.username !== undefined) {
       params.push(q.username);
-      where += ` AND u.username = $${params.length}`;
+      where += ` AND LOWER(u.username) = LOWER($${params.length})`;
     }
 
     // Exact (case-insensitive) name or `username/name` match first, then most
@@ -114,6 +124,9 @@ export const storeRoutes: FastifyPluginAsync = async (fastify) => {
     // aggregate below the LIMIT would scan every run of every matching actor.
     // The runs subquery filters on user_id as well as actor_id so it walks
     // idx_runs_user_actor_created (there's no index on runs.actor_id alone).
+    // `lastRunStartedAt` is the newest actual start: runs that never started
+    // (READY, aborted before start) count in totalRuns but have no start
+    // time, so an actor with only such runs reports null.
     const [countResult, pageResult] = await Promise.all([
       query<{ total: string }>(
         `SELECT COUNT(*)::text AS total
@@ -133,7 +146,7 @@ export const storeRoutes: FastifyPluginAsync = async (fastify) => {
               LIMIT $${selectParams.length - 1} OFFSET $${selectParams.length}
            ) a
            CROSS JOIN LATERAL (
-             SELECT COUNT(*)::int AS total_runs, MAX(r.created_at) AS last_run_started_at
+             SELECT COUNT(*)::int AS total_runs, MAX(r.started_at) AS last_run_started_at
                FROM runs r
               WHERE r.user_id = a.user_id AND r.actor_id = a.id
            ) rs

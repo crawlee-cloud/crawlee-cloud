@@ -86,6 +86,24 @@ describe('StoreListQuerySchema', () => {
     });
   });
 
+  it('clamps a huge offset instead of rejecting it', () => {
+    expect(StoreListQuerySchema.parse({ offset: '1000000' }).offset).toBe(1_000_000);
+    expect(StoreListQuerySchema.parse({ offset: '99999999999' }).offset).toBe(1_000_000);
+  });
+
+  it('takes the first value of a repeated string param', () => {
+    const q = StoreListQuerySchema.parse({
+      search: ['echo', 'zzz'],
+      username: ['alice', 'bob'],
+      category: ['a', 'b'],
+      pricingModel: ['FREE', 'PAID'],
+      allowsAgenticUsers: ['1', '0'],
+      sortBy: ['x', 'y'],
+      includeUnrunnableActors: ['1', '0'],
+    });
+    expect(q).toMatchObject({ search: 'echo', username: 'alice' });
+  });
+
   it.each([{ offset: '-1' }, { limit: '-1' }, { limit: 'abc' }, { includeInputSchema: 'yes' }])(
     'rejects %j',
     (input) => {
@@ -218,6 +236,51 @@ describe('GET /v2/store', () => {
     expect(countParams).toEqual(['test-user-id', '%50\\%\\_a\\\\b%']);
   });
 
+  it('requires every whitespace-separated search term to match some field', async () => {
+    mockList([]);
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v2/store?search=${encodeURIComponent(' echo\tinput  a_ctor ')}`,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const [sql, params] = sqlOf('LIMIT $');
+    const fields = (p: string) =>
+      `(a.name ILIKE ${p} OR a.title ILIKE ${p} OR a.description ILIKE ${p} OR u.username ILIKE ${p} OR (u.username || '/' || a.name) ILIKE ${p})`;
+    expect(sql).toContain(
+      `a.user_id = $1 AND ${fields('$2')} AND ${fields('$3')} AND ${fields('$4')}`
+    );
+    expect(params).toEqual([
+      'test-user-id',
+      '%echo%',
+      '%input%',
+      '%a\\_ctor%',
+      'echo\tinput  a_ctor',
+      10,
+      0,
+    ]);
+    const [, countParams] = sqlOf('COUNT(*)::text AS total');
+    expect(countParams).toEqual(['test-user-id', '%echo%', '%input%', '%a\\_ctor%']);
+  });
+
+  it('reports lastRunStartedAt from started_at, not created_at', async () => {
+    mockList([]);
+    await app.inject({ method: 'GET', url: '/v2/store' });
+    const [sql] = sqlOf('LIMIT $');
+    expect(sql).toContain('MAX(r.started_at) AS last_run_started_at');
+    expect(sql).not.toContain('created_at');
+  });
+
+  it('accepts repeated params and a huge offset', async () => {
+    mockList([]);
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v2/store?category=a&category=b&sortBy=x&sortBy=y&offset=5000000',
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().data.offset).toBe(1_000_000);
+  });
+
   it('filters on username (so another user’s name yields nothing)', async () => {
     mockList([]);
     const res = await app.inject({ method: 'GET', url: '/v2/store?username=bob' });
@@ -225,7 +288,7 @@ describe('GET /v2/store', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().data).toMatchObject({ total: 0, count: 0, items: [] });
     const [sql, params] = sqlOf('LIMIT $');
-    expect(sql).toContain('a.user_id = $1 AND u.username = $2');
+    expect(sql).toContain('a.user_id = $1 AND LOWER(u.username) = LOWER($2)');
     expect(params).toEqual(['test-user-id', 'bob', 10, 0]);
   });
 
