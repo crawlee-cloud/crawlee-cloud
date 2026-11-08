@@ -189,6 +189,10 @@ describe('apify-client round-trip (integration)', () => {
     await queue.deleteRequestLock(a.id, { forefront: true });
     head = await queue.listHead();
     expect(head.items[0].uniqueKey).toBe('a');
+
+    // POST /head/lock serves the same order as GET /head.
+    const locked = await queue.listAndLockHead({ lockSecs: 60, limit: 10 });
+    expect(locked.items.map((r) => r.uniqueKey)).toEqual(head.items.map((r) => r.uniqueKey));
   });
 
   it('treats getOrCreate as idempotent on repeat calls', async () => {

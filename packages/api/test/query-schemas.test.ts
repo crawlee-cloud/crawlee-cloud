@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { zBoolQuery } from '../src/schemas/common.js';
-import { ListRunsQuerySchema } from '../src/schemas/runs.js';
+import { ListRunsQuerySchema, RUN_STATUSES, UpdateRunSchema } from '../src/schemas/runs.js';
 
 describe('zBoolQuery', () => {
   it.each([
@@ -66,26 +66,19 @@ describe('ListRunsQuerySchema', () => {
     expect(ListRunsQuerySchema.safeParse({ status }).success).toBe(false);
   });
 
-  it('maps startedAfter/startedBefore onto since/until', () => {
-    const q = ListRunsQuerySchema.parse({
-      startedAfter: '2026-01-01T00:00:00.000Z',
-      startedBefore: '2026-02-01T00:00:00.000Z',
-    });
-    expect(q.since).toBe('2026-01-01T00:00:00.000Z');
-    expect(q.until).toBe('2026-02-01T00:00:00.000Z');
-    expect(q).not.toHaveProperty('startedAfter');
-    expect(q).not.toHaveProperty('startedBefore');
-  });
-
-  it('prefers explicit since/until over the aliases', () => {
+  it('keeps startedAfter/startedBefore separate from since/until', () => {
     const q = ListRunsQuerySchema.parse({
       since: '2026-03-01T00:00:00.000Z',
       startedAfter: '2026-01-01T00:00:00.000Z',
       until: '2026-04-01T00:00:00.000Z',
       startedBefore: '2026-02-01T00:00:00.000Z',
     });
-    expect(q.since).toBe('2026-03-01T00:00:00.000Z');
-    expect(q.until).toBe('2026-04-01T00:00:00.000Z');
+    expect(q).toMatchObject({
+      since: '2026-03-01T00:00:00.000Z',
+      until: '2026-04-01T00:00:00.000Z',
+      startedAfter: '2026-01-01T00:00:00.000Z',
+      startedBefore: '2026-02-01T00:00:00.000Z',
+    });
   });
 
   it('rejects a non-ISO startedAfter', () => {
@@ -96,5 +89,31 @@ describe('ListRunsQuerySchema', () => {
     const q = ListRunsQuerySchema.parse({ unnamed: '1', clean: '0' });
     expect(q).not.toHaveProperty('unnamed');
     expect(q).not.toHaveProperty('clean');
+  });
+});
+
+describe('UpdateRunSchema', () => {
+  it.each(RUN_STATUSES)('accepts every status the list filter accepts: %s', (status) => {
+    expect(UpdateRunSchema.safeParse({ status }).success).toBe(true);
+    expect(ListRunsQuerySchema.safeParse({ status }).success).toBe(true);
+  });
+
+  it('covers the full Apify status set', () => {
+    expect([...RUN_STATUSES].sort()).toEqual(
+      [
+        'READY',
+        'RUNNING',
+        'SUCCEEDED',
+        'FAILED',
+        'TIMING-OUT',
+        'TIMED-OUT',
+        'ABORTING',
+        'ABORTED',
+      ].sort()
+    );
+  });
+
+  it('rejects an unknown status', () => {
+    expect(UpdateRunSchema.safeParse({ status: 'SLEEPING' }).success).toBe(false);
   });
 });

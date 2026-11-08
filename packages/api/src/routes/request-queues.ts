@@ -278,9 +278,9 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
           `
           UPDATE requests 
           SET locked_until = NOW() + ($1::int * INTERVAL '1 second'), locked_by = $2
-          WHERE id = $3
+          WHERE id = $3 AND queue_id = $4
         `,
-          [lockSecs, clientKey, req.id]
+          [lockSecs, clientKey, req.id, qId]
         );
         lockedRequests.push(req);
       }
@@ -754,8 +754,11 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
     setClauses.push('locked_by = NULL');
 
     if (setClauses.length > 0) {
-      values.push(requestId);
-      await query(`UPDATE requests SET ${setClauses.join(', ')} WHERE id = $${paramIndex}`, values);
+      values.push(requestId, existing.queue_id);
+      await query(
+        `UPDATE requests SET ${setClauses.join(', ')} WHERE id = $${paramIndex} AND queue_id = $${paramIndex + 1}`,
+        values
+      );
     }
 
     // Release Redis lock
@@ -828,9 +831,9 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
       `
       UPDATE requests 
       SET locked_until = NOW() + ($1::int * INTERVAL '1 second')
-      WHERE id = $2
+      WHERE id = $2 AND queue_id = $3
     `,
-      [lockSecs, requestId]
+      [lockSecs, requestId, queue.rows[0].id]
     );
 
     return { data: { lockExpiresAt: new Date(Date.now() + lockSecs * 1000).toISOString() } };
@@ -857,22 +860,32 @@ export const requestQueuesRoutes: FastifyPluginAsync = async (fastify) => {
       return { error: { type: 'record-not-found', message: 'Request queue not found' } };
     }
 
-    // Release in Redis
-    await releaseLock(queue.rows[0].id, requestId, clientKey);
+    const qId = queue.rows[0].id;
 
     // Clear in DB. With forefront, also move the request to the head of the
-    // queue (negated sequence value, as on the add routes).
+    // queue (negated sequence value, as on the add routes). Scoped to the
+    // resolved queue: a request id alone would let a caller clear another
+    // user's lock by pairing their own queue id with a foreign request id.
     const reorder = forefront
       ? `, order_no = -nextval(pg_get_serial_sequence('requests', 'order_no'))`
       : '';
-    await query(
+    const cleared = await query(
       `
-      UPDATE requests 
+      UPDATE requests
       SET locked_until = NULL, locked_by = NULL${reorder}
-      WHERE id = $1
+      WHERE id = $1 AND queue_id = $2
+      RETURNING id
     `,
-      [requestId]
+      [requestId, qId]
     );
+
+    if (!cleared.rows[0]) {
+      reply.status(404);
+      return { error: { type: 'record-not-found', message: 'Request not found' } };
+    }
+
+    // Release in Redis
+    await releaseLock(qId, requestId, clientKey);
 
     reply.status(204);
   });

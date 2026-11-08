@@ -9,6 +9,7 @@ import { redis } from '../storage/redis.js';
 import { authenticate } from '../auth/middleware.js';
 import {
   UpdateRunSchema,
+  TERMINAL_RUN_STATUSES,
   ListRunsQuerySchema,
   RunsHistogramQuerySchema,
   type ListRunsQuery,
@@ -75,8 +76,10 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
    *   status   = READY|RUNNING|SUCCEEDED|FAILED|TIMING-OUT|TIMED-OUT|ABORTING|ABORTED,
    *              or a comma-separated list of them (any-of)
    *   actorId  = filter to one actor
-   *   since    = ISO datetime, runs created at >= this (alias: startedAfter)
-   *   until    = ISO datetime, runs created at <  this (alias: startedBefore)
+   *   since    = ISO datetime, runs created at >= this (extension)
+   *   until    = ISO datetime, runs created at <  this (extension)
+   *   startedAfter / startedBefore = ISO datetime, run start time (created
+   *              time while READY), both bounds inclusive — Apify's filters
    *   limit    = page size, default 50, max 200
    *   offset   = page offset, default 0
    *   desc     = sort by created_at desc (default true). 'false'/'0' for asc.
@@ -473,7 +476,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       values.push(status);
 
       // Set finished_at if terminal status
-      if (['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT'].includes(status)) {
+      if (TERMINAL_RUN_STATUSES.includes(status)) {
         setClauses.push('finished_at = NOW()');
       }
     }
@@ -1109,6 +1112,16 @@ export async function listRuns(userId: string, q: ListRunsQuery) {
   if (q.until !== undefined) {
     where.push(`r.created_at < $${p++}`);
     params.push(q.until);
+  }
+  // Apify semantics: start time, inclusive bounds. A READY run has no
+  // started_at yet, so it is placed at its creation time.
+  if (q.startedAfter !== undefined) {
+    where.push(`COALESCE(r.started_at, r.created_at) >= $${p++}`);
+    params.push(q.startedAfter);
+  }
+  if (q.startedBefore !== undefined) {
+    where.push(`COALESCE(r.started_at, r.created_at) <= $${p++}`);
+    params.push(q.startedBefore);
   }
   const whereSql = where.join(' AND ');
 

@@ -238,23 +238,34 @@ describe('Runs list / filter / pagination (integration)', () => {
     expect(await listIds('/v2/actor-runs?status=TIMING-OUT')).toEqual([]);
   });
 
-  it('treats startedAfter/startedBefore as since/until', async () => {
+  it('filters startedAfter/startedBefore on start time, inclusive; since/until stay on created_at', async () => {
     ({ token } = await createTestUser('runs-started@test.local', 'pw-runs-started-1'));
     const actorId = await makeActor('started-actor');
     const a = await startRun(actorId);
     const b = await startRun(actorId);
-    const c = await startRun(actorId);
+    const c = await startRun(actorId); // stays READY: started_at IS NULL
 
-    const get = await app.inject({
-      method: 'GET',
-      url: `/v2/actor-runs/${b}`,
-      headers: authHeaders(),
-    });
-    const bCreatedAt = new Date(get.json().data.createdAt).toISOString();
+    // Start times well before creation, so start-time and created-time
+    // filters give different answers.
+    const t1 = '2026-01-01T00:00:00.000Z';
+    const t2 = '2026-01-02T00:00:00.000Z';
+    const { pool } = await import('../../src/db/index.js');
+    await pool.query("UPDATE runs SET status = 'RUNNING', started_at = $2 WHERE id = $1", [a, t1]);
+    await pool.query("UPDATE runs SET status = 'RUNNING', started_at = $2 WHERE id = $1", [b, t2]);
 
-    expect(await listIds(`/v2/actor-runs?desc=0&startedAfter=${bCreatedAt}`)).toEqual([b, c]);
-    expect(await listIds(`/v2/actor-runs?desc=0&startedBefore=${bCreatedAt}`)).toEqual([a]);
-    expect(await listIds(`/v2/actor-runs?desc=0&since=${bCreatedAt}`)).toEqual([b, c]);
+    // Inclusive lower bound on start time; the READY run falls back to its
+    // (recent) created_at.
+    expect(await listIds(`/v2/actor-runs?desc=0&startedAfter=${t2}`)).toEqual([b, c]);
+    // Inclusive upper bound on start time.
+    expect(await listIds(`/v2/actor-runs?desc=0&startedBefore=${t2}`)).toEqual([a, b]);
+    // Both bounds on the exact start instant select that run.
+    expect(await listIds(`/v2/actor-runs?desc=0&startedAfter=${t1}&startedBefore=${t1}`)).toEqual([
+      a,
+    ]);
+
+    // since/until (extension) keep filtering on created_at.
+    expect(await listIds(`/v2/actor-runs?desc=0&since=${t2}`)).toEqual([a, b, c]);
+    expect(await listIds(`/v2/actor-runs?desc=0&until=${t2}`)).toEqual([]);
   });
 
   it('GET /v2/acts/:actorId/runs lists only that actor, by id or name; 404 for a foreign actor', async () => {

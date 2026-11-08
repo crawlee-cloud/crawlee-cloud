@@ -202,15 +202,16 @@ describe('Actor Runs Routes', () => {
       ]);
     });
 
-    it('treats startedAfter/startedBefore as since/until', async () => {
+    it('filters startedAfter/startedBefore on start time, inclusive', async () => {
       mockEmptyPage();
       await app.inject({
         method: 'GET',
         url: '/v2/actor-runs?startedAfter=2026-01-01T00:00:00.000Z&startedBefore=2026-02-01T00:00:00.000Z',
       });
       const [countSql, countParams] = mockQuery.mock.calls[0] as [string, unknown[]];
-      expect(countSql).toContain('r.created_at >= $2');
-      expect(countSql).toContain('r.created_at < $3');
+      expect(countSql).toContain('COALESCE(r.started_at, r.created_at) >= $2');
+      expect(countSql).toContain('COALESCE(r.started_at, r.created_at) <= $3');
+      expect(countSql).not.toContain('r.created_at <');
       expect(countParams).toEqual([
         'test-user-id',
         '2026-01-01T00:00:00.000Z',

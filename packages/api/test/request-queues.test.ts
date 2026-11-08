@@ -277,7 +277,7 @@ describe('Request Queue Routes', () => {
     it('should release lock', async () => {
       mockQuery
         .mockResolvedValueOnce({ rows: [createQueueRow()] })
-        .mockResolvedValueOnce({ rows: [] });
+        .mockResolvedValueOnce({ rows: [{ id: 'req-1' }] });
 
       const response = await app.inject({
         method: 'DELETE',
@@ -292,7 +292,7 @@ describe('Request Queue Routes', () => {
       async (forefront) => {
         mockQuery
           .mockResolvedValueOnce({ rows: [createQueueRow()] })
-          .mockResolvedValueOnce({ rows: [] });
+          .mockResolvedValueOnce({ rows: [{ id: 'req-1' }] });
 
         const response = await app.inject({
           method: 'DELETE',
@@ -313,7 +313,7 @@ describe('Request Queue Routes', () => {
       async (forefront) => {
         mockQuery
           .mockResolvedValueOnce({ rows: [createQueueRow()] })
-          .mockResolvedValueOnce({ rows: [] });
+          .mockResolvedValueOnce({ rows: [{ id: 'req-1' }] });
 
         const qs = forefront === undefined ? '' : `&forefront=${forefront}`;
         await app.inject({
@@ -337,6 +337,24 @@ describe('Request Queue Routes', () => {
 
       expect(response.statusCode).toBe(404);
       expect(response.json().error.type).toBe('record-not-found');
+      expect(redisMocks.releaseLock).not.toHaveBeenCalled();
+    });
+
+    it('scopes the UPDATE to the resolved queue and 404s a foreign request id', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [createQueueRow()] })
+        .mockResolvedValueOnce({ rows: [] }); // request not in this queue
+
+      const response = await app.inject({
+        method: 'DELETE',
+        url: '/v2/request-queues/queue-1/requests/other-users-req/lock?clientKey=worker1',
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json().error.type).toBe('record-not-found');
+      const [updateSql, params] = mockQuery.mock.calls[1] as [string, unknown[]];
+      expect(updateSql).toContain('queue_id = $2');
+      expect(params).toEqual(['other-users-req', createQueueRow().id]);
       expect(redisMocks.releaseLock).not.toHaveBeenCalled();
     });
   });
