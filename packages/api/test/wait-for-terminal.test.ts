@@ -9,6 +9,7 @@ import {
   parseWaitForFinish,
   isTerminalStatus,
   MAX_WAIT_FOR_FINISH_SECS,
+  MAX_WAIT_MS,
 } from '../src/lib/wait-for-terminal.js';
 
 interface Job {
@@ -168,9 +169,64 @@ describe('waitForTerminal', () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 
-  it('propagates load errors', async () => {
+  it('propagates an error from the initial load', async () => {
     const load = vi.fn().mockRejectedValue(new Error('db down'));
     await expect(waitForTerminal({ load, isTerminal, waitSecs: 5 })).rejects.toThrow('db down');
+  });
+
+  it('ends the wait with the last good value when a re-load fails', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const err = new Error('connection reset');
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 'RUNNING', n: 1 })
+      .mockResolvedValueOnce({ status: 'RUNNING', n: 2 })
+      .mockRejectedValueOnce(err)
+      .mockResolvedValue({ status: 'SUCCEEDED' });
+    const onLoadError = vi.fn();
+
+    const probe = track(waitForTerminal({ load, isTerminal, waitSecs: 20, onLoadError }));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(probe.settled).toBe(true);
+    expect(probe.value).toEqual({ status: 'RUNNING', n: 2 });
+    expect(load).toHaveBeenCalledTimes(3);
+    expect(onLoadError).toHaveBeenCalledWith(err);
+  });
+
+  it('swallows a failed re-load even without onLoadError', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce({ status: 'RUNNING' })
+      .mockRejectedValue(new Error('db down'));
+    const probe = track(waitForTerminal({ load, isTerminal, waitSecs: 20 }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(probe.settled).toBe(true);
+    expect(probe.value).toEqual({ status: 'RUNNING' });
+  });
+
+  it(`caps the wall-clock wait at MAX_WAIT_MS (${String(MAX_WAIT_MS)}ms), below 60s proxy timeouts`, async () => {
+    expect(MAX_WAIT_MS).toBeLessThanOrEqual(55_000);
+    vi.spyOn(Math, 'random').mockReturnValue(0.99);
+    const load = vi.fn().mockResolvedValue({ status: 'RUNNING' });
+
+    const probe = track(waitForTerminal({ load, isTerminal, waitSecs: 60 }));
+    await vi.advanceTimersByTimeAsync(MAX_WAIT_MS - 1);
+    expect(probe.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(probe.settled).toBe(true);
+  });
+
+  it('honours an injected maxWaitMs', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const load = vi.fn().mockResolvedValue({ status: 'RUNNING' });
+    const probe = track(waitForTerminal({ load, isTerminal, waitSecs: 60, maxWaitMs: 2_500 }));
+    await vi.advanceTimersByTimeAsync(2_499);
+    expect(probe.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(probe.settled).toBe(true);
+    // initial + t=1000 + t=2000 + final at the 2500 deadline
+    expect(load).toHaveBeenCalledTimes(4);
   });
 });
 
@@ -190,7 +246,14 @@ describe('parseWaitForFinish', () => {
     expect(parseWaitForFinish({ waitForFinish: '999999' })).toBe(60);
   });
 
-  it.each(['-1', 'abc', '1.5'])('rejects %s', (v) => {
+  it('floors fractional values instead of rejecting them', () => {
+    expect(parseWaitForFinish({ waitForFinish: '1.5' })).toBe(1);
+    expect(parseWaitForFinish({ waitForFinish: '0.4' })).toBe(0);
+    expect(parseWaitForFinish({ waitForFinish: '59.9' })).toBe(59);
+    expect(parseWaitForFinish({ waitForFinish: '1e9' })).toBe(60);
+  });
+
+  it.each(['-1', '-0.5', 'abc'])('rejects %s', (v) => {
     expect(() => parseWaitForFinish({ waitForFinish: v })).toThrow(ZodError);
   });
 });

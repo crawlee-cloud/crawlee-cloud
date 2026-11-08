@@ -139,13 +139,13 @@ describe('GET /v2/actor-runs/:runId?waitForFinish (fake timers)', () => {
     expect(probe.value.json().data.status).toBe('RUNNING');
   });
 
-  it('clamps waitForFinish=600 to 60s', async () => {
+  it('clamps waitForFinish=600 and answers within 55s (before 60s proxy timeouts)', async () => {
     mockQuery.mockResolvedValue({ rows: [runRow('RUNNING')] });
 
     const probe = track(
       app.inject({ method: 'GET', url: '/v2/actor-runs/run-1?waitForFinish=600' })
     );
-    await vi.advanceTimersByTimeAsync(59_900);
+    await vi.advanceTimersByTimeAsync(54_900);
     expect(probe.settled).toBe(false);
     await vi.advanceTimersByTimeAsync(200);
     expect(probe.settled).toBe(true);
@@ -190,7 +190,34 @@ describe('GET /v2/actor-runs/:runId?waitForFinish (fake timers)', () => {
     expect(longPollFlags).toEqual([true]);
   });
 
-  it.each(['-1', 'abc', '2.5'])('rejects waitForFinish=%s with 400 validation_error', async (v) => {
+  it('floors a fractional waitForFinish (2.5 waits 2s)', async () => {
+    mockQuery.mockResolvedValue({ rows: [runRow('RUNNING')] });
+    const probe = track(
+      app.inject({ method: 'GET', url: '/v2/actor-runs/run-1?waitForFinish=2.5' })
+    );
+    await vi.advanceTimersByTimeAsync(1_900);
+    expect(probe.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(probe.settled).toBe(true);
+    expect(probe.value.statusCode).toBe(200);
+  });
+
+  it('returns the last good row (200) when a re-poll query fails', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [runRow('RUNNING')] })
+      .mockRejectedValueOnce(new Error('connection terminated'))
+      .mockResolvedValue({ rows: [runRow('SUCCEEDED')] });
+    const probe = track(
+      app.inject({ method: 'GET', url: '/v2/actor-runs/run-1?waitForFinish=20' })
+    );
+    await vi.advanceTimersByTimeAsync(1_100);
+    expect(probe.settled).toBe(true);
+    expect(probe.value.statusCode).toBe(200);
+    expect(probe.value.json().data.status).toBe('RUNNING');
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['-1', 'abc'])('rejects waitForFinish=%s with 400 validation_error', async (v) => {
     const res = await app.inject({
       method: 'GET',
       url: `/v2/actor-runs/run-1?waitForFinish=${v}`,

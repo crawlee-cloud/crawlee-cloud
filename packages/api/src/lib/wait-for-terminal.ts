@@ -21,8 +21,19 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
-/** Server-side cap on `waitForFinish`, same as Apify's API. */
+/** Server-side cap on the `waitForFinish` value, same as Apify's API. */
 export const MAX_WAIT_FOR_FINISH_SECS = 60;
+
+/**
+ * Hard wall-clock cap on how long `waitForTerminal` holds a request,
+ * whatever `waitSecs` says. Kept clearly below 60s because nginx
+ * (`proxy_read_timeout`), AWS ALB/ELB and most other reverse proxies default
+ * to a 60s idle timeout: a wait clamped to exactly 60s answers at ~60.1s
+ * (final load + serialization) and loses that race with a 504. The 5s margin
+ * covers the final load and the response. Returning a non-terminal run early
+ * is Apify-compatible — apify-client re-polls with its remaining budget.
+ */
+export const MAX_WAIT_MS = 55_000;
 
 /** Terminal job statuses (`@apify/consts` ACT_JOB_TERMINAL_STATUSES). */
 export const TERMINAL_STATUSES: readonly string[] = ['SUCCEEDED', 'FAILED', 'TIMED-OUT', 'ABORTED'];
@@ -49,13 +60,24 @@ export interface WaitForTerminalOptions<T> {
    * histogram.
    */
   onWait?: () => void;
+  /**
+   * Called when a re-load (any load after the first successful one) throws.
+   * The wait then ends with the last successfully loaded value instead of
+   * failing the whole request; routes pass a `request.log.warn`. An error
+   * from the initial load is always rethrown.
+   */
+  onLoadError?: (err: unknown) => void;
+  /** Wall-clock cap overriding `MAX_WAIT_MS` (tests). */
+  maxWaitMs?: number;
 }
 
 /**
- * Re-loads a value until it is terminal, `waitSecs` elapse, or `signal`
- * aborts, and returns the last loaded value. Returns `null` immediately when
- * the first (or any) load finds nothing. Sleeping holds no resources besides
- * a timer, so callers should make `load` check out a DB connection per call.
+ * Re-loads a value until it is terminal, `waitSecs` (capped at `maxWaitMs`)
+ * elapse, or `signal` aborts, and returns the last loaded value. Returns
+ * `null` immediately when the first (or any) load finds nothing. A failing
+ * re-load ends the wait with the last good value (see `onLoadError`).
+ * Sleeping holds no resources besides a timer, so callers should make `load`
+ * check out a DB connection per call.
  */
 export async function waitForTerminal<T>({
   load,
@@ -64,12 +86,14 @@ export async function waitForTerminal<T>({
   signal,
   intervalMs = 1000,
   onWait,
+  onLoadError,
+  maxWaitMs = MAX_WAIT_MS,
 }: WaitForTerminalOptions<T>): Promise<T | null> {
-  const deadline = Date.now() + Math.max(0, waitSecs) * 1000;
+  const deadline = Date.now() + Math.min(Math.max(0, waitSecs) * 1000, maxWaitMs);
   let waited = false;
+  let value = await load();
 
   for (;;) {
-    const value = await load();
     if (value === null || isTerminal(value) || signal?.aborted) return value;
 
     const remaining = deadline - Date.now();
@@ -82,6 +106,13 @@ export async function waitForTerminal<T>({
     const jitter = Math.random() * intervalMs * 0.1;
     await sleep(Math.min(intervalMs + jitter, remaining), signal);
     if (signal?.aborted) return value;
+
+    try {
+      value = await load();
+    } catch (err) {
+      onLoadError?.(err);
+      return value;
+    }
   }
 }
 
@@ -100,18 +131,19 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * `waitForFinish` querystring param: non-negative integer seconds. Values
- * above the cap are clamped (not rejected) — apify-client sends 999999 when
- * the caller set no wait budget. Invalid values throw a ZodError (→ 400
- * `validation_error` via the global error handler).
+ * `waitForFinish` querystring param: non-negative seconds. Fractional values
+ * are floored and values above the cap are clamped (not rejected) —
+ * apify-client sends 999999 when the caller set no wait budget. Negative or
+ * non-numeric values throw a ZodError (→ 400 `validation_error` via the
+ * global error handler).
  */
 const WaitForFinishQuerySchema = z.object({
-  waitForFinish: z.coerce.number().int().min(0).optional(),
+  waitForFinish: z.coerce.number().min(0).optional(),
 });
 
 export function parseWaitForFinish(query: unknown): number {
   const { waitForFinish } = WaitForFinishQuerySchema.parse(query ?? {});
-  return Math.min(waitForFinish ?? 0, MAX_WAIT_FOR_FINISH_SECS);
+  return Math.floor(Math.min(waitForFinish ?? 0, MAX_WAIT_FOR_FINISH_SECS));
 }
 
 export interface WaitAbortHandle {

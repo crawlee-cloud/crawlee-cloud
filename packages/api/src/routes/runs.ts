@@ -219,9 +219,10 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
   /**
    * GET /v2/actor-runs/:runId - Get run (user-scoped)
    *
-   * `waitForFinish=N` (seconds, clamped to 60) long-polls: the request is
-   * held until the run is terminal or N seconds pass, then returns the
-   * current state (terminal or not). Client disconnect and server shutdown
+   * `waitForFinish=N` (seconds, floored, clamped to 60) long-polls: the
+   * request is held until the run is terminal or N seconds pass (at most
+   * MAX_WAIT_MS, ~55s, to stay under 60s proxy timeouts), then returns the
+   * current state (terminal or not). A failed re-poll returns the last state. Client disconnect and server shutdown
    * end the wait early. Not-found returns 404 without waiting.
    */
   fastify.get<{ Params: { runId: string } }>('/actor-runs/:runId', async (request, reply) => {
@@ -248,6 +249,8 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
           // Only requests that are actually held open leave the latency
           // histogram; already-terminal / not-found answers stay in it.
           onWait: () => markLongPoll(request),
+          onLoadError: (err) =>
+            request.log.warn({ err, runId }, 'waitForFinish re-poll failed; returning last state'),
         });
       } finally {
         abort.dispose();
@@ -304,8 +307,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       return { error: { type: 'record-not-found', message: 'Run not found' } };
     }
 
-    const TERMINAL = ['SUCCEEDED', 'FAILED', 'TIMED-OUT', 'ABORTED'];
-    if (!TERMINAL.includes(run.status) || !run.started_at || !run.finished_at) {
+    if (!isTerminalStatus(run.status) || !run.started_at || !run.finished_at) {
       reply.status(400);
       return {
         error: {
