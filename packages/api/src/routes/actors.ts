@@ -12,7 +12,11 @@ import {
 } from '../schemas/actors.js';
 import { ListRunsQuerySchema } from '../schemas/runs.js';
 import { listRuns, loadRun, formatRun } from './runs.js';
-import { parseRunStartRequest, isUnsupportedRunContentType } from '../lib/run-body.js';
+import {
+  parseRunStartRequest,
+  unsupportedRunBodyMessage,
+  isNonEmptyFormBody,
+} from '../lib/run-body.js';
 import {
   waitForTerminal,
   createWaitAbortFactory,
@@ -752,14 +756,10 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
     Body: unknown;
   }>(`/${segment}/:actorId/runs`, async (request, reply) => {
     const { actorId } = request.params;
-    if (isUnsupportedRunContentType(request.headers['content-type'])) {
+    const unsupported = unsupportedRunBodyMessage(request.headers['content-type'], request.body);
+    if (unsupported) {
       reply.status(415);
-      return {
-        error: {
-          type: 'unsupported-media-type',
-          message: 'Run input must be sent as application/json',
-        },
-      };
+      return { error: { type: 'unsupported-media-type', message: unsupported } };
     }
     const parsed = parseRunStartRequest(request.body, request.query);
     const { input, envVars, webhooks } = parsed;
@@ -918,6 +918,9 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
 
     reply.status(201);
 
+    // The run exists from here on: a failure while waiting must not turn
+    // into a 5xx, or apify-client retries the POST and starts a duplicate
+    // run. Any wait error falls through to the creation response.
     if (parsed.waitForFinish > 0) {
       const abort = waitAbortSignal(reply);
       try {
@@ -932,6 +935,11 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
         // Only null if the run was deleted mid-wait; fall through to the
         // creation response below.
         if (run) return { data: formatRun(run) };
+      } catch (err) {
+        request.log.warn(
+          { err, runId },
+          'waitForFinish failed after run start; returning the created run'
+        );
       } finally {
         abort.dispose();
       }
@@ -972,12 +980,17 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
     // would send it raw. A re-serialized body is sent as JSON, whatever it
     // arrived as — the form parser has already turned an empty
     // form-urlencoded body into `{}`, and re-sending that with the form
-    // content type would store INPUT as the string "{}". Buffers
-    // (text/plain, octet-stream) keep their content type and the start
-    // route answers them with 415.
+    // content type would store INPUT as the string "{}". Bodies the start
+    // route refuses keep their raw form and content type so it answers them
+    // with the same 415: Buffers (text/plain, octet-stream) and non-empty
+    // form-urlencoded strings.
     let payload: string | Buffer | undefined;
-    if (Buffer.isBuffer(request.body)) payload = request.body;
-    else if (request.body !== undefined) {
+    if (
+      Buffer.isBuffer(request.body) ||
+      isNonEmptyFormBody(request.headers['content-type'], request.body)
+    ) {
+      payload = request.body as string | Buffer;
+    } else if (request.body !== undefined) {
       payload = JSON.stringify(request.body);
       headers['content-type'] = 'application/json';
     }

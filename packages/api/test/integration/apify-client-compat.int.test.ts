@@ -357,6 +357,115 @@ describe('apify-client round-trip (integration)', () => {
       expect(run?.options).toMatchObject({ memoryMbytes: 512 });
     });
 
+    describe('run-sync over the wire', () => {
+      let apiKey: string;
+
+      beforeAll(async () => {
+        const { createHash } = await import('node:crypto');
+        const { nanoid } = await import('nanoid');
+        const { pool } = await import('../../src/db/index.js');
+        const { rows } = await pool.query<{ id: string }>('SELECT id FROM users WHERE email = $1', [
+          'apify-compat@test.local',
+        ]);
+        const userId = rows[0]!.id;
+        apiKey = `cp_${nanoid(32)}`;
+        await pool.query(
+          `INSERT INTO api_keys (id, user_id, name, key_hash, key_sha256)
+           VALUES ($1, $2, 'run-sync-test', 'unused', $3)`,
+          [nanoid(), userId, createHash('sha256').update(apiKey).digest('hex')]
+        );
+      });
+
+      const runSync = async (
+        init: { contentType?: string; body?: string },
+        authMode: 'bearer' | 'query' = 'bearer'
+      ) => {
+        const qs = authMode === 'query' ? `?token=${encodeURIComponent(apiKey)}` : '';
+        const headers: Record<string, string> = {};
+        if (authMode === 'bearer') headers.authorization = `Bearer ${apiKey}`;
+        if (init.contentType) headers['content-type'] = init.contentType;
+        return fetch(`${baseUrl}/v2/acts/compat-run-body/run-sync${qs}`, {
+          method: 'POST',
+          headers,
+          ...(init.body !== undefined ? { body: init.body } : {}),
+        });
+      };
+
+      const inputOf = async (res: Response) => {
+        expect(res.status).toBe(201);
+        const { data } = (await res.json()) as { data: { defaultKeyValueStoreId: string } };
+        return getInput(data.defaultKeyValueStoreId);
+      };
+
+      it('empty form-urlencoded body stores INPUT as the object {}', async () => {
+        const input = await inputOf(
+          await runSync({ contentType: 'application/x-www-form-urlencoded', body: '' })
+        );
+        expect(input).toEqual({});
+        expect(typeof input).toBe('object');
+      });
+
+      it('JSON body stores INPUT as the object', async () => {
+        const input = await inputOf(
+          await runSync({ contentType: 'application/json', body: '{"query":"sync-json"}' })
+        );
+        expect(input).toEqual({ query: 'sync-json' });
+      });
+
+      it('authenticates with an API key as Bearer and as ?token=', async () => {
+        const body = { contentType: 'application/json', body: '{"query":"auth"}' };
+        expect(await inputOf(await runSync(body, 'bearer'))).toEqual({ query: 'auth' });
+        expect(await inputOf(await runSync(body, 'query'))).toEqual({ query: 'auth' });
+
+        const unauth = await fetch(`${baseUrl}/v2/acts/compat-run-body/run-sync`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+        });
+        expect(unauth.status).toBe(401);
+      });
+    });
+
+    it('non-empty form-urlencoded body (curl -d) is a 415 with a JSON hint, no run', async () => {
+      const before = await client.actor(actorId).runs().list();
+      for (const path of ['runs', 'run-sync']) {
+        const res = await fetch(`${baseUrl}/v2/acts/${actorId}/${path}`, {
+          method: 'POST',
+          headers: { ...auth(), 'content-type': 'application/x-www-form-urlencoded' },
+          body: '{"query":"x"}',
+        });
+        expect(res.status).toBe(415);
+        const { error } = (await res.json()) as { error: { type: string; message: string } };
+        expect(error.type).toBe('unsupported-media-type');
+        expect(error.message).toContain('Content-Type: application/json');
+      }
+      const after = await client.actor(actorId).runs().list();
+      expect(after.total).toBe(before.total);
+    });
+
+    it('legacy wrapper body takes ?timeout&memory when it lacks them', async () => {
+      const res = await fetch(`${baseUrl}/v2/acts/${actorId}/runs?timeout=60&memory=512`, {
+        method: 'POST',
+        headers: { ...auth(), 'content-type': 'application/json' },
+        body: JSON.stringify({ input: { query: 'legacy-q' } }),
+      });
+      expect(res.status).toBe(201);
+      const { data } = (await res.json()) as {
+        data: { id: string; defaultKeyValueStoreId: string };
+      };
+      expect(await getInput(data.defaultKeyValueStoreId)).toEqual({ query: 'legacy-q' });
+      const run = await client.run(data.id).get();
+      expect(run?.options).toMatchObject({ timeoutSecs: 60, memoryMbytes: 512 });
+
+      const conflict = await fetch(`${baseUrl}/v2/acts/${actorId}/runs?memory=512`, {
+        method: 'POST',
+        headers: { ...auth(), 'content-type': 'application/json' },
+        body: JSON.stringify({ input: {}, memory: 256 }),
+      });
+      const { data: d2 } = (await conflict.json()) as { data: { id: string } };
+      expect((await client.run(d2.id).get())?.options).toMatchObject({ memoryMbytes: 256 });
+    });
+
     it('rejects text/plain with 415; text/plain KV records still upload', async () => {
       const res = await fetch(`${baseUrl}/v2/acts/${actorId}/runs`, {
         method: 'POST',

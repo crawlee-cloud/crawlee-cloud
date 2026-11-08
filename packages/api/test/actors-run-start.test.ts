@@ -316,6 +316,47 @@ describe('POST /v2/acts/:actorId/runs body contract', () => {
     }
   );
 
+  it.each(['{"query":"x"}', 'a=b'])(
+    'rejects a non-empty form-urlencoded body (%s) with 415 and a JSON hint',
+    async (payload) => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/acts/actor-1/runs',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        payload,
+      });
+
+      expect(response.statusCode).toBe(415);
+      expect(response.json().error.type).toBe('unsupported-media-type');
+      expect(response.json().error.message).toContain('Content-Type: application/json');
+      expect(mockQuery).not.toHaveBeenCalled();
+      expect(mockPutKVRecord).not.toHaveBeenCalled();
+    }
+  );
+
+  it('legacy wrapper body takes query options for fields it lacks', async () => {
+    mockRunStart();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v2/acts/actor-1/runs?timeout=60&memory=512&envVars=${encodeURIComponent(b64({ Q: '1' }))}`,
+      payload: { input: { url: 'https://e.com' }, memory: 256 },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(storedInput()).toEqual({ url: 'https://e.com' });
+    const params = runInsertParams();
+    expect(params).toContain(60); // from the query: wrapper has no timeout
+    expect(params).toContain(256); // wrapper wins over ?memory=512
+    expect(params).not.toContain(512);
+    expect(mockRedisSet).toHaveBeenCalledWith(
+      expect.stringMatching(/^run:.+:envVars$/),
+      JSON.stringify({ Q: '1' }),
+      'EX',
+      86400
+    );
+  });
+
   it('rejects an invalid query option with 400', async () => {
     const response = await app.inject({
       method: 'POST',
@@ -362,6 +403,40 @@ describe('POST /v2/acts/:actorId/runs body contract', () => {
     expect(response.statusCode).toBe(201);
     expect(response.json().data.status).toBe('SUCCEEDED');
     expect(longPollFlags).toEqual([true]);
+  });
+
+  it('?waitForFinish: a failing load after the run is created returns the 201 creation response', async () => {
+    mockRunStart();
+    mockQuery.mockRejectedValueOnce(new Error('connection terminated')); // loadRun
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v2/acts/actor-1/runs?waitForFinish=30',
+      payload: { query: 'x' },
+    });
+
+    // Never 5xx once the run exists: apify-client would retry and start a
+    // duplicate run.
+    expect(response.statusCode).toBe(201);
+    expect(response.json().data.id).toBe('run-1');
+    expect(response.json().data.status).toBe('READY');
+    expect(mockRedisPublish).toHaveBeenCalledWith('run:new', expect.any(String));
+  });
+
+  it('?waitForFinish: a load failing after a sleep still returns 201', async () => {
+    mockRunStart();
+    mockQuery
+      .mockResolvedValueOnce({ rows: [runRow({ status: 'RUNNING' })] })
+      .mockRejectedValueOnce(new Error('connection terminated'));
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v2/acts/actor-1/runs?waitForFinish=30',
+      payload: { query: 'x' },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json().data.id).toBe('run-1');
   });
 
   describe('POST /v2/acts/:actorId/run-sync', () => {
@@ -427,24 +502,18 @@ describe('POST /v2/acts/:actorId/runs body contract', () => {
       expect(runInsertParams()).toContain(512);
     });
 
-    it('a form-urlencoded body stores the same INPUT as the start route', async () => {
-      const send = async (path: string) => {
-        mockQuery.mockReset();
-        mockPutKVRecord.mockReset().mockResolvedValue(undefined);
-        mockRunStart();
-        const response = await app.inject({
-          method: 'POST',
-          url: `/v2/acts/actor-1/${path}`,
-          headers: { 'content-type': 'application/x-www-form-urlencoded' },
-          payload: 'a=b',
-        });
-        expect(response.statusCode).toBe(201);
-        return storedInput();
-      };
+    it('a non-empty form-urlencoded body gets the start route 415', async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/v2/acts/actor-1/run-sync',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        payload: '{"query":"x"}',
+      });
 
-      const direct = await send('runs');
-      const viaSync = await send('run-sync');
-      expect(viaSync).toEqual(direct);
+      expect(response.statusCode).toBe(415);
+      expect(response.json().error.message).toContain('application/json');
+      expect(mockQuery).not.toHaveBeenCalled();
+      expect(mockPutKVRecord).not.toHaveBeenCalled();
     });
 
     it('passes the 415 for text/plain through', async () => {

@@ -8,6 +8,7 @@ import { ZodError } from 'zod';
 import {
   isLegacyRunBody,
   isUnsupportedRunContentType,
+  isNonEmptyFormBody,
   parseRunStartRequest,
 } from '../src/lib/run-body.js';
 
@@ -43,7 +44,18 @@ describe('isLegacyRunBody', () => {
 });
 
 describe('parseRunStartRequest', () => {
-  it('legacy: reads options from the body and ignores query options', () => {
+  it('legacy: query options fill fields the wrapper lacks', () => {
+    const parsed = parseRunStartRequest(
+      { input: { a: 1 }, memory: 256 },
+      { timeout: '60', memory: '512', envVars: b64({ Q: '1' }) }
+    );
+    expect(parsed.legacy).toBe(true);
+    expect(parsed.timeout).toBe(60);
+    expect(parsed.memory).toBe(256);
+    expect(parsed.envVars).toEqual({ Q: '1' });
+  });
+
+  it('legacy: the wrapper wins over query options on conflict', () => {
     const parsed = parseRunStartRequest(
       { input: { a: 1 }, timeout: 60, memory: 512, envVars: { K: 'v' } },
       { timeout: '999', waitForFinish: '5' }
@@ -135,5 +147,18 @@ describe('isUnsupportedRunContentType', () => {
     ['application/x-www-form-urlencoded', false],
   ])('%s → %s', (contentType, expected) => {
     expect(isUnsupportedRunContentType(contentType)).toBe(expected);
+  });
+});
+
+describe('isNonEmptyFormBody', () => {
+  it.each<[string | undefined, unknown, boolean]>([
+    ['application/x-www-form-urlencoded', '{"query":"x"}', true],
+    ['application/x-www-form-urlencoded; charset=utf-8', 'a=b', true],
+    ['application/x-www-form-urlencoded', {}, false],
+    ['application/x-www-form-urlencoded', '', false],
+    ['application/json', '"a string"', false],
+    [undefined, 'a=b', false],
+  ])('%s %j → %s', (contentType, body, expected) => {
+    expect(isNonEmptyFormBody(contentType, body)).toBe(expected);
   });
 });
