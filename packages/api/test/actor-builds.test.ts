@@ -297,13 +297,13 @@ describe('GET /v2/actor-builds/:buildId?waitForFinish (fake timers)', () => {
     expect(probe.value.json().data.status).toBe('RUNNING');
   });
 
-  it('clamps waitForFinish=600 to 60s', async () => {
+  it('clamps waitForFinish=600 and answers within 55s (before 60s proxy timeouts)', async () => {
     mockQuery.mockResolvedValue({ rows: [buildRow({ status: 'RUNNING' })] });
 
     const probe = track(
       app.inject({ method: 'GET', url: '/v2/actor-builds/build-1?waitForFinish=600' })
     );
-    await vi.advanceTimersByTimeAsync(59_900);
+    await vi.advanceTimersByTimeAsync(54_900);
     expect(probe.settled).toBe(false);
     await vi.advanceTimersByTimeAsync(200);
     expect(probe.settled).toBe(true);
@@ -319,7 +319,19 @@ describe('GET /v2/actor-builds/:buildId?waitForFinish (fake timers)', () => {
     expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['-1', 'abc', '2.5'])('rejects waitForFinish=%s with 400', async (v) => {
+  it('floors a fractional waitForFinish (2.5 waits 2s)', async () => {
+    mockQuery.mockResolvedValue({ rows: [buildRow({ status: 'RUNNING' })] });
+    const probe = track(
+      app.inject({ method: 'GET', url: '/v2/actor-builds/build-1?waitForFinish=2.5' })
+    );
+    await vi.advanceTimersByTimeAsync(1_900);
+    expect(probe.settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(probe.settled).toBe(true);
+    expect(probe.value.statusCode).toBe(200);
+  });
+
+  it.each(['-1', 'abc'])('rejects waitForFinish=%s with 400', async (v) => {
     const res = await app.inject({
       method: 'GET',
       url: `/v2/actor-builds/build-1?waitForFinish=${v}`,

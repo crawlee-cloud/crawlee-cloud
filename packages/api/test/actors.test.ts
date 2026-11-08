@@ -625,7 +625,7 @@ describe('Actor Routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      const [sql, params] = mockQuery.mock.calls[3] as [string, unknown[]];
+      const [sql, params] = mockQuery.mock.calls[4] as [string, unknown[]];
       expect(sql).toMatch(/UPDATE actor_builds b\s+SET actor_definition =/);
       expect(params).toEqual(['build-1', JSON.stringify(definition), 'actor-1', null, IMAGE]);
     });
@@ -661,12 +661,14 @@ describe('Actor Routes', () => {
       expect(response.statusCode).toBe(500);
     });
 
-    it('still swallows build write failures when no definition was sent', async () => {
+    it('also fails the request when the build write fails and no definition was sent', async () => {
+      // #117: the build row backs builds/default and runs' buildNumber, so a
+      // failed record is a 5xx even for a plain image push.
       const row = createActorRow({ default_run_options: { image: IMAGE } });
       mockQuery
         .mockResolvedValueOnce({ rows: [row] }) // resolveActor
         .mockResolvedValueOnce({ rows: [row] }) // UPDATE actors
-        .mockRejectedValueOnce(new Error('db down')); // dedup SELECT
+        .mockRejectedValueOnce(new Error('db down')); // actor row lock
 
       const response = await app.inject({
         method: 'PUT',
@@ -674,7 +676,8 @@ describe('Actor Routes', () => {
         payload: { defaultRunOptions: { image: IMAGE } },
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode).toBe(500);
+      expect(txLog).toContain('ROLLBACK');
     });
 
     it('PUT with only actorDefinition on an actor without an image returns 400 before updating', async () => {
