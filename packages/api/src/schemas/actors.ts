@@ -2,6 +2,102 @@ import { z } from 'zod';
 
 import { SUPPORTED_WEBHOOK_EVENTS } from './webhooks.js';
 
+// Size caps for the build's actorDefinition (#112). Measured in UTF-8 bytes
+// of the serialized value so a multi-byte README can't slip past a
+// character-count check. The whole definition is capped too, since unknown
+// keys pass through and would otherwise only be bounded by the server's
+// 10 MB bodyLimit.
+export const MAX_ACTOR_INPUT_SCHEMA_BYTES = 500 * 1024;
+export const MAX_ACTOR_README_BYTES = 1024 * 1024;
+export const MAX_ACTOR_DEFINITION_BYTES = 2 * 1024 * 1024;
+
+// No `u` flag: matches UTF-16 code units, so it finds a high surrogate not
+// followed by a low one, or a low one not preceded by a high one.
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/**
+ * Path of the first string (value or object key) Postgres JSONB would refuse
+ * to store — a NUL character or an unpaired surrogate — or undefined. Caught
+ * here as a 400 instead of failing the build write after the actor update.
+ */
+function findJsonbUnsafeString(
+  value: unknown,
+  path: (string | number)[]
+): (string | number)[] | undefined {
+  const unsafe = (s: string) => s.includes('\u0000') || LONE_SURROGATE.test(s);
+  if (typeof value === 'string') return unsafe(value) ? path : undefined;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const found = findJsonbUnsafeString(value[i], [...path, i]);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (value && typeof value === 'object') {
+    for (const [key, child] of Object.entries(value)) {
+      if (unsafe(key)) return [...path, key];
+      const found = findJsonbUnsafeString(child, [...path, key]);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Apify-shaped actor definition (`.actor/actor.json` with the input schema
+ * and README inlined), stored per build on actor_builds.actor_definition.
+ * `input` must be the schema object itself, not a file path — the Apify MCP
+ * server only keeps it when it has both `type` and `properties`. Unknown
+ * keys pass through so Apify fields like `dockerfile` and `storages` survive.
+ * The input schema is stored as given, not validated against Apify's spec.
+ */
+export const ActorDefinitionSchema = z
+  .object({
+    actorSpecification: z.number().optional(),
+    name: z.string().optional(),
+    version: z.string().optional(),
+    input: z.record(z.unknown()).optional(),
+    readme: z.string().optional(),
+  })
+  .passthrough()
+  .superRefine((def, ctx) => {
+    if (
+      def.input !== undefined &&
+      Buffer.byteLength(JSON.stringify(def.input)) > MAX_ACTOR_INPUT_SCHEMA_BYTES
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['input'],
+        message: `actorDefinition.input must be at most ${MAX_ACTOR_INPUT_SCHEMA_BYTES} bytes serialized`,
+      });
+    }
+    if (def.readme !== undefined && Buffer.byteLength(def.readme) > MAX_ACTOR_README_BYTES) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['readme'],
+        message: `actorDefinition.readme must be at most ${MAX_ACTOR_README_BYTES} bytes`,
+      });
+    }
+    const badPath = findJsonbUnsafeString(def, []);
+    if (badPath) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: badPath,
+        message:
+          'actorDefinition must not contain NUL (\\u0000) characters or unpaired UTF-16 surrogates',
+      });
+    }
+    if (Buffer.byteLength(JSON.stringify(def)) > MAX_ACTOR_DEFINITION_BYTES) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [],
+        message: `actorDefinition must be at most ${MAX_ACTOR_DEFINITION_BYTES} bytes serialized`,
+      });
+    }
+  });
+
+export type ActorDefinition = z.infer<typeof ActorDefinitionSchema>;
+
 export const CreateActorSchema = z.object({
   name: z
     .string()
@@ -45,6 +141,10 @@ export const CreateActorSchema = z.object({
     .max(64)
     .regex(/^[A-Za-z0-9._+-]+$/, 'Version must be alphanumeric with . _ + -')
     .optional(),
+  // Input schema, README and the rest of .actor/actor.json for this deploy.
+  // Stored on the build row recordBuildIfNew writes or updates, so it
+  // requires an image (no image → no build → 400).
+  actorDefinition: ActorDefinitionSchema.optional(),
 });
 
 export const UpdateActorSchema = CreateActorSchema.partial();

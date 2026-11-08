@@ -454,6 +454,14 @@ BEGIN
 END $$;
 
 ALTER TABLE users ALTER COLUMN username SET NOT NULL;
+
+-- Actor definition (input schema, README, rest of .actor/actor.json) per
+-- build, as Apify exposes it on build.actorDefinition (#112). Per build, not
+-- per actor, so rolling back to an older version restores its schema. Up to
+-- ~3.5 MB per row (a request is capped at 2 MB serialized in
+-- schemas/actors.ts; one that lacks input/readme inherits the stored ones,
+-- at most 500 KB + 1 MB): list queries must select explicit columns, not b.*.
+ALTER TABLE actor_builds ADD COLUMN IF NOT EXISTS actor_definition JSONB;
 `;
 
 export async function migrate(): Promise<void> {

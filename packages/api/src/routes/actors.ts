@@ -9,6 +9,7 @@ import {
   UpdateActorSchema,
   ActorRunSchema,
   DeleteActorQuerySchema,
+  type ActorDefinition,
 } from '../schemas/actors.js';
 import { ListRunsQuerySchema } from '../schemas/runs.js';
 import { listRuns } from './runs.js';
@@ -102,43 +103,89 @@ async function findOrCreateActorVersion(
  * gets recorded, just with `version_id = NULL`. That keeps backward compat
  * for any caller still on the older payload shape.
  *
- * Best-effort: failures are logged and swallowed. The actor upsert is the
- * user's actual intent; a missing build row is a UI nicety, not a
- * correctness issue.
+ * actorDefinition (input schema, README — #112) lives on the build row:
+ *   - a new build stores the definition sent with it, or, when none was sent
+ *     (older CLI, plain image re-push), carries over a previous build's so
+ *     MCP tools generated from it don't disappear;
+ *   - a deduped (same image + version) deploy updates the latest build's
+ *     definition in place when one was sent, and leaves it alone otherwise;
+ *   - a sent definition that lacks `input` or `readme` keeps the stored ones
+ *     (see definitionWithInheritedKeysSql).
+ * The carry-over source is chosen by carryOverSourceSql. The definition is
+ * written in the same statement as the insert/update.
+ *
+ * Best-effort when no definition was sent: failures are logged and
+ * swallowed — the actor upsert is the user's actual intent and a missing
+ * build row is a UI nicety. When a definition was sent the error is
+ * rethrown, so the request fails instead of reporting a schema it never
+ * stored.
  */
 async function recordBuildIfNew(
   actorId: string,
   defaultRunOptions: unknown,
   versionNumber: string | undefined,
-  log: (msg: string) => void = () => undefined
+  log: (msg: string) => void = () => undefined,
+  actorDefinition?: ActorDefinition
 ): Promise<void> {
-  if (!defaultRunOptions || typeof defaultRunOptions !== 'object') return;
-  const imageName = (defaultRunOptions as { image?: unknown }).image;
-  if (typeof imageName !== 'string' || imageName.length === 0) return;
+  const imageName = imageOf(defaultRunOptions);
+  if (!imageName) return;
+  const definitionJson = actorDefinition === undefined ? null : JSON.stringify(actorDefinition);
 
   try {
     const versionId = versionNumber ? await findOrCreateActorVersion(actorId, versionNumber) : null;
 
-    // Dedup: skip if the most recent build for this actor already matches
-    // both image and version. Older builds (different versions) stay on
-    // record so the page shows full history.
-    const existing = await query<{ image_name: string | null; version_id: string | null }>(
-      `SELECT image_name, version_id FROM actor_builds
-       WHERE actor_id = $1
+    // Dedup: skip if the most recent deploy build for this actor already
+    // matches both image and version. Older builds (different versions) stay
+    // on record so the page shows full history. Only SUCCEEDED builds count:
+    // POST /v2/acts/:id/builds inserts RUNNING rows with a generated image
+    // name, which would otherwise make every later deploy look new.
+    const existing = await query<{
+      id: string;
+      image_name: string | null;
+      version_id: string | null;
+    }>(
+      `SELECT id, image_name, version_id FROM actor_builds
+       WHERE actor_id = $1 AND status = 'SUCCEEDED'
        ORDER BY created_at DESC
        LIMIT 1`,
       [actorId]
     );
     const last = existing.rows[0];
-    if (last && last.image_name === imageName && (last.version_id ?? null) === versionId) {
+    // A definition-only update (no version sent) targets the latest build
+    // whatever its version — otherwise a PUT of just { actorDefinition }
+    // against a versioned build would mint a duplicate version-less build.
+    const versionMatches =
+      versionNumber === undefined && definitionJson !== null
+        ? true
+        : (last?.version_id ?? null) === versionId;
+    if (last && last.image_name === imageName && versionMatches) {
+      if (definitionJson !== null) {
+        // Keys missing from the request come from the row itself, or, if it
+        // has no definition yet, from its carry-over source.
+        await query(
+          `WITH src AS (${carryOverSourceSql('$3', '$4', '$5')})
+           UPDATE actor_builds b
+              SET actor_definition = ${definitionWithInheritedKeysSql(
+                'COALESCE(b.actor_definition, (SELECT actor_definition FROM src))',
+                '$2'
+              )}
+            WHERE b.id = $1`,
+          [last.id, definitionJson, actorId, last.version_id, imageName]
+        );
+      }
       return;
     }
 
+    // The source subquery runs before the new row exists.
     await query(
-      `INSERT INTO actor_builds
-         (id, actor_id, version_id, status, image_name, started_at, finished_at)
-       VALUES ($1, $2, $3, 'SUCCEEDED', $4, NOW(), NOW())`,
-      [nanoid(), actorId, versionId, imageName]
+      `WITH src AS (${carryOverSourceSql('$2', '$3', '$4')})
+       INSERT INTO actor_builds
+         (id, actor_id, version_id, status, image_name, started_at, finished_at, actor_definition)
+       VALUES ($1, $2::varchar, $3::varchar, 'SUCCEEDED', $4::text, NOW(), NOW(),
+         CASE WHEN $5::jsonb IS NULL THEN (SELECT actor_definition FROM src)
+              ELSE ${definitionWithInheritedKeysSql('(SELECT actor_definition FROM src)', '$5')}
+         END)`,
+      [nanoid(), actorId, versionId, imageName, definitionJson]
     );
 
     // Bubble the most-recent version up to the actor row so consumers
@@ -152,8 +199,53 @@ async function recordBuildIfNew(
     }
   } catch (err) {
     log(`recordBuildIfNew failed for ${actorId}: ${(err as Error).message}`);
+    if (definitionJson !== null) throw err;
   }
 }
+
+/**
+ * SQL selecting the definition a build inherits: from a SUCCEEDED build of
+ * the actor that has one (registry-created builds are RUNNING/ABORTED and
+ * have none), preferring the newest build of the same version, then the
+ * newest of the same image, then the newest overall. So re-pushing an older
+ * version, or rolling back to an older image, restores that build's schema
+ * rather than the latest one. Params: actor id, version id (nullable), image.
+ */
+function carryOverSourceSql(actorParam: string, versionParam: string, imageParam: string): string {
+  return `SELECT actor_definition FROM actor_builds
+           WHERE actor_id = ${actorParam}::varchar AND status = 'SUCCEEDED'
+             AND actor_definition IS NOT NULL
+           ORDER BY COALESCE(version_id = ${versionParam}::varchar, false) DESC,
+                    COALESCE(image_name = ${imageParam}::text, false) DESC,
+                    created_at DESC
+           LIMIT 1`;
+}
+
+/**
+ * SQL for a sent definition (`definitionParam`) with `input` and `readme`
+ * filled in from `baseExpr` when the request lacks them — the CLI omits an
+ * oversize README or a missing input_schema.json rather than sending an
+ * empty one, and that must not erase the stored value. Other keys are taken
+ * from the request only. jsonb `||` lets the request's keys win.
+ */
+function definitionWithInheritedKeysSql(baseExpr: string, definitionParam: string): string {
+  return `((SELECT COALESCE(jsonb_object_agg(e.key, e.value), '{}'::jsonb)
+              FROM jsonb_each(${baseExpr}) AS e(key, value)
+             WHERE e.key IN ('input', 'readme')) || ${definitionParam}::jsonb)`;
+}
+
+/** The image reference from a default_run_options value, if it has one. */
+function imageOf(defaultRunOptions: unknown): string | undefined {
+  if (!defaultRunOptions || typeof defaultRunOptions !== 'object') return undefined;
+  const image = (defaultRunOptions as { image?: unknown }).image;
+  return typeof image === 'string' && image.length > 0 ? image : undefined;
+}
+
+// actorDefinition is stored on a build row, and builds only exist for actors
+// with an image. Reject rather than silently dropping the definition.
+const DEFINITION_REQUIRES_IMAGE = {
+  error: { type: 'validation_error', message: 'actorDefinition requires an image' },
+};
 
 /**
  * Options shared by the actor-scoped plugins (`actorsRoutes`, `registryRoutes`).
@@ -253,6 +345,7 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       retryDelaySecs,
       version,
       proxyPassword,
+      actorDefinition,
     } = CreateActorSchema.parse(request.body);
 
     // Three-state proxyPassword semantics matching PUT /v2/acts/:id:
@@ -267,6 +360,14 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       'SELECT * FROM actors WHERE name = $1 AND user_id = $2',
       [name, request.user!.id]
     );
+
+    if (
+      actorDefinition !== undefined &&
+      !imageOf(defaultRunOptions ?? existing.rows[0]?.default_run_options)
+    ) {
+      reply.status(400);
+      return DEFINITION_REQUIRES_IMAGE;
+    }
 
     if (existing.rows[0]) {
       // Update existing actor (user_id already verified in SELECT)
@@ -299,7 +400,8 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
         result.rows[0]!.id,
         defaultRunOptions ?? existing.rows[0].default_run_options,
         version,
-        (m) => fastify.log.warn(m)
+        (m) => fastify.log.warn(m),
+        actorDefinition
       );
       return { data: formatActor(result.rows[0]!) };
     }
@@ -325,7 +427,13 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       ]
     );
 
-    await recordBuildIfNew(id, defaultRunOptions, version, (m) => fastify.log.warn(m));
+    await recordBuildIfNew(
+      id,
+      defaultRunOptions,
+      version,
+      (m) => fastify.log.warn(m),
+      actorDefinition
+    );
     reply.status(201);
     return { data: formatActor(result.rows[0]!) };
   });
@@ -367,6 +475,27 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
   }>(`/${segment}/:actorId`, async (request, reply) => {
     const { actorId } = request.params;
     const updates = UpdateActorSchema.parse(request.body);
+
+    if (updates.actorDefinition !== undefined) {
+      // A defaultRunOptions in the body replaces the stored one wholesale,
+      // so its image (or lack of one) is what counts.
+      let image = imageOf(updates.defaultRunOptions);
+      if (updates.defaultRunOptions === undefined) {
+        const current = await query<Pick<ActorRow, 'default_run_options'>>(
+          `SELECT default_run_options FROM actors WHERE (id = $1 OR name = $1) AND user_id = $2`,
+          [actorId, request.user!.id]
+        );
+        if (!current.rows[0]) {
+          reply.status(404);
+          return { error: { type: 'record-not-found', message: 'Actor not found' } };
+        }
+        image = imageOf(current.rows[0].default_run_options);
+      }
+      if (!image) {
+        reply.status(400);
+        return DEFINITION_REQUIRES_IMAGE;
+      }
+    }
 
     const setClauses: string[] = ['modified_at = NOW()'];
     const values: unknown[] = [];
@@ -422,12 +551,17 @@ export const actorsRoutes: FastifyPluginAsync<ActorsSegmentOptions> = async (
       return { error: { type: 'record-not-found', message: 'Actor not found' } };
     }
 
-    if (updates.defaultRunOptions !== undefined || updates.version !== undefined) {
+    if (
+      updates.defaultRunOptions !== undefined ||
+      updates.version !== undefined ||
+      updates.actorDefinition !== undefined
+    ) {
       await recordBuildIfNew(
         result.rows[0].id,
         updates.defaultRunOptions ?? result.rows[0].default_run_options,
         updates.version,
-        (m) => fastify.log.warn(m)
+        (m) => fastify.log.warn(m),
+        updates.actorDefinition
       );
     }
 
