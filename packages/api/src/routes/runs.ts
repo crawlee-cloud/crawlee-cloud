@@ -1251,6 +1251,10 @@ export async function listRuns(userId: string, q: ListRunsQuery) {
  * renders the payload (default Apify shape + payload_template) at send
  * time from the webhook and run rows, so only the row is written here.
  *
+ * Known limitation: nothing in the API sends these rows. With zero
+ * runners alive (e.g. scaled to zero) they stay PENDING until a runner
+ * starts and its retry loop flushes them.
+ *
  * KEEP IN SYNC with packages/runner/src/queue.ts → triggerWebhooks: the
  * webhook matching WHERE clause, the event-type spelling and the delivery
  * row's columns (attempt_count 0, max_attempts 5) must match, or

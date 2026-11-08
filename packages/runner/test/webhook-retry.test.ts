@@ -452,12 +452,14 @@ describe('isInfraFailure', () => {
 });
 
 // KEEP-IN-SYNC guard: the API queues READY-abort deliveries itself
-// (packages/api/src/routes/runs.ts → queueAbortedWebhooks), so its webhook
-// matching rules and delivery-row columns must stay identical to
-// triggerWebhooks here — otherwise a READY abort notifies a different
-// webhook set than a RUNNING abort. Compared as source text because the
+// (packages/api/src/routes/runs.ts → queueAbortedWebhooks), and the
+// scaler queues TIMED-OUT/FAILED deliveries for runs it reaps
+// (packages/api/src/scaler/index.ts → enqueueRunEventWebhooks), so their
+// webhook matching rules and delivery-row columns must stay identical to
+// triggerWebhooks here — otherwise one path notifies a different webhook
+// set (or another tenant's webhooks). Compared as source text because the
 // two packages can't import each other.
-describe('API READY-abort webhook queueing stays in sync with triggerWebhooks', () => {
+describe('API READY-abort and scaler reaper webhook queueing stay in sync with triggerWebhooks', () => {
   const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
   const fnBody = (src: string, name: string) => {
     const start = src.indexOf(`async function ${name}(`);
@@ -478,14 +480,24 @@ describe('API READY-abort webhook queueing stays in sync with triggerWebhooks', 
 
   const runner = fnBody(read('../src/queue.ts'), 'triggerWebhooks');
   const api = fnBody(read('../../api/src/routes/runs.ts'), 'queueAbortedWebhooks');
+  // Third copy: the scaler's TIMED-OUT/FAILED reaper.
+  const scaler = fnBody(read('../../api/src/scaler/index.ts'), 'enqueueRunEventWebhooks');
 
   it('matches webhooks with the same WHERE clause', () => {
     expect(whereClause(api)).toBe(whereClause(runner));
+    expect(whereClause(scaler)).toBe(whereClause(runner));
+  });
+
+  it('scopes every copy to the run owner', () => {
+    // A webhook with actor_id NULL is global only for its owner.
+    expect(whereClause(runner)).toContain('AND user_id = $4');
   });
 
   it('writes the same delivery-row columns and defaults', () => {
     expect(insertColumns(api)).toBe(insertColumns(runner));
+    expect(insertColumns(scaler)).toBe(insertColumns(runner));
     expect(api).toContain("'PENDING', 0, 5, NOW()");
+    expect(scaler).toContain("'PENDING', 0, 5, NOW()");
     expect(runner).toContain("'PENDING', 0, 5, NULL");
   });
 });

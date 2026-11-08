@@ -120,17 +120,37 @@ function dbRows(stats: { ready?: number; running?: number }) {
  * query its own response shape; tests that only need the GROUP BY can
  * keep using `queryMock.mockResolvedValue(dbRows(...))`.
  */
+/**
+ * Stand-in for Postgres evaluating the reaper's per-run webhook SELECT
+ * (`$1` event type, `$2` actor, `$3` run, `$4` owner) over the mocked
+ * webhook rows, so these mock-level tests keep exercising the scoping.
+ * The SQL itself is checked against real Postgres in
+ * test/integration/webhook-owner-scope.int.test.ts.
+ */
+type MockWebhook = {
+  id: string;
+  user_id: string | null;
+  actor_id: string | null;
+  run_id: string | null;
+};
+function matchWebhooks(rows: MockWebhook[], params: unknown[] = []): { id: string }[] {
+  const [, actorId, runId, userId] = params;
+  return rows
+    .filter(
+      (w) =>
+        w.user_id !== null &&
+        w.user_id === userId &&
+        (w.actor_id === null || w.actor_id === actorId) &&
+        (w.run_id === null || w.run_id === runId)
+    )
+    .map((w) => ({ id: w.id }));
+}
+
 function setupQueryMock(opts: {
   stats: { ready?: number; running?: number };
   runningRows?: { id: string; started_at: Date | null; timeout_secs?: number | null }[];
-  // Shape matches the reaper's batch SELECT: scoping columns are
-  // filtered in memory, so mock rows must carry them.
-  webhooks?: {
-    id: string;
-    user_id: string | null;
-    actor_id: string | null;
-    run_id: string | null;
-  }[];
+  // Matched per run by matchWebhooks, standing in for the SQL WHERE.
+  webhooks?: MockWebhook[];
   /** Make webhook-delivery INSERTs reject — exercises the reap ROLLBACK path. */
   rejectWebhookInserts?: boolean;
 }) {
@@ -153,7 +173,7 @@ function setupQueryMock(opts: {
       return Promise.resolve({ rows: [] });
     }
     if (typeof sql === 'string' && sql.includes('FROM webhooks')) {
-      return Promise.resolve({ rows: opts.webhooks ?? [] });
+      return Promise.resolve({ rows: matchWebhooks(opts.webhooks ?? [], params) });
     }
     if (typeof sql === 'string' && sql.includes('INSERT INTO webhook_deliveries')) {
       if (opts.rejectWebhookInserts) {
@@ -435,10 +455,13 @@ describe('scaler loop', () => {
         }
         if (typeof sql === 'string' && sql.includes('FROM webhooks')) {
           return Promise.resolve({
-            rows: [
-              { id: 'wh-own-global', user_id: 'user-1', actor_id: null, run_id: null },
-              { id: 'wh-tenant-b-global', user_id: 'user-2', actor_id: null, run_id: null },
-            ],
+            rows: matchWebhooks(
+              [
+                { id: 'wh-own-global', user_id: 'user-1', actor_id: null, run_id: null },
+                { id: 'wh-tenant-b-global', user_id: 'user-2', actor_id: null, run_id: null },
+              ],
+              params
+            ),
           });
         }
         if (typeof sql === 'string' && sql.includes('INSERT INTO webhook_deliveries')) {
@@ -743,10 +766,10 @@ describe('scaler loop', () => {
     });
 
     it('does not enqueue deliveries for webhooks scoped to a different actor or run', async () => {
-      // Scoping moved from SQL to memory when the per-run SELECT was
-      // hoisted out of the transaction (one batch query) — this pins the
-      // in-memory filter so a refactor can't silently fan out global
-      // deliveries. The reap UPDATE mock reports actor_id 'actor-1'.
+      // Scoping happens in the per-run SQL (same WHERE as the runner's
+      // triggerWebhooks); matchWebhooks emulates it, so this pins the
+      // params the reaper binds. The reap UPDATE mock reports actor_id
+      // 'actor-1'.
       setupQueryMock({
         stats: { ready: 0, running: 1 },
         runningRows: [
