@@ -26,7 +26,7 @@ A CLI-first platform for running large-scale scrapers on your own infrastructure
 
 ## Next release — Platform MCP, Phase 1 (merged, unreleased)
 
-AI agents (Claude Desktop, Claude Code, Cursor, …) can find, run and inspect actors on your instance through the stock Apify MCP server (`@apify/actors-mcp-server`) pointed at your API with `APIFY_API_BASE_URL` — no MCP server to run on the platform. Delivered as Apify API parity (epic [#106](https://github.com/crawlee-cloud/crawlee-cloud/issues/106)): `/v2/actors` alias, `username~name` actor IDs and user slugs, `waitForFinish` long-polling, the Apify run-start body contract, build `actorDefinition` (input schema uploaded by `crc push`), `builds/default`, `GET /v2/store`, and dataset `fields`/`omit`/`desc`. All 18 MCP e2e checks pass. Setup and limits: [MCP (AI agents)](docs/mcp.md).
+AI agents (Claude Desktop, Claude Code, Cursor, …) can find, run and inspect actors on your instance through the stock Apify MCP server (`@apify/actors-mcp-server`) pointed at your API with `APIFY_API_BASE_URL` — no MCP server to run on the platform. Delivered as Apify API parity (epic [#106](https://github.com/crawlee-cloud/crawlee-cloud/issues/106)): `/v2/actors` alias, `username~name` actor IDs and user slugs, `waitForFinish` long-polling, the Apify run-start body contract, build `actorDefinition` (input schema uploaded by `crc push`), `builds/default`, `GET /v2/store`, and dataset `fields`/`omit`/`desc`. All 19 MCP e2e checks pass. Setup and limits: [MCP (AI agents)](docs/mcp.md).
 
 ---
 

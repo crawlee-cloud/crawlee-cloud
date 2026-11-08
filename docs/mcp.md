@@ -179,11 +179,13 @@ Usernames cannot be changed yet.
   username would become `-dot-`, but usernames never contain one. A `.` in the
   actor name is kept, and some clients only accept tool names made of letters,
   digits, `_` and `-`: avoid dots in the names of actors you expose as tools.
-  Names longer than 64 characters are cut and given a 4-character hash suffix,
-  so keep `username` + `actor name` under 62 characters for readable tool names.
+  Tool names longer than 64 characters are cut and given a 4-character hash
+  suffix. With the 2-character `--` separator, that means keeping the
+  `username` and `actor name` together at 62 characters or fewer for readable
+  tool names.
 - **`call-actor` waits 30 s by default, at most 45 s** (its `waitSecs`). Longer runs keep going;
   the agent can poll them with `get-actor-run`. The API holds each wait request
-  for at most 60 s; see [`waitForFinish`](./apify-compatibility.md#waiting-for-runs-and-builds)
+  for at most 55 s; see [`waitForFinish`](./apify-compatibility.md#waiting-for-runs-and-builds)
   for proxy timeouts.
 - **Node 22+** is required by the Apify server (see [Requirements](#requirements)).
 - **Telemetry**: the Apify server sends usage analytics (Segment) and error
@@ -217,8 +219,9 @@ Usernames cannot be changed yet.
 - **Per-actor tool has no parameters**: the actor was pushed before input schemas
   were uploaded. Push it again with the current CLI; `crc push` prints
   `Input schema: <path>`.
-- **A request is cut off after ~60 s**: a proxy in front of the API times out
-  long-polling requests; raise its read timeout above 60 s.
+- **A request is cut off with a 504**: a proxy in front of the API times out
+  long-polling requests, which the API holds for up to 55 s; raise its read
+  timeout to 75 s or more.
 
 See also: [Apify API compatibility](./apify-compatibility.md) for the endpoint
 behaviour the server relies on, and the RFC discussion

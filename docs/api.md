@@ -136,23 +136,23 @@ The lock endpoint (`POST .../head/lock`) supports distributed crawling. Paramete
 
 Manage Actor definitions.
 
-| Method   | Endpoint                 | Description                     |
-| -------- | ------------------------ | ------------------------------- |
-| `GET`    | `/v2/acts`               | List all Actors                 |
-| `POST`   | `/v2/acts`               | Create an Actor                 |
-| `GET`    | `/v2/acts/{id}`          | Get Actor details               |
-| `PUT`    | `/v2/acts/{id}`          | Update an Actor                 |
-| `DELETE` | `/v2/acts/{id}`          | Delete an Actor                 |
-| `GET`    | `/v2/acts/{id}/runs`     | List the Actor's runs           |
-| `POST`   | `/v2/acts/{id}/runs`     | Start a new run                 |
-| `POST`   | `/v2/acts/{id}/run-sync` | Start a run (does not wait yet) |
-| `GET`    | `/v2/store`              | Search your own Actors          |
+| Method   | Endpoint                 | Description                                                       |
+| -------- | ------------------------ | ----------------------------------------------------------------- |
+| `GET`    | `/v2/acts`               | List all Actors                                                   |
+| `POST`   | `/v2/acts`               | Create an Actor                                                   |
+| `GET`    | `/v2/acts/{id}`          | Get Actor details                                                 |
+| `PUT`    | `/v2/acts/{id}`          | Update an Actor                                                   |
+| `DELETE` | `/v2/acts/{id}`          | Delete an Actor                                                   |
+| `GET`    | `/v2/acts/{id}/runs`     | List the Actor's runs                                             |
+| `POST`   | `/v2/acts/{id}/runs`     | Start a new run                                                   |
+| `POST`   | `/v2/acts/{id}/run-sync` | Start a run, returns the run (waits only with `?waitForFinish=N`) |
+| `GET`    | `/v2/store`              | Search your own Actors                                            |
 
-Every `/v2/acts/...` route is also served as `/v2/actors/...` (the path `apify-client` 2.23.4+ uses). `{id}` can be the Actor ID, its name, `username~name` or `username/name` (URL-encoded); another user's username is a `404`.
+Every `/v2/acts/...` route is also served as `/v2/actors/...` (the path `apify-client` 2.23.4+ uses). `{id}` can be the Actor ID, its name, `username~name` or `username/name` (URL-encoded), with the username and name matched case-insensitively; another user's username is a `404`.
 
 ### Starting a run
 
-As on Apify, the request body is the Actor input, and run options go in the query string: `timeout`, `memory`, `waitForFinish` (seconds, at most 60), `webhooks` (base64 JSON array) and `envVars` (base64 JSON object of strings, a Crawlee Cloud extension).
+As on Apify, the request body is the Actor input, and run options go in the query string: `timeout`, `memory`, `waitForFinish` (seconds; fractions are floored, values above 60 are clamped, and the response is held for at most 55 s), `webhooks` (base64 JSON array) and `envVars` (base64 JSON object of strings, a Crawlee Cloud extension).
 
 ```bash
 curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
@@ -164,7 +164,7 @@ The legacy wrapper body `{ input, timeout, memory, envVars, webhooks }` is also 
 
 ### Store search
 
-`GET /v2/store` is `apify-client`'s `store().list()`, scoped to **your own** Actors: `search` matches name, title and description; `limit` (default 10, max 100, max 10 with `includeInputSchema=1`) and `offset` paginate; `username` other than yours returns an empty list. See [Apify API compatibility](./apify-compatibility.md#store-search).
+`GET /v2/store` is `apify-client`'s `store().list()`, scoped to **your own** Actors: every whitespace-separated keyword in `search` must match (case-insensitively) the name, title, description, username or `username/name`; `limit` (default 10, max 100, max 10 with `includeInputSchema=1`) and `offset` (clamped at 1,000,000) paginate; `username` (case-insensitive) other than yours returns an empty list. See [Apify API compatibility](./apify-compatibility.md#store-search).
 
 ### Deleting Actors
 
@@ -214,7 +214,7 @@ Monitor Actor executions.
 | Method | Endpoint                                            | Description                                           |
 | ------ | --------------------------------------------------- | ----------------------------------------------------- |
 | `GET`  | `/v2/actor-runs`                                    | List all runs                                         |
-| `GET`  | `/v2/actor-runs/{id}`                               | Get run status (`?waitForFinish=N` long-polls ≤ 60 s) |
+| `GET`  | `/v2/actor-runs/{id}`                               | Get run status (`?waitForFinish=N` long-polls ≤ 55 s) |
 | `PUT`  | `/v2/actor-runs/{id}`                               | Update run status                                     |
 | `POST` | `/v2/actor-runs/{id}/abort`                         | Abort a run (a finished run is returned unchanged)    |
 | `POST` | `/v2/actor-runs/{id}/resurrect`                     | Resurrect a failed run                                |
