@@ -6,7 +6,8 @@
  * behaviour, including the version and build sub-resources. Each case runs the
  * same mocked DB sequence against both segments and compares the responses.
  *
- * Also covers the platform 404 envelope for unknown routes.
+ * The app is built with the real `configureHttp()` + `registerV2Routes()`, so
+ * this also covers the platform 404 envelope for unknown routes.
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
@@ -14,18 +15,21 @@ import type { FastifyInstance } from 'fastify';
 import Fastify from 'fastify';
 
 // Mock authenticate middleware BEFORE importing routes
-vi.mock('../src/auth/middleware.js', () => ({
+// Partial mocks (importOriginal) so every module registerV2Routes pulls in can
+// load; only what the actor/registry handlers touch is replaced.
+vi.mock('../src/auth/middleware.js', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   authenticate: async (request: { user?: { id: string; email: string; role: string } }) => {
     request.user = { id: 'test-user-id', email: 'test@example.com', role: 'user' };
   },
 }));
 
-import { actorsRoutes } from '../src/routes/actors.js';
-import { registryRoutes } from '../src/routes/registry.js';
-import { setPlatformNotFoundHandler } from '../src/routes/not-found.js';
+import { registerV2Routes } from '../src/routes/index.js';
+import { configureHttp } from '../src/http-setup.js';
 
 const mockQuery = vi.fn();
-vi.mock('../src/db/index.js', () => ({
+vi.mock('../src/db/index.js', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   query: (...args: unknown[]) => mockQuery(...args),
   getClient: vi.fn().mockImplementation(async () => ({
     query: async (text: string, params?: unknown[]) => {
@@ -39,7 +43,8 @@ vi.mock('../src/db/index.js', () => ({
 }));
 
 const mockRedisPublish = vi.fn();
-vi.mock('../src/storage/redis.js', () => ({
+vi.mock('../src/storage/redis.js', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   redis: {
     publish: (...args: unknown[]) => mockRedisPublish(...args),
     rpush: vi.fn(),
@@ -47,7 +52,8 @@ vi.mock('../src/storage/redis.js', () => ({
   },
 }));
 
-vi.mock('../src/storage/s3.js', () => ({
+vi.mock('../src/storage/s3.js', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   putKVRecord: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -234,12 +240,10 @@ describe('/v2/actors alias of /v2/acts', () => {
 
   beforeAll(async () => {
     app = Fastify();
-    // Mirror registerV2Routes: each actor-scoped plugin registered once per segment.
-    app.register(actorsRoutes, { prefix: '/v2', actorsSegment: 'acts' });
-    app.register(actorsRoutes, { prefix: '/v2', actorsSegment: 'actors' });
-    app.register(registryRoutes, { prefix: '/v2', actorsSegment: 'acts' });
-    app.register(registryRoutes, { prefix: '/v2', actorsSegment: 'actors' });
-    setPlatformNotFoundHandler(app);
+    // The real production wiring: dropping a segment registration from
+    // registerV2Routes, or the 404 envelope from configureHttp, fails here.
+    await configureHttp(app);
+    await registerV2Routes(app);
     await app.ready();
   });
 

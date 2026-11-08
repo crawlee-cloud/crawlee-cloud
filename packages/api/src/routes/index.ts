@@ -19,7 +19,6 @@ import { webhooksRoutes } from './webhooks.js';
 import { schedulesRoutes } from './schedules.js';
 import { scalerRoutes } from './scaler.js';
 import { systemRoutes } from './system.js';
-import { setPlatformNotFoundHandler } from './not-found.js';
 
 export async function registerV2Routes(app: FastifyInstance): Promise<void> {
   // apify-client >= 2.23.4 uses /v2/actors; older clients and our own CLI and
@@ -38,6 +37,4 @@ export async function registerV2Routes(app: FastifyInstance): Promise<void> {
   await app.register(schedulesRoutes, { prefix: '/v2' });
   await app.register(scalerRoutes, { prefix: '/v2' });
   await app.register(systemRoutes, { prefix: '/v2' });
-
-  setPlatformNotFoundHandler(app);
 }
