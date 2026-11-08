@@ -636,7 +636,7 @@ describe('Actor Routes', () => {
     it('fails the request when the build write fails and a definition was sent', async () => {
       const row = createActorRow({ default_run_options: { image: IMAGE } });
       mockQuery
-        .mockResolvedValueOnce({ rows: [{ default_run_options: { image: IMAGE } }] })
+        .mockResolvedValueOnce({ rows: [row] }) // resolveActor
         .mockResolvedValueOnce({ rows: [row] }) // UPDATE actors
         .mockRejectedValueOnce(new Error('db down')); // dedup SELECT
 
@@ -652,6 +652,7 @@ describe('Actor Routes', () => {
     it('still swallows build write failures when no definition was sent', async () => {
       const row = createActorRow({ default_run_options: { image: IMAGE } });
       mockQuery
+        .mockResolvedValueOnce({ rows: [row] }) // resolveActor
         .mockResolvedValueOnce({ rows: [row] }) // UPDATE actors
         .mockRejectedValueOnce(new Error('db down')); // dedup SELECT
 
