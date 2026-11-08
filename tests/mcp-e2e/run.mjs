@@ -677,6 +677,9 @@ async function runChecks() {
     );
     const run = await waitForRunViaApi(ctx.abortRunId, ABORT_WAIT_MS);
     assert(run.status === 'ABORTED', `run ended ${run.status} (expected ABORTED)`);
+    // The REST start only exists so the abort path is still exercised and the
+    // run is cleaned up; a broken `call-actor waitSecs:0` still fails the check.
+    assert(via === 'call-actor waitSecs:0', `run ABORTED, but started via ${via}`);
     return `ABORTED via ${via}`;
   });
 }
