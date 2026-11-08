@@ -4,11 +4,12 @@
  * Calls a remote Actor on the platform.
  */
 
-import { Command } from 'commander';
+import { Command, InvalidArgumentError } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import fs from 'fs-extra';
 import { getConfig } from '../utils/config.js';
+import { startRun } from '../utils/runs.js';
 
 /**
  * Collector for -e KEY=VALUE options (can be used multiple times)
@@ -19,10 +20,23 @@ export function collectEnvVars(
 ): Record<string, string> {
   const [key, ...valueParts] = value.split('=');
   if (!key || valueParts.length === 0) {
-    console.error(chalk.red(`Invalid env var format: ${value}. Use KEY=VALUE`));
-    process.exit(1);
+    // Commander prints "error: option '-e, --env <KEY=VALUE>' argument
+    // '<value>' is invalid. Use KEY=VALUE." and exits 1.
+    throw new InvalidArgumentError('Use KEY=VALUE.');
   }
   return { ...previous, [key]: valueParts.join('=') };
+}
+
+/**
+ * Parser for --timeout / --memory: a positive decimal integer. Plain digits
+ * only — `Number()` alone would also accept `0x10`, `1e3` or ` 30`.
+ */
+export function parsePositiveInt(value: string): number {
+  const n = /^[1-9]\d*$/.test(value) ? Number(value) : NaN;
+  if (!Number.isSafeInteger(n)) {
+    throw new InvalidArgumentError('Use a positive integer.');
+  }
+  return n;
 }
 
 export const callCommand = new Command('call')
@@ -36,14 +50,19 @@ export const callCommand = new Command('call')
     {}
   )
   .option('-w, --wait', 'Wait for run to finish', false)
-  .option('-t, --timeout <seconds>', 'Timeout in seconds', '3600')
-  .option('-m, --memory <mb>', 'Memory in MB', '1024')
+  // No defaults: when omitted, the actor's default run options apply.
+  .option(
+    '-t, --timeout <seconds>',
+    'Timeout in seconds (default: actor setting)',
+    parsePositiveInt
+  )
+  .option('-m, --memory <mb>', 'Memory in MB (default: actor setting)', parsePositiveInt)
   .action(async (actor, cmdOptions) => {
     const options = cmdOptions as {
       input?: string;
       wait: boolean;
-      timeout: string;
-      memory: string;
+      timeout?: number;
+      memory?: number;
       env: Record<string, string>;
     };
     console.log(chalk.bold(`\n📞 Calling Actor: ${actor}\n`));
@@ -74,30 +93,13 @@ export const callCommand = new Command('call')
     const spinner = ora('Starting Actor run...').start();
 
     try {
-      // Start the run
-      const response = await fetch(`${config.apiBaseUrl}/v2/acts/${actor}/runs`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${config.token}`,
-        },
-        body: JSON.stringify({
-          input: inputData,
-          timeout: parseInt(options.timeout, 10),
-          memory: parseInt(options.memory, 10),
-          envVars,
-        }),
+      const run = await startRun(config, actor, {
+        input: inputData,
+        timeout: options.timeout,
+        memory: options.memory,
+        envVars,
       });
-
-      if (!response.ok) {
-        const errorData = (await response.json().catch(() => ({}))) as {
-          error?: { message?: string };
-        };
-        throw new Error(errorData.error?.message || `API error: ${response.status}`);
-      }
-
-      const result = (await response.json()) as { data: { id: string; status: string } };
-      const runId = result.data.id;
+      const runId = run.id;
 
       spinner.succeed(`Run started: ${runId}`);
 
@@ -109,9 +111,12 @@ export const callCommand = new Command('call')
         while (status === 'RUNNING' || status === 'READY') {
           await sleep(2000);
 
-          const statusResponse = await fetch(`${config.apiBaseUrl}/v2/actor-runs/${runId}`, {
-            headers: { Authorization: `Bearer ${config.token}` },
-          });
+          const statusResponse = await fetch(
+            `${config.apiBaseUrl}/v2/actor-runs/${encodeURIComponent(runId)}`,
+            {
+              headers: { Authorization: `Bearer ${config.token}` },
+            }
+          );
 
           const statusResult = (await statusResponse.json()) as { data: { status: string } };
           status = statusResult.data.status;
@@ -126,7 +131,7 @@ export const callCommand = new Command('call')
 
           // Fetch and display output
           const outputResponse = await fetch(
-            `${config.apiBaseUrl}/v2/actor-runs/${runId}/key-value-store/records/OUTPUT`,
+            `${config.apiBaseUrl}/v2/actor-runs/${encodeURIComponent(runId)}/key-value-store/records/OUTPUT`,
             { headers: { Authorization: `Bearer ${config.token}` } }
           );
 

@@ -701,17 +701,136 @@ export async function getRunCosts(
   return Object.assign({}, ...pages);
 }
 
+/** Base64 of UTF-8 bytes; `btoa` alone throws on non-Latin-1 characters. */
+export function utf8ToBase64(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+// The keys of the API's legacy wrapper body (packages/api/src/lib/run-body.ts).
+const LEGACY_RUN_BODY_KEYS: ReadonlySet<string> = new Set([
+  'input',
+  'timeout',
+  'memory',
+  'envVars',
+  'webhooks',
+]);
+
+/**
+ * True when `input`, sent as a raw (Apify-shaped) body, could be read by the
+ * API as the legacy wrapper `{ input, timeout, memory, envVars, webhooks }`:
+ * a non-empty plain object whose keys are all wrapper keys, e.g.
+ * `{"input":"x"}` or `{"timeout":30}`. Such input is sent wrapped instead.
+ * Keep in sync with the CLI's copy (packages/cli/src/utils/runs.ts).
+ */
+export function wouldReadAsLegacy(input: unknown): boolean {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return false;
+  const proto = Object.getPrototypeOf(input) as unknown;
+  if (proto !== Object.prototype && proto !== null) return false;
+  const keys = Object.keys(input);
+  return keys.length > 0 && keys.every((k) => LEGACY_RUN_BODY_KEYS.has(k));
+}
+
+/**
+ * First API release that accepts the Apify run-start contract (#115). The
+ * dashboard can be deployed apart from the API (it only needs
+ * NEXT_PUBLIC_API_URL), and an older API reads the body as the legacy
+ * wrapper — a raw input body would start the run with input `{}` and the
+ * query options ignored. Same gate as the CLI
+ * (packages/cli/src/utils/api-capabilities.ts).
+ */
+const MIN_APIFY_RUN_BODY_VERSION: readonly [number, number, number] = [1, 7, 0];
+
+/**
+ * True when an API reporting `version` (`GET /health`) accepts the Apify
+ * run-start body. Prereleases of the gate version (`1.7.0-rc.1`) count.
+ * Anything else — a missing or non-semver version, or `0.0.0` (the API's
+ * sentinel for "unknown") — is treated as legacy, which every API accepts.
+ */
+export function supportsApifyRunBody(version: unknown): boolean {
+  if (typeof version !== 'string') return false;
+  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version.trim());
+  if (!m) return false;
+  const parts = [Number(m[1]), Number(m[2]), Number(m[3])];
+  for (let i = 0; i < 3; i++) {
+    if (parts[i] !== MIN_APIFY_RUN_BODY_VERSION[i]) return parts[i] > MIN_APIFY_RUN_BODY_VERSION[i];
+  }
+  return true;
+}
+
+type RunBodyShape = 'apify' | 'legacy';
+
+// Probed once per page session; any failure falls back to legacy.
+let runBodyShape: Promise<RunBodyShape> | null = null;
+
+function getRunBodyShape(): Promise<RunBodyShape> {
+  runBodyShape ??= (async (): Promise<RunBodyShape> => {
+    try {
+      const res = await fetch(`${API_URL}/health`, { signal: AbortSignal.timeout(2000) });
+      if (!res.ok) return 'legacy';
+      const body = (await res.json()) as { version?: unknown };
+      return supportsApifyRunBody(body?.version) ? 'apify' : 'legacy';
+    } catch {
+      return 'legacy';
+    }
+  })();
+  return runBodyShape;
+}
+
+/** Test hook: forget the probed run-start shape. */
+export function resetRunBodyShapeCache(): void {
+  runBodyShape = null;
+}
+
+/**
+ * Start a run. Against an API with the Apify contract (#115, gated on the
+ * `/health` version): the body is the input itself (`{}` when none),
+ * options go in the query string and only when set, so the actor's default
+ * run options apply otherwise; `envVars` is a Crawlee Cloud extension, sent
+ * as base64-encoded JSON. Against an older API, or for an input the API
+ * would mistake for the legacy wrapper (`wouldReadAsLegacy`), the wrapper
+ * `{ input, timeout, memory, envVars }` is sent instead, which the API keeps
+ * accepting as a documented extension. `username/name` is sent as
+ * `username~name` (Apify convention) and the id is percent-encoded.
+ */
 export async function startRun(
   actorId: string,
-  options?: { input?: unknown; timeout?: number; memory?: number }
+  options?: {
+    input?: unknown;
+    timeout?: number;
+    memory?: number;
+    envVars?: Record<string, string>;
+  }
 ): Promise<Run> {
-  const res = await fetchApi<{ data: Run }>(`/v2/acts/${actorId}/runs`, {
+  const envVars = options?.envVars;
+  const hasEnvVars = envVars !== undefined && Object.keys(envVars).length > 0;
+  const path = `/v2/acts/${encodeURIComponent(actorId.replace('/', '~'))}/runs`;
+  if ((await getRunBodyShape()) === 'legacy' || wouldReadAsLegacy(options?.input)) {
+    const res = await fetchApi<{ data: Run }>(path, {
+      method: 'POST',
+      body: JSON.stringify({
+        // Always present, so the API's legacy detection is unambiguous.
+        input: options?.input ?? {},
+        timeout: options?.timeout,
+        memory: options?.memory,
+        envVars: hasEnvVars ? envVars : undefined,
+      }),
+    });
+    return res.data;
+  }
+
+  const qs = new URLSearchParams();
+  if (options?.timeout !== undefined) qs.set('timeout', String(options.timeout));
+  if (options?.memory !== undefined) qs.set('memory', String(options.memory));
+  if (hasEnvVars) {
+    qs.set('envVars', utf8ToBase64(JSON.stringify(envVars)));
+  }
+  const query = qs.toString();
+  const res = await fetchApi<{ data: Run }>(`${path}${query ? `?${query}` : ''}`, {
     method: 'POST',
-    body: JSON.stringify({
-      input: options?.input,
-      timeout: options?.timeout,
-      memory: options?.memory,
-    }),
+    body: JSON.stringify(options?.input ?? {}),
   });
   return res.data;
 }
