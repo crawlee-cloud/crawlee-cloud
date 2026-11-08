@@ -119,10 +119,7 @@ export async function listDatasetItems(
   }
   if (keys.length === 0) return { items: [], total: totalHint ?? 0 };
 
-  const startOf = (key: string): number => {
-    const m = /(\d{9})/.exec(key);
-    return m ? parseInt(m[1]!, 10) : 0;
-  };
+  const startOf = datasetKeyStart;
 
   type Range = { key: string; start: number; length: number; isBatch: boolean };
   const ranges: Range[] = [];
@@ -176,6 +173,28 @@ export async function listDatasetItems(
   const lastRange = ranges[ranges.length - 1];
   const derivedTotal = lastRange ? lastRange.start + lastRange.length : 0;
   return { items, total: totalHint ?? derivedTotal };
+}
+
+/**
+ * Count a dataset's items from storage alone — for callers without an
+ * authoritative `datasets.item_count`. Lists every key (cheap) and fetches
+ * only the last one: total = last key's start index + its length (batch
+ * array length, or 1 for a legacy single-item key).
+ */
+export async function countDatasetItems(datasetId: string): Promise<number> {
+  let lastKey: string | undefined;
+  for await (const key of iterateDatasetKeys(datasetId)) lastKey = key;
+  if (lastKey === undefined) return 0;
+  const start = datasetKeyStart(lastKey);
+  if (!lastKey.endsWith('.batch.json')) return start + 1;
+  const body = await getDatasetItemByKey(lastKey);
+  return start + (Array.isArray(body) ? body.length : 0);
+}
+
+/** Absolute index of a dataset key's first item (its 9-digit name). */
+function datasetKeyStart(key: string): number {
+  const m = /(\d{9})/.exec(key);
+  return m ? parseInt(m[1]!, 10) : 0;
 }
 
 /**

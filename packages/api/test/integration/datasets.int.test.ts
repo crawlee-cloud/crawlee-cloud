@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach, afterAll, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import {
   createTestApp,
@@ -227,6 +227,107 @@ describe('Datasets (integration)', () => {
         { rank: 5, title: 't5' },
         { rank: 4, title: 't4' },
       ]);
+    });
+
+    it('unknown item_count (NULL): desc/asc paging and the full stream count from storage', async () => {
+      const id = await seededDataset();
+      const { query } = await import('../../src/db/index.js');
+      await query('UPDATE datasets SET item_count = NULL WHERE id = $1', [id]);
+
+      // Pre-fix: desc returned [] with total 0; ascending sized the last
+      // batch as one item and reported total 5 only by luck of [5] being 1.
+      const desc = await get(`/v2/datasets/${id}/items?desc=1&limit=2`);
+      expect(desc.json()).toEqual([row(5), row(4)]);
+      expect(desc.headers['x-apify-pagination-total']).toBe('5');
+
+      const asc = await get(`/v2/datasets/${id}/items?offset=3&limit=10`);
+      expect(asc.json()).toEqual([row(4), row(5)]);
+      expect(asc.headers['x-apify-pagination-total']).toBe('5');
+
+      const full = await get(`/v2/datasets/${id}/items`);
+      expect(full.json()).toHaveLength(5);
+      expect(full.headers['x-apify-pagination-total']).toBe('5');
+
+      // A multi-item last batch: total must include all of it. (Restore
+      // the count first — the push derives its start index from it.)
+      await query('UPDATE datasets SET item_count = 5 WHERE id = $1', [id]);
+      await app.inject({
+        method: 'POST',
+        url: `/v2/datasets/${id}/items`,
+        headers: auth(),
+        payload: [row(6), row(7), row(8)],
+      });
+      await query('UPDATE datasets SET item_count = NULL WHERE id = $1', [id]);
+      const tail = await get(`/v2/datasets/${id}/items?desc=1&limit=3`);
+      expect(tail.json()).toEqual([row(8), row(7), row(6)]);
+      expect(tail.headers['x-apify-pagination-total']).toBe('8');
+    });
+
+    it('?limit= (empty) streams the full dataset like an omitted limit', async () => {
+      const id = await seededDataset();
+      const res = await get(`/v2/datasets/${id}/items?limit=&fields=&omit=`);
+      expect(res.json()).toEqual([1, 2, 3, 4, 5].map(row));
+      // Full-stream headers, not a silent 100-item page.
+      expect(res.headers['x-apify-pagination-limit']).toBe('5');
+    });
+
+    it('a storage failure mid-stream aborts the transfer and the API keeps serving', async () => {
+      const id = await seededDataset();
+      // Corrupt the middle batch object ([3,4]) so its GET + parse throws
+      // after the first batch has already been written to the socket.
+      const { s3 } = await import('../../src/storage/s3.js');
+      const { PutObjectCommand } = await import('@aws-sdk/client-s3');
+      const { TEST_CONFIG } = await import('./setup.js');
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: TEST_CONFIG.s3Bucket,
+          Key: `datasets/${id}/000000002.batch.json`,
+          Body: '{not json',
+        })
+      );
+
+      const unhandled = vi.fn();
+      process.on('unhandledRejection', unhandled);
+      process.on('uncaughtException', unhandled);
+      const address = await app.listen({ port: 0, host: '127.0.0.1' });
+      try {
+        for (const qs of ['', '?download=1']) {
+          const res = await fetch(`${address}/v2/datasets/${id}/items${qs}`, {
+            headers: auth(),
+          });
+          expect(res.status).toBe(200);
+          // The body never completes as a valid array: the server destroys
+          // the socket, so reading it rejects (or yields truncated JSON).
+          const text = await res.text().catch(() => null);
+          if (text !== null) expect(() => JSON.parse(text)).toThrow();
+        }
+
+        // Failure before the first item is a clean 500: the desc stream
+        // reads the (now corrupt) last batch first.
+        await s3.send(
+          new PutObjectCommand({
+            Bucket: TEST_CONFIG.s3Bucket,
+            Key: `datasets/${id}/000000004.batch.json`,
+            Body: '{not json',
+          })
+        );
+        const early = await fetch(`${address}/v2/datasets/${id}/items?desc=1`, {
+          headers: auth(),
+        });
+        expect(early.status).toBe(500);
+        expect((await early.json()).error).toBeDefined();
+
+        await new Promise((r) => setTimeout(r, 50));
+        expect(unhandled).not.toHaveBeenCalled();
+
+        // Process and server still alive.
+        const ok = await fetch(`${address}/v2/datasets/${id}/items?limit=2`, { headers: auth() });
+        expect(ok.status).toBe(200);
+        expect(await ok.json()).toEqual([row(1), row(2)]);
+      } finally {
+        process.off('unhandledRejection', unhandled);
+        process.off('uncaughtException', unhandled);
+      }
     });
 
     it('run-scoped items: offsets past the last batch start still return its tail', async () => {

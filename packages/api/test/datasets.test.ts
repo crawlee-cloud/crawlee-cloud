@@ -24,7 +24,9 @@ const mockPutDatasetBatch = vi.fn();
 const mockListDatasetItems = vi.fn();
 const mockIterateDatasetItems = vi.fn();
 const mockDeleteDatasetS3Prefix = vi.fn();
+const mockCountDatasetItems = vi.fn();
 vi.mock('../src/storage/s3.js', () => ({
+  countDatasetItems: (...args: unknown[]) => mockCountDatasetItems(...args),
   putDatasetBatch: (...args: unknown[]) => mockPutDatasetBatch(...args),
   listDatasetItems: (...args: unknown[]) => mockListDatasetItems(...args),
   iterateDatasetItems: (...args: unknown[]) => mockIterateDatasetItems(...args),
@@ -51,6 +53,7 @@ describe('Dataset Routes', () => {
     mockIterateDatasetItems.mockReset();
     mockDeleteDatasetS3Prefix.mockReset();
     mockDeleteDatasetS3Prefix.mockResolvedValue(undefined);
+    mockCountDatasetItems.mockReset();
     delete process.env.DATASET_BATCH_SIZE;
   });
 
@@ -739,6 +742,138 @@ describe('Dataset Routes', () => {
       await app.inject({ method: 'GET', url: '/v2/datasets/ds-1/items?desc=0' });
 
       expect(mockIterateDatasetItems).toHaveBeenCalledWith('ds-1', { reverse: false });
+    });
+  });
+  describe('GET /v2/datasets/:datasetId/items — storage failures and unknown counts', () => {
+    const datasetRow = (itemCount: number | null) => ({
+      rows: [
+        {
+          id: 'ds-1',
+          name: 'test',
+          user_id: null,
+          created_at: new Date(),
+          modified_at: new Date(),
+          accessed_at: new Date(),
+          item_count: itemCount,
+        },
+      ],
+    });
+    const s3Error = () =>
+      Object.assign(new Error('S3 GetObject failed'), { name: 'InternalError' });
+
+    for (const url of ['/v2/datasets/ds-1/items', '/v2/datasets/ds-1/items?download=1']) {
+      it(`${url}: S3 failure before the first item is a clean 500, not an empty 200`, async () => {
+        mockQuery.mockResolvedValueOnce(datasetRow(3));
+        // eslint-disable-next-line require-yield -- fails before yielding anything
+        mockIterateDatasetItems.mockImplementationOnce(async function* () {
+          throw s3Error();
+        });
+
+        const response = await app.inject({ method: 'GET', url });
+
+        expect(response.statusCode).toBe(500);
+        expect(response.body).toContain('S3 GetObject failed');
+      });
+
+      it(`${url}: S3 failure mid-stream aborts the transfer instead of crashing`, async () => {
+        mockQuery.mockResolvedValueOnce(datasetRow(3));
+        mockIterateDatasetItems.mockImplementationOnce(async function* () {
+          yield { n: 0 };
+          throw s3Error();
+        });
+        const errorSpy = vi.fn();
+        const onUnhandled = (err: unknown) => errorSpy(err);
+        process.on('uncaughtException', onUnhandled);
+        process.on('unhandledRejection', onUnhandled);
+
+        try {
+          // light-my-request surfaces a destroyed response as a rejected
+          // inject or a truncated body — either way never a complete array.
+          const outcome = await app.inject({ method: 'GET', url }).then(
+            (r) => ({ body: r.body }),
+            (err: Error) => ({ error: err })
+          );
+          if ('body' in outcome) {
+            expect(() => JSON.parse(outcome.body)).toThrow();
+          }
+          await new Promise((r) => setTimeout(r, 20));
+          expect(errorSpy).not.toHaveBeenCalled();
+        } finally {
+          process.off('uncaughtException', onUnhandled);
+          process.off('unhandledRejection', onUnhandled);
+        }
+
+        // The app still serves requests afterwards.
+        mockQuery.mockResolvedValueOnce(datasetRow(1));
+        mockListDatasetItems.mockResolvedValueOnce({ items: [{ n: 0 }], total: 1 });
+        const next = await app.inject({ method: 'GET', url: '/v2/datasets/ds-1/items?limit=1' });
+        expect(next.statusCode).toBe(200);
+      });
+    }
+
+    it('desc paging with an unknown item_count counts from storage', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(null));
+      mockCountDatasetItems.mockResolvedValueOnce(5);
+      mockListDatasetItems.mockResolvedValueOnce({ items: [{ n: 3 }, { n: 4 }], total: 5 });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/datasets/ds-1/items?desc=1&limit=2',
+      });
+
+      expect(mockCountDatasetItems).toHaveBeenCalledWith('ds-1');
+      expect(mockListDatasetItems).toHaveBeenCalledWith('ds-1', { offset: 3, limit: 2, total: 5 });
+      expect(JSON.parse(response.body)).toEqual([{ n: 4 }, { n: 3 }]);
+      expect(response.headers['x-apify-pagination-total']).toBe('5');
+    });
+
+    it('ascending paging with an unknown item_count passes the counted total', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(null));
+      mockCountDatasetItems.mockResolvedValueOnce(5);
+      mockListDatasetItems.mockResolvedValueOnce({ items: [{ n: 0 }], total: 5 });
+
+      const response = await app.inject({ method: 'GET', url: '/v2/datasets/ds-1/items?limit=1' });
+
+      expect(mockListDatasetItems).toHaveBeenCalledWith('ds-1', { offset: 0, limit: 1, total: 5 });
+      expect(response.headers['x-apify-pagination-total']).toBe('5');
+    });
+
+    it('full stream with an unknown item_count reports the counted total', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(null));
+      mockCountDatasetItems.mockResolvedValueOnce(2);
+      mockIterateDatasetItems.mockImplementationOnce(async function* () {
+        yield { n: 0 };
+        yield { n: 1 };
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/v2/datasets/ds-1/items' });
+
+      expect(JSON.parse(response.body)).toHaveLength(2);
+      expect(response.headers['x-apify-pagination-total']).toBe('2');
+    });
+
+    it('does not count from storage when item_count is known', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(5));
+      mockListDatasetItems.mockResolvedValueOnce({ items: [{ n: 4 }], total: 5 });
+
+      await app.inject({ method: 'GET', url: '/v2/datasets/ds-1/items?desc=1&limit=1' });
+
+      expect(mockCountDatasetItems).not.toHaveBeenCalled();
+    });
+
+    it('?limit= (empty) is treated as absent — full stream, not a 100-item page', async () => {
+      mockQuery.mockResolvedValueOnce(datasetRow(150));
+      mockIterateDatasetItems.mockImplementationOnce(async function* () {
+        for (let i = 0; i < 150; i++) yield { n: i };
+      });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/datasets/ds-1/items?limit=&fields=&omit=',
+      });
+
+      expect(JSON.parse(response.body)).toHaveLength(150);
+      expect(mockListDatasetItems).not.toHaveBeenCalled();
     });
   });
 });

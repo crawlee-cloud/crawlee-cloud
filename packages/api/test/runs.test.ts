@@ -43,6 +43,7 @@ vi.mock('../src/db/index.js', () => ({
 vi.mock('../src/storage/s3.js', () => ({
   listDatasetItems: vi.fn().mockResolvedValue({ items: [], total: 0 }),
   iterateDatasetItems: vi.fn(),
+  countDatasetItems: vi.fn(),
   getKVRecord: vi.fn().mockResolvedValue(null),
   putKVRecord: vi.fn().mockResolvedValue(undefined),
 }));
@@ -1039,6 +1040,52 @@ describe('Actor Runs Routes', () => {
       expect(JSON.parse(response.body)).toEqual([{ n: 2 }, { n: 1 }, { n: 0 }]);
       expect(iterateDatasetItems).toHaveBeenCalledWith('ds-1', { reverse: true });
       expect(response.headers['x-apify-pagination-total']).toBe('3');
+    });
+
+    it('desc paging with a NULL joined item count counts from storage', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [createRunRow({ default_dataset_item_count: null })],
+      });
+      const { listDatasetItems, countDatasetItems } = await import('../src/storage/s3.js');
+      (countDatasetItems as ReturnType<typeof vi.fn>).mockResolvedValueOnce(3);
+      const list = listDatasetItems as ReturnType<typeof vi.fn>;
+      list.mockClear();
+      list.mockResolvedValueOnce({ items: [{ n: 1 }, { n: 2 }], total: 3 });
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v2/actor-runs/run-1/dataset/items?desc=1&limit=2',
+      });
+
+      expect(list).toHaveBeenCalledWith('ds-1', { offset: 1, limit: 2, total: 3 });
+      expect(JSON.parse(response.body)).toEqual([{ n: 2 }, { n: 1 }]);
+      expect(response.headers['x-apify-pagination-total']).toBe('3');
+    });
+
+    it('aborts the transfer (no unhandled rejection) when S3 fails mid-stream', async () => {
+      mockQuery.mockResolvedValueOnce({
+        rows: [createRunRow({ default_dataset_item_count: 3 })],
+      });
+      const { iterateDatasetItems } = await import('../src/storage/s3.js');
+      (iterateDatasetItems as ReturnType<typeof vi.fn>).mockImplementationOnce(async function* () {
+        yield { n: 0 };
+        throw new Error('S3 GetObject failed');
+      });
+      const errorSpy = vi.fn();
+      process.on('unhandledRejection', errorSpy);
+      try {
+        const outcome = await app
+          .inject({ method: 'GET', url: '/v2/actor-runs/run-1/dataset/items' })
+          .then(
+            (r) => r.body,
+            () => null
+          );
+        if (outcome !== null) expect(() => JSON.parse(outcome)).toThrow();
+        await new Promise((r) => setTimeout(r, 20));
+        expect(errorSpy).not.toHaveBeenCalled();
+      } finally {
+        process.off('unhandledRejection', errorSpy);
+      }
     });
 
     it('returns 404 when the run is not found', async () => {
