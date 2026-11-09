@@ -233,6 +233,7 @@ AI agents (Claude Desktop, Claude Code, Cursor, …) can find, run and inspect a
 
 - Behaviour changes: `GET /v2/users/me` returns a username slug in `username` and the email in `email`; the run-start body is the actor input (the legacy `{ input, ... }` wrapper is kept as an extension); aborting a finished run returns 200; unknown routes return a `page-not-found` envelope
 - Security: webhooks fire only for their owner's runs; actor version and build routes are user-scoped (#77)
+- Reliability: the API no longer crashes when Postgres drops a pooled connection; a storage error mid-stream no longer crashes it either
 - One-way `users.username` migration (see the [CHANGELOG](../CHANGELOG.md))
 
 ---
