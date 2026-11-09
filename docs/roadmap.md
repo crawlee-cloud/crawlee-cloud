@@ -9,7 +9,7 @@ A CLI-first platform for running large-scale scrapers on your own infrastructure
 - Security: webhooks fire only for their owner's runs; actor version and build routes are user-scoped
 - Runner disk-pressure protection and full-dataset streaming on no-limit reads (v1.6.0)
 
-The 1.0 stability commitment (2026-06-06) is well behind us. The 1.x line has focused on production reliability (runner lifecycle races in v1.0.1, zombie-run reaping in v1.1.0, memory-aware placement in v1.2.0, disk-pressure protection in v1.6.0), cost visibility (v1.3.0–v1.4.0), hardening (v1.5.0), and Apify API parity for MCP agents (v1.7.0) — all additive, as the semver commitment requires.
+The 1.0 stability commitment (2026-06-06) is well behind us. The 1.x line has focused on production reliability (runner lifecycle races in v1.0.1, zombie-run reaping in v1.1.0, memory-aware placement in v1.2.0, disk-pressure protection in v1.6.0), cost visibility (v1.3.0–v1.4.0), hardening (v1.5.0), and Apify API parity for MCP agents (v1.7.0). Changes are additive, with one deliberate exception: where Crawlee Cloud deviated from Apify's documented behaviour, the deviation is treated as a bug and fixed in a minor release, as in v1.6.0 (dataset reads without `limit`) and v1.7.0 (its behaviour changes are listed at the top of the [1.7.0 changelog](../CHANGELOG.md)).
 
 ---
 
@@ -169,7 +169,7 @@ The original 1.0 wish-list had more on it than shipped. Status of the deferred i
 | `packages/shared` workspace                             | `applyWebhookTemplate` engine is duplicated in api+runner with KEEP-IN-SYNC headers. Land before v2.0 to keep options open for breaking the engine API. |
 | Apify v2 API drift audit                                | Periodic compatibility check against current Apify, especially as their own surface evolves. Triggers v1.x minors as gaps are closed additively.        |
 | ~~Zombie RUNNING row reaper~~                           | ✅ Shipped in v1.1.0 — dedicated periodic reaper flips orphaned RUNNING rows past their own timeout to `TIMED-OUT`, with transactional webhook enqueue. |
-| DigitalOcean `listRunners` pagination                   | Provider's `per_page=100` with no iteration; deployments with >100 droplets silently underreport capacity. Still open as of v1.6.0.                     |
+| DigitalOcean `listRunners` pagination                   | Provider's `per_page=100` with no iteration; deployments with >100 droplets silently underreport capacity. Still open as of v1.7.0.                     |
 | Webhook `payload_template` examples in dashboard editor | Operators still consult Apify docs to discover `{{eventData}}` syntax. UX-only, no contract change — v1.x minor.                                        |
 | Auth/role surface tightening                            | Admin scopes, API key TTLs. Anything role-related that breaks tokens is a v2.0 candidate; anything additive can land in v1.x.                           |
 

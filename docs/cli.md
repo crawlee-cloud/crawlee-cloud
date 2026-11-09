@@ -201,6 +201,13 @@ CRAWLEE_CLOUD_PROFILE=prod crc push    # one-off push, no `profile use` needed
 
 Build and push an Actor to the registry. The command takes no positional argument — the Actor name is always read from `.actor/actor.json` in the current directory.
 
+Push also uploads the actor definition: the whole `actor.json`, with the input schema and README inlined, as the Apify CLI does. The platform stores it on the build, and the [Apify MCP server](mcp.md) uses it for per-actor tools.
+
+- **Input schema:** an inline `input` object in `actor.json`, or a path relative to `.actor/`. Without `input`, push uses the first usable file among `.actor/input_schema.json`, `.actor/INPUT_SCHEMA.json` and `./INPUT_SCHEMA.json`.
+- **README:** the `readme` path (relative to `.actor/`), else `.actor/README.md`, else `./README.md`.
+- If no schema or README is found, that key is left out and the platform keeps the previous build's value. Push prints `Input schema: <path | inline | none>` and `README: <path | none>`.
+- A file that `actor.json` references but that is missing or malformed fails the push before the Docker build. So does an input schema over 500 KB, a README over 1 MB, or a whole definition over 2 MB. Missing fallback files are skipped.
+
 ```bash
 crawlee-cloud push [options]
 ```

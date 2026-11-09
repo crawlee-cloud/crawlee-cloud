@@ -70,7 +70,7 @@ exits non-zero when:
 - a listed check passes ("unexpectedly passed, remove from
   expected-failures.json"), so the list can only shrink.
 
-Since the MCP parity epic (#106) closed, the list is empty (`[]`): every check
+Since the MCP parity epic (#106) landed, the list is empty (`[]`): every check
 must pass, and any regression fails the run. `abort-actor-run` is no exception:
 if `call-actor` with `waitSecs: 0` fails, the check still starts a run over REST
 and aborts it (so the abort path is exercised and no 300 s run is left holding a
