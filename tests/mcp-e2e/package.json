@@ -11,6 +11,6 @@
     "test": "node run.mjs"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "1.30.0"
+    "@modelcontextprotocol/sdk": "1.32.0"
   }
 }
