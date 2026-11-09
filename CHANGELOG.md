@@ -2,9 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.7.0] - 2026-11-09
 
 MCP support for AI agents through Apify API parity: the stock Apify MCP server (`@apify/actors-mcp-server`) now works unmodified against a Crawlee Cloud instance by setting `APIFY_API_BASE_URL`, so Claude Desktop, Claude Code, Cursor and other MCP clients can search, run and inspect your actors and read their datasets and key-value stores (setup: [docs/mcp.md](docs/mcp.md)). The same fixes make plain `apify-client` work better: current clients' `/v2/actors` paths, `username/name` actor IDs, `actor.call(input)` keeping its input, `waitForFinish` long-polling instead of a tight polling loop, default builds with input schemas, and dataset `fields`/`omit`/`desc`. **Behaviour changes** (details below): `GET /v2/users/me` returns a username slug in `username` and the email in a new `email` field; aborting a finished run returns 200 with the run instead of 404; unknown routes return a `page-not-found` error envelope; run start reads the body as the actor input (the legacy `{ input, ... }` wrapper still works and is kept as a documented extension); `crc call` no longer defaults `--timeout`/`--memory`; invalid boolean query values are a 400; `crc push` fails on a missing or malformed referenced input schema or README; `actorDefinition` without an image is a 400; `text/plain` run-start bodies are a 415.
+
+**Upgrading from v1.6.0** needs a database migration. Migrations do not run on startup: run them right after the new API is up (`docker compose exec api node packages/api/dist/db/migrate.js`, or `npm run db:migrate`), since routes that read the new columns fail until you do. The `users.username` migration is one-way: it backfills a slug for every user and sets the column `NOT NULL`, so rolling back to 1.6.x needs `ALTER TABLE users ALTER COLUMN username DROP NOT NULL`. Upgrade the API before the CLI and dashboard: they keep sending the legacy run-start body to APIs older than 1.7.0.
 
 ### API
 
@@ -86,7 +88,7 @@ MCP support for AI agents through Apify API parity: the stock Apify MCP server (
 
 - **MCP guide (`docs/mcp.md`)** — what works with `@apify/actors-mcp-server@0.17.3` (`--tools actors,runs,storage,get-actor-list,<username>/<actor>`; always pass `--tools`, the default set is `actors,docs`), setup for Claude Desktop, Claude Code and Cursor (each with `APIFY_API_BASE_URL`, `APIFY_TOKEN`, `TELEMETRY_ENABLED=false`), how to find your username, known limits (links to `apify.com`, unsupported tool categories, no Standby actors, large binary records linked via `api.apify.com`, tool-name rules, Node 22+, telemetry) and security (one revocable API key per agent; proxies may log the query string). Linked from the README and `docs/index.md`.
 - **Apify compatibility reference** — `docs/apify-compatibility.md` now covers actor addressing (`/v2/actors`, `username~name`, `username`), the run-start contract and the legacy wrapper body (kept as a documented extension) with its `{ "input": ... }` ambiguity, `waitForFinish` (clamped to 60, each request held at most 55 s) with DigitalOcean App Platform (100 s) and Render (100 min) request limits, `GET /v2/store`, `builds/default` and `/actor-builds/:id`, dataset `fields`/`omit`/`desc`, abort behaviour and the `page-not-found` envelope. `docs/api.md` is updated to match.
-- **Roadmap** — Platform MCP Phase 1 marked merged (ships in the next release) in `ROADMAP.md` and `docs/roadmap.md`; Phase 2 (native Streamable-HTTP `/mcp` endpoint) and Phase 3 (OAuth for MCP clients) stay open under RFC #96.
+- **Roadmap** — Platform MCP Phase 1 marked shipped in v1.7.0 in `ROADMAP.md` and `docs/roadmap.md`; Phase 2 (native Streamable-HTTP `/mcp` endpoint) and Phase 3 (OAuth for MCP clients) stay open under RFC #96.
 
 ## [1.6.0] - 2026-08-05
 
