@@ -17,6 +17,7 @@ import {
   cleanupDocker,
 } from './docker.js';
 import { getAvailableMemoryMb, getDiskUsageRatio } from './heartbeat.js';
+import { logClientErrors, logPoolErrors } from './client-errors.js';
 import { applyWebhookTemplate } from './webhook-template.js';
 import { resolveProxy } from './proxy-resolver.js';
 
@@ -165,11 +166,14 @@ export function getActiveRunIds(): string[] {
  * Initialize job queue connections.
  */
 export async function initJobQueue(): Promise<void> {
-  pool = new Pool({
-    connectionString: config.databaseUrl,
-  });
+  pool = logPoolErrors(
+    new Pool({
+      connectionString: config.databaseUrl,
+    }),
+    'db'
+  );
 
-  redis = new Redis(config.redisUrl);
+  redis = logClientErrors(new Redis(config.redisUrl), 'redis');
 
   // Fetch runner API key from Redis (created by API's setupAdminUser)
   runnerApiKey = await redis.get(RUNNER_API_KEY_REDIS_KEY);
@@ -183,7 +187,7 @@ export async function initJobQueue(): Promise<void> {
   }
 
   // Subscribe to run notifications
-  const subscriber = new Redis(config.redisUrl);
+  const subscriber = logClientErrors(new Redis(config.redisUrl), 'redis-subscriber');
   await subscriber.subscribe('run:new', 'run:abort');
 
   const onAbort = createAbortHandler(
