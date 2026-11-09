@@ -2,9 +2,11 @@
  * Webhook routes - CRUD endpoints for managing webhooks and viewing delivery history.
  */
 
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 import { nanoid } from 'nanoid';
+import type { z } from 'zod';
 import { CreateWebhookSchema, UpdateWebhookSchema } from '../schemas/webhooks.js';
+import { resolveActor, ACTOR_NOT_FOUND } from '../lib/resolve-actor.js';
 import { query } from '../db/index.js';
 import { appendSearchCondition } from '../db/search.js';
 import { authenticate } from '../auth/middleware.js';
@@ -84,29 +86,113 @@ interface DeliveryRow {
   finished_at: Date | null;
 }
 
+type WebhookBody = Partial<z.infer<typeof CreateWebhookSchema>>;
+
+/**
+ * Where a webhook applies, from Apify's `condition` (or the legacy top-level
+ * `actorId`). Before, `condition` was stripped by Zod and the row was stored
+ * unscoped, so it fired for every run of the user (#149).
+ *   condition.actorId    -> actor_id (resolved like actor routes: id, name, username~name)
+ *   condition.actorRunId -> run_id, as per-run webhooks from run start are stored
+ *   condition.actorTaskId-> 400: tasks don't exist here
+ * Sends the error reply and returns null when the scope is invalid.
+ */
+async function resolveWebhookScope(
+  data: WebhookBody,
+  userId: string,
+  reply: FastifyReply,
+  allowRun: boolean
+): Promise<{ actorId?: string | null; runId?: string | null } | null> {
+  const condition = data.condition;
+  if (!condition) {
+    return data.actorId !== undefined ? { actorId: data.actorId } : {};
+  }
+  if (condition.actorTaskId !== undefined) {
+    reply.status(400).send({
+      error: {
+        type: 'invalid-request',
+        message: 'Actor tasks are not supported; use condition.actorId or condition.actorRunId',
+      },
+    });
+    return null;
+  }
+  if (condition.actorId !== undefined) {
+    const actor = await resolveActor(condition.actorId, userId);
+    if (!actor) {
+      reply.status(404).send(ACTOR_NOT_FOUND);
+      return null;
+    }
+    return { actorId: actor.id, runId: null };
+  }
+  if (!allowRun) {
+    reply.status(400).send({
+      error: {
+        type: 'invalid-request',
+        message: 'A webhook cannot be moved to a run; create a new one with condition.actorRunId',
+      },
+    });
+    return null;
+  }
+  const run = await query<{ id: string }>('SELECT id FROM runs WHERE id = $1 AND user_id = $2', [
+    condition.actorRunId,
+    userId,
+  ]);
+  if (!run.rows[0]) {
+    reply.status(404).send({ error: { type: 'record-not-found', message: 'Run not found' } });
+    return null;
+  }
+  return { actorId: null, runId: run.rows[0].id };
+}
+
+/**
+ * `headers`, or Apify's `headersTemplate` (a JSON-string object) when
+ * `headers` is absent. Sends a 400 and returns false when it doesn't parse.
+ */
+function resolveHeaders(
+  data: WebhookBody,
+  reply: FastifyReply
+): Record<string, string> | undefined | false {
+  if (data.headers !== undefined || data.headersTemplate === undefined) return data.headers;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data.headersTemplate);
+  } catch {
+    parsed = undefined;
+  }
+  const valid =
+    parsed !== null &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    Object.values(parsed).every((v) => typeof v === 'string');
+  if (!valid) {
+    reply.status(400).send({
+      error: {
+        type: 'validation_error',
+        message: 'headersTemplate must be a JSON object with string values',
+      },
+    });
+    return false;
+  }
+  return parsed as Record<string, string>;
+}
+
 export const webhooksRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.addHook('preHandler', authenticate);
 
   /**
    * POST /v2/webhooks - Create webhook
    */
-  fastify.post<{
-    Body: {
-      eventTypes: string[];
-      requestUrl: string;
-      payloadTemplate?: string;
-      actorId?: string;
-      headers?: Record<string, string>;
-      description?: string;
-      isEnabled?: boolean;
-    };
-  }>('/webhooks', async (request, reply) => {
+  fastify.post<{ Body: WebhookBody }>('/webhooks', async (request, reply) => {
     const data = CreateWebhookSchema.parse(request.body);
+    const scope = await resolveWebhookScope(data, request.user!.id, reply, true);
+    if (!scope) return reply;
+    const headers = resolveHeaders(data, reply);
+    if (headers === false) return reply;
 
     const id = nanoid();
     const result = await query<WebhookRow>(
-      `INSERT INTO webhooks (id, user_id, event_types, request_url, payload_template, actor_id, headers, description, is_enabled)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO webhooks (id, user_id, event_types, request_url, payload_template, actor_id, run_id, headers, description, is_enabled)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
         id,
@@ -114,8 +200,9 @@ export const webhooksRoutes: FastifyPluginAsync = async (fastify) => {
         data.eventTypes,
         data.requestUrl,
         data.payloadTemplate ?? null,
-        data.actorId ?? null,
-        data.headers ? JSON.stringify(data.headers) : null,
+        scope.actorId ?? null,
+        scope.runId ?? null,
+        headers ? JSON.stringify(headers) : null,
         data.description ?? null,
         data.isEnabled ?? true,
       ]
@@ -271,18 +358,14 @@ export const webhooksRoutes: FastifyPluginAsync = async (fastify) => {
    */
   fastify.put<{
     Params: { webhookId: string };
-    Body: {
-      eventTypes?: string[];
-      requestUrl?: string;
-      payloadTemplate?: string;
-      actorId?: string;
-      headers?: Record<string, string>;
-      description?: string;
-      isEnabled?: boolean;
-    };
+    Body: WebhookBody;
   }>('/webhooks/:webhookId', async (request, reply) => {
     const { webhookId } = request.params;
     const updates = UpdateWebhookSchema.parse(request.body);
+    const scope = await resolveWebhookScope(updates, request.user!.id, reply, false);
+    if (!scope) return reply;
+    const headers = resolveHeaders(updates, reply);
+    if (headers === false) return reply;
 
     const setClauses: string[] = ['modified_at = NOW()'];
     const values: unknown[] = [];
@@ -300,13 +383,13 @@ export const webhooksRoutes: FastifyPluginAsync = async (fastify) => {
       setClauses.push(`payload_template = $${paramIndex++}`);
       values.push(updates.payloadTemplate);
     }
-    if (updates.actorId !== undefined) {
+    if (scope.actorId !== undefined) {
       setClauses.push(`actor_id = $${paramIndex++}`);
-      values.push(updates.actorId);
+      values.push(scope.actorId);
     }
-    if (updates.headers !== undefined) {
+    if (headers !== undefined) {
       setClauses.push(`headers = $${paramIndex++}`);
-      values.push(JSON.stringify(updates.headers));
+      values.push(JSON.stringify(headers));
     }
     if (updates.description !== undefined) {
       setClauses.push(`description = $${paramIndex++}`);
@@ -754,7 +837,16 @@ function formatWebhook(row: WebhookRow) {
     // debugging delivery can see which run a webhook belongs to without
     // hitting the database directly. Always null for admin webhooks.
     runId: row.run_id,
+    // Apify shape of the same scope; null for a global webhook (a Crawlee
+    // Cloud extension: Apify always has a condition).
+    condition: row.run_id
+      ? { actorRunId: row.run_id }
+      : row.actor_id
+        ? { actorId: row.actor_id }
+        : null,
+    isAdHoc: row.run_id !== null,
     headers: row.headers,
+    headersTemplate: row.headers ? JSON.stringify(row.headers) : null,
     description: row.description,
     isEnabled: row.is_enabled,
     createdAt: row.created_at,
