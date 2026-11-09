@@ -14,7 +14,7 @@ checks against. Newer versions usually work, but pin a version you have tested.
 
 ## Requirements
 
-- A Crawlee Cloud API with MCP support (the release after v1.6.0).
+- Crawlee Cloud v1.7.0 or later.
 - **Node.js 22 or later** on the machine that runs the agent. The Apify server
   exits on older Node versions.
 - An API key (`cp_...`). Create one per agent: see [Security](#security).
