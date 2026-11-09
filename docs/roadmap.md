@@ -2,20 +2,14 @@
 
 A CLI-first platform for running large-scale scrapers on your own infrastructure.
 
-## Current Version: v1.6.0
+## Current Version: v1.7.0
 
-- Runner disk-pressure protection: claim gate at `RUNNER_DISK_CLAIM_MAX_PCT`, registry-scoped image eviction at `RUNNER_DISK_EVICT_PCT`, infra retry floor for pull failures
-- `GET /v2/datasets/:id/items` without `limit` streams the full dataset (Apify parity; was silently truncated to 100)
-- Community feedback funnels (issue templates, deployment reports, CLI post-push note) and a fixed npm publish pipeline
-- Safe actor force-deletion, SSRF loopback fixes, CI coverage floors (v1.5.0)
+- MCP support for AI agents: the stock Apify MCP server (`@apify/actors-mcp-server`) works unmodified through Apify API parity ([setup](./mcp.md))
+- `apify-client` parity: `/v2/actors` paths, `username~name` actor IDs, the Apify run-start body, `waitForFinish` long-polling, build input schemas and `builds/default`, `GET /v2/store`, dataset `fields`/`omit`/`desc`
+- Security: webhooks fire only for their owner's runs; actor version and build routes are user-scoped
+- Runner disk-pressure protection and full-dataset streaming on no-limit reads (v1.6.0)
 
-The 1.0 stability commitment (2026-06-06) is well behind us. The 1.x line has focused on production reliability (runner lifecycle races in v1.0.1, zombie-run reaping in v1.1.0, memory-aware placement in v1.2.0, disk-pressure protection in v1.6.0), cost visibility (v1.3.0–v1.4.0), and hardening (v1.5.0) — all additive, as the semver commitment requires.
-
----
-
-## Next release — Platform MCP, Phase 1 (merged, unreleased)
-
-AI agents (Claude Desktop, Claude Code, Cursor, …) can find, run and inspect actors on your instance through the stock Apify MCP server (`@apify/actors-mcp-server`) pointed at your API with `APIFY_API_BASE_URL` — no MCP server to run on the platform. Delivered as Apify API parity (epic [#106](https://github.com/crawlee-cloud/crawlee-cloud/issues/106)): `/v2/actors` alias, `username~name` actor IDs and user slugs, `waitForFinish` long-polling, the Apify run-start body contract, build `actorDefinition` (input schema uploaded by `crc push`), `builds/default`, `GET /v2/store`, and dataset `fields`/`omit`/`desc`. All 19 MCP e2e checks pass. Setup and limits: [MCP (AI agents)](./mcp.md).
+The 1.0 stability commitment (2026-06-06) is well behind us. The 1.x line has focused on production reliability (runner lifecycle races in v1.0.1, zombie-run reaping in v1.1.0, memory-aware placement in v1.2.0, disk-pressure protection in v1.6.0), cost visibility (v1.3.0–v1.4.0), hardening (v1.5.0), and Apify API parity for MCP agents (v1.7.0). Changes are additive, with one deliberate exception: where Crawlee Cloud deviated from Apify's documented behaviour, the deviation is treated as a bug and fixed in a minor release, as in v1.6.0 (dataset reads without `limit`) and v1.7.0 (its behaviour changes are listed at the top of the [1.7.0 changelog](../CHANGELOG.md)).
 
 ---
 
@@ -24,7 +18,7 @@ AI agents (Claude Desktop, Claude Code, Cursor, …) can find, run and inspect a
 Not committed to a version yet — each has an open discussion gathering input before implementation is scoped:
 
 - **Official Python actor support** — Python actors already run today (the runner is Docker-image-based, and `crc init`/`crc dev` handle Python templates); this makes it official with docs, curated templates, and SDK-compat verification. [Join the RFC →](https://github.com/orgs/crawlee-cloud/discussions/95)
-- **Platform MCP, Phases 2–3** — Phase 1 ships in the next release (above). Still open: **Phase 2**, a native Streamable-HTTP `/mcp` endpoint in the API, so agents connect by URL without running a local server; **Phase 3**, OAuth for MCP clients instead of pasting an API key. [Join the RFC →](https://github.com/orgs/crawlee-cloud/discussions/96)
+- **Platform MCP, Phases 2–3** — Phase 1 shipped in v1.7.0. Still open: **Phase 2**, a native Streamable-HTTP `/mcp` endpoint in the API, so agents connect by URL without running a local server; **Phase 3**, OAuth for MCP clients instead of pasting an API key. [Join the RFC →](https://github.com/orgs/crawlee-cloud/discussions/96)
 
 ---
 
@@ -166,7 +160,7 @@ The 0.9.x line was the run-up to 1.0. Highlights:
 
 The 1.0-launch PR was deliberately small (live dataset item counts on the runs grid + 5s auto-refresh + semantic-green success colour); most of the 1.0-worthy substance shipped across 0.9.x — see the patch-line summary above.
 
-### Deferred from the 1.0 push (status as of v1.6.0)
+### Deferred from the 1.0 push (status as of v1.7.0)
 
 The original 1.0 wish-list had more on it than shipped. Status of the deferred items:
 
@@ -175,7 +169,7 @@ The original 1.0 wish-list had more on it than shipped. Status of the deferred i
 | `packages/shared` workspace                             | `applyWebhookTemplate` engine is duplicated in api+runner with KEEP-IN-SYNC headers. Land before v2.0 to keep options open for breaking the engine API. |
 | Apify v2 API drift audit                                | Periodic compatibility check against current Apify, especially as their own surface evolves. Triggers v1.x minors as gaps are closed additively.        |
 | ~~Zombie RUNNING row reaper~~                           | ✅ Shipped in v1.1.0 — dedicated periodic reaper flips orphaned RUNNING rows past their own timeout to `TIMED-OUT`, with transactional webhook enqueue. |
-| DigitalOcean `listRunners` pagination                   | Provider's `per_page=100` with no iteration; deployments with >100 droplets silently underreport capacity. Still open as of v1.6.0.                     |
+| DigitalOcean `listRunners` pagination                   | Provider's `per_page=100` with no iteration; deployments with >100 droplets silently underreport capacity. Still open as of v1.7.0.                     |
 | Webhook `payload_template` examples in dashboard editor | Operators still consult Apify docs to discover `{{eventData}}` syntax. UX-only, no contract change — v1.x minor.                                        |
 | Auth/role surface tightening                            | Admin scopes, API key TTLs. Anything role-related that breaks tokens is a v2.0 candidate; anything additive can land in v1.x.                           |
 
@@ -230,6 +224,17 @@ The original 1.0 wish-list had more on it than shipped. Status of the deferred i
 - Infra retry floor: pull failures and missing-image errors retry on a small platform floor even when the actor's retries are disabled
 - `GET /v2/datasets/:id/items` with no `limit` streams the entire dataset (Apify parity); also fixes the dashboard's truncated dataset download
 - Community feedback funnels (issue templates, deployment report, CLI one-time post-push note); npm publish pipeline fixed (Node `^24.15.0` floor)
+
+---
+
+## v1.7.0 ✅ — Platform MCP Phase 1 & Apify API Parity (2026-11-09)
+
+AI agents (Claude Desktop, Claude Code, Cursor, …) can find, run and inspect actors on your instance through the stock Apify MCP server (`@apify/actors-mcp-server`) pointed at your API with `APIFY_API_BASE_URL` — no MCP server to run on the platform. Delivered as Apify API parity (epic [#106](https://github.com/crawlee-cloud/crawlee-cloud/issues/106)): `/v2/actors` alias, `username~name` actor IDs and user slugs, `waitForFinish` long-polling, the Apify run-start body contract, build `actorDefinition` (input schema uploaded by `crc push`), `builds/default`, `GET /v2/store`, and dataset `fields`/`omit`/`desc`. All 19 MCP e2e checks pass. Setup and limits: [MCP (AI agents)](./mcp.md).
+
+- Behaviour changes: `GET /v2/users/me` returns a username slug in `username` and the email in `email`; the run-start body is the actor input (the legacy `{ input, ... }` wrapper is kept as an extension); aborting a finished run returns 200; unknown routes return a `page-not-found` envelope
+- Security: webhooks fire only for their owner's runs; actor version and build routes are user-scoped (#77)
+- Reliability: the API no longer crashes when Postgres drops a pooled connection; a storage error mid-stream no longer crashes it either
+- One-way `users.username` migration (see the [CHANGELOG](../CHANGELOG.md))
 
 ---
 
