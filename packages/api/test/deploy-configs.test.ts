@@ -45,11 +45,30 @@ describe('DigitalOcean app specs', () => {
 describe('deploy/digitalocean/setup.sh', () => {
   const script = read('deploy/digitalocean/setup.sh');
 
-  it('generates the key once, and reuses one already in the environment on a re-run', () => {
-    const assignments = script.match(/^PROXY_ENCRYPTION_KEY=.*openssl.*$/gm);
-    expect(assignments).toEqual([
-      'PROXY_ENCRYPTION_KEY="${PROXY_ENCRYPTION_KEY:-$(openssl rand -hex 32)}"',
-    ]);
+  it('generates a key only when none is supplied, and exactly once', () => {
+    expect(script.match(/openssl rand -hex 32/g)).toHaveLength(2); // API_SECRET + this key
+    expect(script).toContain(
+      'PROXY_KEY_SUPPLIED=0\n    PROXY_ENCRYPTION_KEY=$(openssl rand -hex 32)'
+    );
+  });
+
+  it('refuses to hand an existing app a freshly generated key', () => {
+    // A new key makes every stored proxy credential undecryptable. The check
+    // must run before anything is created or written.
+    const guard = script.indexOf(
+      'if [[ -n "${EXISTING_APP_ID}" && "${PROXY_KEY_SUPPLIED}" != 1 ]]; then'
+    );
+    const spec = script.indexOf('cat > "${SPEC_FILE}" <<SPEC');
+    expect(guard).toBeGreaterThan(-1);
+    expect(spec).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(spec);
+    expect(script.slice(guard, spec)).toMatch(/exit 1\n/);
+  });
+
+  it('writes the app spec, which holds secrets, to an owner-only temp file removed on exit', () => {
+    expect(script).not.toContain('/tmp/crawlee-app-spec.yaml');
+    expect(script).toContain('SPEC_FILE=$(mktemp)');
+    expect(script).toContain(`trap 'rm -f "\${SPEC_FILE}"' EXIT`);
   });
 
   it('passes the key to the API in the app spec', () => {
@@ -69,30 +88,40 @@ describe('deploy/vps', () => {
   const script = read('deploy/vps/deploy.sh');
   const compose = read('deploy/vps/docker-compose.prod.yml');
 
-  it('generates the key exactly once', () => {
-    expect(script.match(/PROXY_ENCRYPTION_KEY=\$\(openssl rand -hex 32\)/g)).toHaveLength(1);
+  it('generates a new key only as a fallback, under a name Compose does not read', () => {
+    // Compose prefers a shell variable over .env. If the operator exported
+    // PROXY_ENCRYPTION_KEY, assigning a generated value to that same name
+    // would override the key preserved in .env.
+    expect(script).toContain(
+      'NEW_PROXY_ENCRYPTION_KEY="${PROXY_ENCRYPTION_KEY:-$(openssl rand -hex 32)}"\nunset PROXY_ENCRYPTION_KEY\n'
+    );
+    expect(script.match(/\$\(openssl rand -hex 32\)/g)).toHaveLength(1);
   });
 
   it('writes the key into a fresh .env', () => {
     expect(heredoc(script, 'cat > .env <<EOF', 'EOF')).toMatch(
-      /^PROXY_ENCRYPTION_KEY=\$\{PROXY_ENCRYPTION_KEY\}$/m
+      /^PROXY_ENCRYPTION_KEY=\$\{NEW_PROXY_ENCRYPTION_KEY\}$/m
     );
   });
 
-  it('keeps an existing .env on a re-run and only appends a missing key', () => {
+  it('keeps an existing .env on a re-run: appends a missing key, rejects a malformed one', () => {
     const guard = script.indexOf('if [[ -f .env ]]; then');
     const write = script.indexOf('cat > .env <<EOF');
     expect(guard).toBeGreaterThan(-1);
     // The overwrite must sit in the else branch of the guard.
     expect(guard).toBeLessThan(write);
-    expect(script.slice(guard, write)).toContain('else\n');
-    expect(script.slice(guard, write)).toContain(
-      "if ! grep -q '^PROXY_ENCRYPTION_KEY=' .env; then"
-    );
+    const branch = script.slice(guard, write);
+    expect(branch).toContain('else\n');
+    // Presence and validity are separate checks: an assignment that exists
+    // but is empty or malformed must stop the script, not get a second,
+    // overriding assignment appended after it.
+    expect(branch).toContain('if ! grep -Eq "${PROXY_KEY_ANY}" .env; then');
+    expect(branch).toContain('elif ! grep -Eq "${PROXY_KEY_VALID}" .env; then');
+    expect(branch).toMatch(/elif ! grep -Eq "\$\{PROXY_KEY_VALID\}" \.env; then\n[^]*?exit 1\n/);
     // printf with a leading newline: a hand-edited .env may not end in one,
     // and appending straight onto its last line would corrupt that secret.
-    expect(script.slice(guard, write)).toContain(
-      'printf \'\\nPROXY_ENCRYPTION_KEY=%s\\n\' "${PROXY_ENCRYPTION_KEY}" >> .env'
+    expect(branch).toContain(
+      'printf \'\\nPROXY_ENCRYPTION_KEY=%s\\n\' "${NEW_PROXY_ENCRYPTION_KEY}" >> .env'
     );
   });
 
@@ -100,10 +129,21 @@ describe('deploy/vps', () => {
     const migrate = script.indexOf(
       'docker compose -f docker-compose.prod.yml run --rm --build api node packages/api/dist/db/migrate.js'
     );
-    const up = script.indexOf('docker compose -f docker-compose.prod.yml up -d --build\n');
+    const up = script.indexOf(
+      'docker compose -f docker-compose.prod.yml up -d --build --remove-orphans\n'
+    );
     expect(migrate).toBeGreaterThan(-1);
     expect(up).toBeGreaterThan(-1);
     expect(migrate).toBeLessThan(up);
+  });
+
+  it('removes containers of services the compose file dropped (the old scheduler) on every update path', () => {
+    const readme = read('deploy/README.md');
+    for (const text of [script, readme]) {
+      const ups = text.match(/docker compose -f docker-compose\.prod\.yml up -d[^\n]*/g) ?? [];
+      expect(ups.length).toBeGreaterThan(0);
+      for (const up of ups) expect(up).toContain('--remove-orphans');
+    }
   });
 
   it('compose passes the same variable to api and runner', () => {
@@ -116,6 +156,29 @@ describe('deploy/vps', () => {
     expect(compose).toMatch(/\n {2}crawlee-network:\n {4}name: crawlee-prod-network\n/);
     expect(compose).toMatch(/^ {6}- DOCKER_NETWORK=crawlee-prod-network$/m);
     expect(compose).not.toContain('crawlee-prod_crawlee-network');
+  });
+
+  // Text from `  <name>:` up to the next top-level service (or section).
+  // Keeps the newline before the first key so every key matches as `\n    key:`.
+  const service = (name: string) =>
+    compose.match(
+      new RegExp(`\\n {2}${name}:(\\n[\\s\\S]*?)(?=\\n {2}[a-z-]+:\\n|\\n[a-z]+:\\n)`)
+    )?.[1] ?? '';
+
+  it('gives Caddy the DOMAIN its Caddyfile reads from its own environment', () => {
+    // .env only interpolates the compose file; without this the site address
+    // is empty and Caddy rejects the file ("unrecognized global option").
+    expect(read('deploy/vps/Caddyfile')).toContain('{$DOMAIN} {');
+    expect(service('caddy')).toMatch(/\n {4}environment:\n {6}- DOMAIN=\$\{DOMAIN\}\n/);
+  });
+
+  it('bakes the public API URL into the dashboard at build time', () => {
+    // Next.js inlines NEXT_PUBLIC_* during `next build`; a runtime-only value
+    // leaves the browser bundle on the http://localhost:3000 fallback.
+    expect(read('docker/Dockerfile.dashboard')).toContain('ARG NEXT_PUBLIC_API_URL');
+    expect(service('dashboard')).toMatch(
+      /\n {4}build:\n(?: {6}.*\n)*? {6}args:\n {8}- NEXT_PUBLIC_API_URL=https:\/\/\$\{DOMAIN\}\n/
+    );
   });
 });
 
@@ -135,13 +198,19 @@ describe('deploy/runner/deploy-runner.sh', () => {
     );
   });
 
-  it('removes a runner started under the old project name before starting the new one', () => {
+  it('rejects a malformed key at the prompt, before anything is changed', () => {
+    const check = script.indexOf('if [[ ! "${PROXY_ENCRYPTION_KEY}" =~ ^[0-9a-fA-F]{64}$ ]]; then');
+    const firstChange = script.indexOf('cat > deploy/runner/docker-compose.runner.yml <<COMPOSE');
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(firstChange);
+  });
+
+  it('removes a runner started under the old project name, and stops if that fails', () => {
     // Before the project name was pinned, the stack ran as project `runner`.
     // Left alone, that container (restart: unless-stopped) keeps claiming
-    // runs on the old image next to the new one.
-    const down = script.indexOf(
-      'docker compose -p runner -f docker-compose.runner.yml down 2>/dev/null || true'
-    );
+    // runs on the old image next to the new one. `down` exits 0 when there
+    // is nothing to remove, so a failure here is real and must abort.
+    const down = script.indexOf('docker compose -p runner -f docker-compose.runner.yml down\n');
     const up = script.indexOf('docker compose -f docker-compose.runner.yml up -d --build');
     expect(down).toBeGreaterThan(-1);
     expect(up).toBeGreaterThan(-1);

@@ -5,6 +5,10 @@ services:
 
   caddy:
     image: caddy:2-alpine
+    # The Caddyfile reads {$DOMAIN} from Caddy's own environment; .env alone
+    # only interpolates this file, so without this the site address is empty.
+    environment:
+      - DOMAIN=${DOMAIN}
     ports:
       - '80:80'
       - '443:443'
@@ -86,10 +90,13 @@ services:
     build:
       context: ../../
       dockerfile: docker/Dockerfile.dashboard
+      # Next.js inlines NEXT_PUBLIC_* into the browser bundle during the build,
+      # so the API URL must be a build arg; a runtime env var comes too late.
+      args:
+        - NEXT_PUBLIC_API_URL=https://${DOMAIN}
     environment:
       - NODE_ENV=production
       - PORT=3001
-      - NEXT_PUBLIC_API_URL=https://${DOMAIN}
     depends_on:
       - api
     networks:

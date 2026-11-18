@@ -293,7 +293,7 @@ Open `http://localhost:3001` in your browser and navigate to:
 Deploy the full stack on any VPS with a single command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/crawlee-cloud/crawlee-cloud/main/deploy/vps/deploy.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/crawlee-cloud/crawlee-cloud/main/deploy/vps/deploy.sh)
 ```
 
 ### DigitalOcean (Managed Infrastructure)

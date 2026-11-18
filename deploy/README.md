@@ -98,7 +98,7 @@ Deploys everything (API + Dashboard + Runner + databases) on a single VPS with a
 SSH into your server and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/crawlee-cloud/crawlee-cloud/main/deploy/vps/deploy.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/crawlee-cloud/crawlee-cloud/main/deploy/vps/deploy.sh)
 ```
 
 Or clone and run manually:
@@ -140,12 +140,14 @@ docker compose -f docker-compose.prod.yml restart
 # Stop
 docker compose -f docker-compose.prod.yml down
 
-# Update (migrate with the new image, then restart on it)
-cd /opt/crawlee-cloud && git pull
-cd deploy/vps
-docker compose -f docker-compose.prod.yml run --rm --build api node packages/api/dist/db/migrate.js
-docker compose -f docker-compose.prod.yml up -d --build
+# Update: migrate with the new image, then restart on it. Chained with &&
+# so a failed migration does not replace the running API.
+cd /opt/crawlee-cloud && git pull && cd deploy/vps \
+  && docker compose -f docker-compose.prod.yml run --rm --build api node packages/api/dist/db/migrate.js \
+  && docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
 ```
+
+> **Before the first update after v1.7.0:** `deploy/vps/.env` must contain `PROXY_ENCRYPTION_KEY` (exactly 64 hex characters). The API and the Runner do not start in production without it, and an `.env` written by an older installer does not have it. Check with `grep -c '^PROXY_ENCRYPTION_KEY=' /opt/crawlee-cloud/deploy/vps/.env`. If it prints `0`, add one line, `PROXY_ENCRYPTION_KEY=<value>`, using the key your install already runs with if you set one by hand, or a new one from `openssl rand -hex 32` otherwise. Re-running `deploy.sh` does this for you and keeps the rest of `.env` as it is. Never change the key once proxy passwords are stored: they are encrypted with it.
 
 ## Connecting a Runner (required for PaaS deployments)
 
@@ -168,7 +170,7 @@ Before starting, grab these 5 values from your PaaS dashboard:
 SSH into your VPS and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/crawlee-cloud/crawlee-cloud/main/deploy/runner/deploy-runner.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/crawlee-cloud/crawlee-cloud/main/deploy/runner/deploy-runner.sh)
 ```
 
 The script will prompt for the 5 values above, install Docker if needed, and start the Runner.

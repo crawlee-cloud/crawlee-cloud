@@ -48,8 +48,8 @@ if [[ -z "${REDIS_URL}" ]]; then
 fi
 
 read -rp "Proxy encryption key (PROXY_ENCRYPTION_KEY from your API service): " PROXY_ENCRYPTION_KEY
-if [[ -z "${PROXY_ENCRYPTION_KEY}" ]]; then
-    echo "Error: PROXY_ENCRYPTION_KEY is required. It must be the same 64-hex-character value the API uses."
+if [[ ! "${PROXY_ENCRYPTION_KEY}" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    echo "Error: PROXY_ENCRYPTION_KEY must be exactly 64 hex characters - the same value the API uses."
     exit 1
 fi
 
@@ -140,8 +140,9 @@ echo "Building and starting Runner..."
 cd deploy/runner
 # Earlier versions of this script ran the stack as Compose project `runner`
 # (the directory name). Remove that runner first, or it keeps claiming runs
-# on its old image next to the new one. A no-op on a fresh install.
-docker compose -p runner -f docker-compose.runner.yml down 2>/dev/null || true
+# on its old image next to the new one. `down` exits 0 when there is nothing
+# to remove, so a failure here is real: stop, not start a second runner.
+docker compose -p runner -f docker-compose.runner.yml down
 docker compose -f docker-compose.runner.yml up -d --build
 
 echo ""

@@ -47,7 +47,17 @@ S3_ACCESS_KEY=$(openssl rand -hex 16)
 S3_SECRET_KEY=$(openssl rand -base64 32 | tr -d '\n/+=')
 ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '\n/+=')
 # Shared by the API and the runner: both encrypt/decrypt the same proxy columns.
-PROXY_ENCRYPTION_KEY=$(openssl rand -hex 32)
+# Used only when .env has no key yet. It is held under a different name and
+# PROXY_ENCRYPTION_KEY is unset, because Compose prefers a shell variable
+# over .env: an exported or freshly assigned value here would override the
+# key an existing install keeps in .env. A key the operator exported is
+# honoured as the fallback instead of generating one.
+NEW_PROXY_ENCRYPTION_KEY="${PROXY_ENCRYPTION_KEY:-$(openssl rand -hex 32)}"
+unset PROXY_ENCRYPTION_KEY
+# An assignment of the key in .env, in any spelling Compose accepts…
+PROXY_KEY_ANY='^[[:space:]]*(export[[:space:]]+)?PROXY_ENCRYPTION_KEY[[:space:]]*='
+# …and one whose value is what the API and runner require: 64 hex characters.
+PROXY_KEY_VALID="${PROXY_KEY_ANY}[[:space:]]*[\"']?[0-9a-fA-F]{64}[\"']?[[:space:]]*\$"
 
 echo "Credentials generated."
 echo ""
@@ -101,10 +111,17 @@ if [[ -f .env ]]; then
     # password) and make stored proxy credentials undecryptable.
     echo "Existing configuration found at ${INSTALL_DIR}/deploy/vps/.env - keeping it."
     echo "The domain and admin email entered above are ignored; edit .env to change them."
-    if ! grep -q '^PROXY_ENCRYPTION_KEY=' .env; then
+    if ! grep -Eq "${PROXY_KEY_ANY}" .env; then
         # Leading newline: a hand-edited .env may not end in one.
-        printf '\nPROXY_ENCRYPTION_KEY=%s\n' "${PROXY_ENCRYPTION_KEY}" >> .env
+        printf '\nPROXY_ENCRYPTION_KEY=%s\n' "${NEW_PROXY_ENCRYPTION_KEY}" >> .env
         echo "Added PROXY_ENCRYPTION_KEY (the API and runner require it in production)."
+    elif ! grep -Eq "${PROXY_KEY_VALID}" .env; then
+        # Do not append a second assignment: the later one would win, and if
+        # the first was ever in use its proxy credentials become undecryptable.
+        echo "Error: PROXY_ENCRYPTION_KEY in ${INSTALL_DIR}/deploy/vps/.env is empty or is not"
+        echo "exactly 64 hex characters. Fix that line by hand (openssl rand -hex 32 makes a"
+        echo "new key; only use a new one if no proxy passwords are stored yet), then re-run."
+        exit 1
     fi
     ADMIN_PASSWORD="(unchanged - see ${INSTALL_DIR}/deploy/vps/.env)"
 else
@@ -120,7 +137,7 @@ ADMIN_EMAIL=${ADMIN_EMAIL}
 ADMIN_PASSWORD=${ADMIN_PASSWORD}
 
 API_SECRET=${API_SECRET}
-PROXY_ENCRYPTION_KEY=${PROXY_ENCRYPTION_KEY}
+PROXY_ENCRYPTION_KEY=${NEW_PROXY_ENCRYPTION_KEY}
 
 DB_USER=${DB_USER}
 DB_PASSWORD=${DB_PASSWORD}
@@ -149,7 +166,9 @@ echo "Running database migrations..."
 docker compose -f docker-compose.prod.yml run --rm --build api node packages/api/dist/db/migrate.js </dev/null
 
 echo "Starting Crawlee Cloud services..."
-docker compose -f docker-compose.prod.yml up -d --build
+# --remove-orphans drops containers of services this file no longer defines,
+# e.g. the old `scheduler`, which would otherwise restart-loop forever.
+docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
 
 echo ""
 echo "Waiting for services to initialize..."
@@ -199,7 +218,7 @@ echo ""
 echo "  Update to latest version:"
 echo "    cd ${INSTALL_DIR} && git pull && cd deploy/vps \\"
 echo "      && docker compose -f docker-compose.prod.yml run --rm --build api node packages/api/dist/db/migrate.js \\"
-echo "      && docker compose -f docker-compose.prod.yml up -d --build"
+echo "      && docker compose -f docker-compose.prod.yml up -d --build --remove-orphans"
 echo ""
 echo "  Restart services:"
 echo "    cd ${INSTALL_DIR}/deploy/vps && docker compose -f docker-compose.prod.yml restart"
