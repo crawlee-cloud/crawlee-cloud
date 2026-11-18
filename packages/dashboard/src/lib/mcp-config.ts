@@ -18,6 +18,23 @@ const BASE_TOOLS = ['actors', 'runs', 'storage', 'get-actor-list'];
 /** Shown instead of a key: the block is meant to be copied and shared. */
 export const MCP_TOKEN_PLACEHOLDER = '<your cp_ API key>';
 
+/**
+ * An agent's machine needs an absolute URL. NEXT_PUBLIC_API_URL is normally
+ * absolute already; a relative value (API under the dashboard's own origin)
+ * is resolved against the document base, as the API client's fetch() is.
+ * Without a document base (server render, hydration) the raw value is
+ * returned, so both renders agree; an unparseable value is also returned
+ * as-is rather than breaking the page.
+ */
+export function resolveApiBase(apiBase: string, documentBase?: string): string {
+  if (/^https?:\/\//i.test(apiBase) || !documentBase) return apiBase;
+  try {
+    return new URL(apiBase, documentBase).toString();
+  } catch {
+    return apiBase;
+  }
+}
+
 /** The Apify MCP server wants the origin without the `/v2` API prefix. */
 function normaliseBaseUrl(url: string): string {
   return url.trim().replace(/\/+$/, '').replace(/\/v2$/, '').replace(/\/+$/, '');

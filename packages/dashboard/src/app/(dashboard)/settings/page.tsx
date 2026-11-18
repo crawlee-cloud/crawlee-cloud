@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import {
   AlertCircle,
   Bot,
@@ -32,23 +32,31 @@ import {
   type SystemInfo,
   type User,
 } from '@/lib/api';
-import { buildMcpConfig } from '@/lib/mcp-config';
+import { buildMcpConfig, resolveApiBase } from '@/lib/mcp-config';
 import { cn } from '@/lib/utils';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
+// Same fallback as the API client (lib/api.ts), so the URL shown here is
+// the one the dashboard itself calls.
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
+
+const noSubscribe = () => () => {};
 
 /**
- * An agent's machine needs an absolute URL. NEXT_PUBLIC_API_URL is normally
- * absolute already; a relative value (API served under the dashboard's own
- * origin) is resolved against the page's origin once we are in the browser.
+ * document.baseURI after hydration, undefined during the server render and
+ * the hydration pass. Reading it during render directly would make the two
+ * disagree (a hydration mismatch) whenever API_BASE is relative.
  */
-function absoluteApiBase(): string {
-  if (/^https?:\/\//.test(API_BASE) || typeof window === 'undefined') return API_BASE;
-  return new URL(API_BASE, window.location.origin).toString();
+function useDocumentBase(): string | undefined {
+  return useSyncExternalStore(
+    noSubscribe,
+    () => document.baseURI,
+    () => undefined
+  );
 }
 
 export default function SettingsPage() {
   const confirm = useConfirm();
+  const apiBase = resolveApiBase(API_BASE, useDocumentBase());
   const toast = useToast();
 
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
@@ -182,7 +190,7 @@ export default function SettingsPage() {
     }
   }
 
-  const mcpConfig = buildMcpConfig({ apiBaseUrl: absoluteApiBase() });
+  const mcpConfig = buildMcpConfig({ apiBaseUrl: apiBase });
 
   return (
     <div className="space-y-8 max-w-4xl">
@@ -246,14 +254,14 @@ export default function SettingsPage() {
           <Field label="API base URL">
             <div className="flex gap-2">
               <input
-                value={API_BASE}
+                value={apiBase}
                 readOnly
                 onClick={(e) => e.currentTarget.select()}
                 className="flex-1 h-9 px-3 rounded-sm border border-border bg-input font-mono text-[12px] text-foreground"
               />
               <button
                 type="button"
-                onClick={() => void copy(API_BASE, 'Base URL')}
+                onClick={() => void copy(apiBase, 'Base URL')}
                 title="Copy"
                 className="h-9 w-9 grid place-items-center border border-border rounded-sm text-muted-foreground hover:text-foreground hover:border-signal/40"
               >

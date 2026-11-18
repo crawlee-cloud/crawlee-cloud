@@ -8,7 +8,7 @@
  * telemetry to Apify must be off, and a real token must never be embedded.
  */
 import { describe, expect, it } from 'vitest';
-import { buildMcpConfig } from '@/lib/mcp-config';
+import { buildMcpConfig, resolveApiBase } from '@/lib/mcp-config';
 
 interface McpServer {
   command: string;
@@ -71,5 +71,29 @@ describe('buildMcpConfig', () => {
       'APIFY_TOKEN',
       'TELEMETRY_ENABLED',
     ]);
+  });
+});
+
+describe('resolveApiBase', () => {
+  it('returns an absolute URL unchanged, with or without a document base', () => {
+    expect(resolveApiBase('https://api.x.com')).toBe('https://api.x.com');
+    expect(resolveApiBase('https://api.x.com', 'https://dash.x.com/settings')).toBe(
+      'https://api.x.com'
+    );
+  });
+
+  // Server render and the hydration pass have no document base, so they
+  // must agree on the raw value; only the post-hydration render resolves it.
+  it('returns a relative value unchanged until a document base is known', () => {
+    expect(resolveApiBase('/api')).toBe('/api');
+  });
+
+  it('resolves a relative value against the document base, as fetch() does', () => {
+    expect(resolveApiBase('/api', 'https://x.com/app/settings')).toBe('https://x.com/api');
+    expect(resolveApiBase('api', 'https://x.com/app/settings')).toBe('https://x.com/app/api');
+  });
+
+  it('keeps the raw value when it cannot be resolved instead of throwing', () => {
+    expect(resolveApiBase('//[bad', 'https://x.com/')).toBe('//[bad');
   });
 });
