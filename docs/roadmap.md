@@ -43,13 +43,13 @@ Not committed to a version yet — each has an open discussion gathering input b
 
 ## v0.3.0 ✅ — Production Scraping at Scale
 
-| Feature         | Status                                            |
-| --------------- | ------------------------------------------------- |
-| Cron scheduling | ✅ Shipped — schedules table + scheduler service  |
-| Retry policies  | ✅ Shipped — configurable max retries and backoff |
-| Run timeouts    | ✅ Shipped — container timeout enforcement        |
-| Webhooks        | ✅ Shipped — webhook deliveries with retry logic  |
-| Resource limits | ✅ Shipped — memory limits per container          |
+| Feature         | Status                                              |
+| --------------- | --------------------------------------------------- |
+| Cron scheduling | ✅ Shipped — schedules table + in-process scheduler |
+| Retry policies  | ✅ Shipped — configurable max retries and backoff   |
+| Run timeouts    | ✅ Shipped — container timeout enforcement          |
+| Webhooks        | ✅ Shipped — webhook deliveries with retry logic    |
+| Resource limits | ✅ Shipped — memory limits per container            |
 
 ## v0.4.0 ✅ — Reliability & Operations
 

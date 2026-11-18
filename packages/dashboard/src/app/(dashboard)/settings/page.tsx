@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   AlertCircle,
+  Bot,
   CheckCircle2,
   Copy,
   Eye,
@@ -31,9 +32,20 @@ import {
   type SystemInfo,
   type User,
 } from '@/lib/api';
+import { buildMcpConfig } from '@/lib/mcp-config';
 import { cn } from '@/lib/utils';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
+
+/**
+ * An agent's machine needs an absolute URL. NEXT_PUBLIC_API_URL is normally
+ * absolute already; a relative value (API served under the dashboard's own
+ * origin) is resolved against the page's origin once we are in the browser.
+ */
+function absoluteApiBase(): string {
+  if (/^https?:\/\//.test(API_BASE) || typeof window === 'undefined') return API_BASE;
+  return new URL(API_BASE, window.location.origin).toString();
+}
 
 export default function SettingsPage() {
   const confirm = useConfirm();
@@ -169,6 +181,8 @@ export default function SettingsPage() {
       toast.error('Copy failed');
     }
   }
+
+  const mcpConfig = buildMcpConfig({ apiBaseUrl: absoluteApiBase() });
 
   return (
     <div className="space-y-8 max-w-4xl">
@@ -402,6 +416,47 @@ export default function SettingsPage() {
                   ))}
               </ul>
             )}
+          </div>
+        </div>
+      </section>
+
+      {/* MCP */}
+      <section className="panel">
+        <header className="px-5 py-4 border-b border-border flex items-center gap-3">
+          <Bot className="h-4 w-4 text-signal" />
+          <div>
+            <p className="eyebrow">AGENTS · MCP</p>
+            <h2 className="text-[15px] mt-1">Connect an AI agent (MCP)</h2>
+          </div>
+        </header>
+
+        <div className="p-5 space-y-3">
+          <p className="text-[12px] text-muted-foreground">
+            Paste into your MCP client&apos;s config and replace the token with an API key. Needs
+            Node.js 22 on the agent&apos;s machine.
+            {user?.username &&
+              ` To expose an actor as its own tool, append ${user.username}/actor-name to the --tools list.`}{' '}
+            <a
+              href="https://crawlee.cloud/docs/mcp"
+              target="_blank"
+              rel="noreferrer"
+              className="underline hover:text-foreground"
+            >
+              MCP guide
+            </a>
+          </p>
+          <div className="relative">
+            <pre className="p-3 pr-12 rounded-sm border border-border bg-input font-mono text-[12px] text-foreground overflow-x-auto">
+              {mcpConfig}
+            </pre>
+            <button
+              type="button"
+              onClick={() => void copy(mcpConfig, 'MCP config')}
+              title="Copy"
+              className="absolute top-2 right-2 h-8 w-8 grid place-items-center border border-border rounded-sm text-muted-foreground hover:text-foreground hover:border-signal/40"
+            >
+              <Copy className="h-3.5 w-3.5" />
+            </button>
           </div>
         </div>
       </section>

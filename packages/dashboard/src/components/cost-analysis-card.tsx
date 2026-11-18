@@ -3,14 +3,10 @@
 import { useEffect, useState } from 'react';
 import { DollarSign, Info } from 'lucide-react';
 import { getRunCost, type Run, type RunCost } from '@/lib/api';
+import { formatCostShare, money, showsSavings } from '@/lib/cost-share';
+import { CopyButton } from '@/components/ui/copy-button';
 
 const TERMINAL = new Set<Run['status']>(['SUCCEEDED', 'FAILED', 'TIMED-OUT', 'ABORTED']);
-
-/** $1,234.56 above a cent; 4 decimals below so tiny run costs stay legible. */
-function money(v: number): string {
-  if (v === 0) return '$0.00';
-  return v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`;
-}
 
 /**
  * Self-fetching cost breakdown for a finished run: what it actually cost to
@@ -48,12 +44,17 @@ export function CostAnalysisCard({ runId, status }: { runId: string; status: Run
   const selfHosted = cost.inputs.runnerProvider === 'local-docker';
   const recorded = cost.yourCostUsd !== null;
   const showPer1k = cost.itemCount > 0;
+  const shareText = formatCostShare(cost);
 
   return (
     <section className="panel p-5">
-      <p className="eyebrow flex items-center gap-1.5 mb-4">
-        <DollarSign className="h-3 w-3" /> COST · ANALYSIS
-      </p>
+      <div className="flex items-center justify-between mb-4">
+        <p className="eyebrow flex items-center gap-1.5">
+          <DollarSign className="h-3 w-3" /> COST · ANALYSIS
+        </p>
+        {/* Markdown with both figures and their caveats; absent when no cost was recorded. */}
+        {shareText && <CopyButton value={shareText} label="Cost summary" variant="button" />}
+      </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
         <div>
@@ -84,12 +85,11 @@ export function CostAnalysisCard({ runId, status }: { runId: string; status: Run
           )}
         </div>
 
-        {cost.savingsPct !== null && (
+        {/* No tile for an unpriced runner: "saved 100%" against an unknown cost is not a saving. */}
+        {showsSavings(cost) && (
           <div>
             <p className="eyebrow mb-1">You saved</p>
-            <p className="text-[13px] font-medium text-ok tnum">
-              {selfHosted ? '100% (self-hosted)' : `${cost.savingsPct}%`}
-            </p>
+            <p className="text-[13px] font-medium text-ok tnum">{cost.savingsPct}%</p>
           </div>
         )}
       </div>
@@ -100,7 +100,7 @@ export function CostAnalysisCard({ runId, status }: { runId: string; status: Run
           {recorded && !selfHosted && cost.inputs.runnerPriceHourly !== null
             ? `Shared a $${cost.inputs.runnerPriceHourly}/hr droplet with ${cost.inputs.overlappingRuns} other run${cost.inputs.overlappingRuns === 1 ? '' : 's'}. Idle droplet time is not attributed to runs. `
             : recorded
-              ? 'Ran on your own machine — no droplet cost. '
+              ? 'Self-hosted runner — no runner price was recorded for it. '
               : 'Infrastructure cost was not recorded for this run. '}
           Apify estimate at ${cost.inputs.apifyCuPrice}/CU ({cost.inputs.computeUnits.toFixed(2)}{' '}
           compute units).

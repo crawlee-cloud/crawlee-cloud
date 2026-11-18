@@ -22,6 +22,8 @@ Crawlee Cloud lets you run your Crawlee and Apify Actors on your own infrastruct
 - [Dashboard](./dashboard.md) — Web interface
 - [Runner](./runner.md) — Container execution engine
 - [Apify API Compatibility](./apify-compatibility.md) — Where the API matches Apify, and where it differs
+- [Cost comparison](./cost-comparison.md) — How the per-run cost and the Apify estimate are computed, and what each leaves out
+- ["Runs on Crawlee Cloud" badge](./badge.md) — A README badge for Actors that run on a self-hosted instance
 
 ## Quick Links
 

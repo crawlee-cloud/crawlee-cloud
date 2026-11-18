@@ -16,6 +16,8 @@ Choose your deployment method:
 >
 > **Render:** known gap — the blueprint's `REDIS_URL` references a `crawlee-redis` service that `render.yaml` does not define (consistent with the "not yet verified" status in the main README).
 
+> **DigitalOcean:** the deploy form asks for two secrets the API will not start without: `API_SECRET` (32 or more characters) and `PROXY_ENCRYPTION_KEY` (exactly 64 hex characters; generate one with `openssl rand -hex 32`). Keep the `PROXY_ENCRYPTION_KEY` value: the Runner in Step 2 needs the same one.
+
 **Step 2:** Connect a Runner on a $5 VPS so Actors can execute. See [Connecting a Runner](#connecting-a-runner-required-for-paas-deployments) below.
 
 > **Why two steps?** The Runner needs Docker socket access to spawn Actor containers, which PaaS platforms don't provide. A cheap VPS ($5/month) handles this perfectly.
@@ -138,9 +140,11 @@ docker compose -f docker-compose.prod.yml restart
 # Stop
 docker compose -f docker-compose.prod.yml down
 
-# Update
+# Update (migrate with the new image, then restart on it)
 cd /opt/crawlee-cloud && git pull
-cd deploy/vps && docker compose -f docker-compose.prod.yml up -d --build
+cd deploy/vps
+docker compose -f docker-compose.prod.yml run --rm --build api node packages/api/dist/db/migrate.js
+docker compose -f docker-compose.prod.yml up -d --build
 ```
 
 ## Connecting a Runner (required for PaaS deployments)
@@ -149,14 +153,15 @@ PaaS platforms (Railway, Render, DO) can't run Actors because they don't provide
 
 ### What you need from your PaaS deployment
 
-Before starting, grab these 4 values from your PaaS dashboard:
+Before starting, grab these 5 values from your PaaS dashboard:
 
-| Value            | Where to find it                                                                     |
-| ---------------- | ------------------------------------------------------------------------------------ |
-| **API URL**      | Your deployed API service URL (e.g. `https://crawlee-api-production.up.railway.app`) |
-| **API Secret**   | The `API_SECRET` environment variable in your API service                            |
-| **Database URL** | The `DATABASE_URL` from your managed PostgreSQL addon                                |
-| **Redis URL**    | The `REDIS_URL` from your managed Redis addon                                        |
+| Value                    | Where to find it                                                                                                                 |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| **API URL**              | Your deployed API service URL (e.g. `https://crawlee-api-production.up.railway.app`)                                             |
+| **API Secret**           | The `API_SECRET` environment variable in your API service                                                                        |
+| **Database URL**         | The `DATABASE_URL` from your managed PostgreSQL addon                                                                            |
+| **Redis URL**            | The `REDIS_URL` from your managed Redis addon                                                                                    |
+| **Proxy encryption key** | The `PROXY_ENCRYPTION_KEY` environment variable in your API service. The Runner must use the same value, or it exits at startup. |
 
 ### Quick setup (recommended)
 
@@ -166,7 +171,7 @@ SSH into your VPS and run:
 curl -fsSL https://raw.githubusercontent.com/crawlee-cloud/crawlee-cloud/main/deploy/runner/deploy-runner.sh | bash
 ```
 
-The script will prompt for the 4 values above, install Docker if needed, and start the Runner.
+The script will prompt for the 5 values above, install Docker if needed, and start the Runner.
 
 ### Manual setup
 

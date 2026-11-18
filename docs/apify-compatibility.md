@@ -191,6 +191,8 @@ against a live deployment.
 
 ## Client SDK compat
 
+A nightly workflow ([`compat-nightly.yml`](https://github.com/crawlee-cloud/crawlee-cloud/actions/workflows/compat-nightly.yml)) runs the integration suite against the newest published `apify-client` rather than the pinned one. A red run there means a new client release does something this API does not handle yet; it does not mean the current release is broken with the client version it was tested against.
+
 | Gap                                           | Status        | Notes                                                                                                                                                                                                                                              |
 | --------------------------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `apify-client` SDK pointed via `baseUrl`      | PARTIAL       | Integration tests cover `apify-client` 2.25 for actor get/list/update, `username/name` lookup, `start`/`call` input, `waitForFinish`, default builds and `store().list()`. Methods for tasks, schedules and public-store features are not covered. |

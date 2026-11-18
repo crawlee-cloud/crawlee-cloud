@@ -21,18 +21,13 @@ The fastest way to get the full stack running:
 git clone https://github.com/crawlee-cloud/crawlee-cloud.git
 cd crawlee-cloud
 
-# Start everything
-docker compose up -d
-
-# Run database migrations (they do not run automatically on startup)
-docker compose exec api node packages/api/dist/db/migrate.js
+# Start everything (the API container runs database migrations on startup)
+docker compose up -d --build
 ```
 
 > **Important:** The stock `docker-compose.yml` does **not** read a `.env` file — it hard-codes dev admin credentials (`ADMIN_EMAIL=admin@crawlee.cloud`, `ADMIN_PASSWORD=crawlee.cloud`), so that is the login for this flow. Setting `ADMIN_EMAIL` / `ADMIN_PASSWORD` in `.env` applies to the non-Docker flow below and to `deploy/vps/docker-compose.prod.yml` (which does substitute `${ADMIN_EMAIL}`). Note that `.env.example` does not include `ADMIN_EMAIL`, `ADMIN_PASSWORD`, or `CORS_ORIGINS` — add these keys yourself where needed.
 
-> **Note:** The stock compose file sets `DOCKER_NETWORK=crawlee-platfrom_crawlee-network` for the Runner, which only matches if the checkout directory is named `crawlee-platfrom`. If you cloned into a differently named directory, adjust that value to `<your-directory>_crawlee-network`.
-
-This brings up the full stack — API, Runner, Dashboard, Scheduler, PostgreSQL, Redis, and MinIO (which creates the storage bucket on first start). Once running:
+This brings up the full stack — API (which also runs the cron scheduler), Runner, Dashboard, PostgreSQL, Redis, and MinIO (which creates the storage bucket on first start). Once running:
 
 - **Dashboard:** `http://localhost:3001` — monitor runs, view datasets, manage Actors
 - **API:** `http://localhost:3000`
@@ -72,18 +67,17 @@ docker compose up -d
 
 This starts:
 
-- API Server (port 3000)
+- API Server (port 3000), which also runs the cron scheduler
 - Runner
 - Dashboard (port 3001)
-- Scheduler
 - PostgreSQL
 - Redis
 - MinIO (which creates the storage bucket on first start)
 
-Database migrations do **not** run automatically on startup — run them once after the containers are up:
+With the stock `docker-compose.yml`, the API container runs the database migrations each time it starts. The production Compose file (`deploy/vps/docker-compose.prod.yml`) does not: `deploy/vps/deploy.sh` runs them once before starting the stack, and after an upgrade you run them yourself:
 
 ```bash
-docker compose exec api node packages/api/dist/db/migrate.js
+docker compose -f docker-compose.prod.yml run --rm --build api node packages/api/dist/db/migrate.js
 ```
 
 If you are running from source outside Docker, run `npm run db:migrate` instead before starting the server.
@@ -192,10 +186,16 @@ The database schema is out of date. Run migrations:
 npm run db:migrate
 ```
 
-If you are using Docker Compose, run the migrations inside the API container:
+With the stock `docker-compose.yml`, the API container migrates each time it starts, so restarting it is enough:
 
 ```bash
-docker compose exec api node packages/api/dist/db/migrate.js
+docker compose restart api
+```
+
+With the production Compose file (`deploy/vps/docker-compose.prod.yml`), run the migration yourself:
+
+```bash
+docker compose -f docker-compose.prod.yml run --rm --build api node packages/api/dist/db/migrate.js
 ```
 
 ### Actor runs fail with "401 Invalid token"

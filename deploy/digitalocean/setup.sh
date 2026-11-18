@@ -54,6 +54,11 @@ ADMIN_EMAIL="${ADMIN_EMAIL:-admin@crawlee.cloud}"
 
 ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '\n/+=')
 API_SECRET=$(openssl rand -hex 32)
+# Shared by the API and the runner: both encrypt/decrypt the same proxy columns.
+# Re-running against an existing app? Export the key that app already uses
+# first (PROXY_ENCRYPTION_KEY=<64 hex>); a new key makes stored proxy
+# credentials undecryptable.
+PROXY_ENCRYPTION_KEY="${PROXY_ENCRYPTION_KEY:-$(openssl rand -hex 32)}"
 
 # Find SSH key
 echo ""
@@ -181,6 +186,9 @@ services:
       - key: API_SECRET
         type: SECRET
         value: "${API_SECRET}"
+      - key: PROXY_ENCRYPTION_KEY
+        type: SECRET
+        value: "${PROXY_ENCRYPTION_KEY}"
       - key: ADMIN_EMAIL
         value: "${ADMIN_EMAIL}"
       - key: ADMIN_PASSWORD
@@ -335,6 +343,7 @@ DATABASE_URL=${PG_URI}
 REDIS_URL=${REDIS_URI}
 API_BASE_URL=${APP_URL}
 DOCKER_NETWORK=bridge
+PROXY_ENCRYPTION_KEY=${PROXY_ENCRYPTION_KEY}
 MAX_CONCURRENT_RUNS=${MAX_RUNS}
 DEFAULT_MEMORY_MB=1024
 DEFAULT_TIMEOUT_SECS=3600

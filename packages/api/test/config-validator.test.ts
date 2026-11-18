@@ -5,6 +5,8 @@
  * mutable config mock.)
  */
 
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const mockConfig = vi.hoisted(() => ({
@@ -120,4 +122,37 @@ describe('enforceSecurityConfig', () => {
     mockConfig.corsOrigins = '';
     expect(() => enforceSecurityConfig()).not.toThrow();
   });
+});
+
+/**
+ * The DigitalOcean one-click specs ship placeholders the operator must
+ * replace in the deploy form. Left as-is, the API must refuse to start with
+ * a message that says what is wrong — not boot with a guessable secret.
+ * The placeholder strings are read from the specs so the two cannot drift.
+ */
+describe('DigitalOcean one-click placeholders', () => {
+  const placeholder = (file: string, key: string): string => {
+    const spec = readFileSync(fileURLToPath(new URL(`../../../${file}`, import.meta.url)), 'utf8');
+    const match = new RegExp(`- key: ${key}\\n\\s+type: SECRET\\n\\s+value: (\\S+)`).exec(spec);
+    if (!match) throw new Error(`${key} not found in ${file}`);
+    return match[1];
+  };
+
+  it.each(['.do/deploy.template.yaml', 'deploy/digitalocean/app.yaml'])(
+    '%s: unreplaced placeholders are rejected in production with clear messages',
+    (file) => {
+      mockConfig.nodeEnv = 'production';
+      mockConfig.apiSecret = placeholder(file, 'API_SECRET');
+      process.env.PROXY_ENCRYPTION_KEY = placeholder(file, 'PROXY_ENCRYPTION_KEY');
+
+      const result = validateSecurityConfig();
+
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContain(
+        'PROXY_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes)'
+      );
+      expect(result.errors.some((e) => e.startsWith('API_SECRET is too short'))).toBe(true);
+      expect(() => enforceSecurityConfig()).toThrow(/Cannot start in production/);
+    }
+  );
 });

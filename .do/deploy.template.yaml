@@ -51,7 +51,12 @@ spec:
           value: 'false'
         - key: API_SECRET
           type: SECRET
-          value: REPLACE_ME
+          value: REPLACE_WITH_32_PLUS_CHARS
+        # 64 hex chars (openssl rand -hex 32). Required in production; the
+        # runner must be given the same value.
+        - key: PROXY_ENCRYPTION_KEY
+          type: SECRET
+          value: REPLACE_WITH_64_HEX_CHARS
         - key: ADMIN_EMAIL
           value: admin@crawlee.cloud
         - key: ADMIN_PASSWORD

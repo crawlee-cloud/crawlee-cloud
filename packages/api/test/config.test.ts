@@ -138,3 +138,17 @@ describe('config — retention validation', () => {
     expect(config.retentionCron).toBe('*/15 * * * *');
   });
 });
+
+describe('config — run cost analysis', () => {
+  it('defaults APIFY_CU_PRICE to the Apify Starter rate of $0.20', async () => {
+    delete process.env.APIFY_CU_PRICE;
+    const { config } = await import('../src/config.js');
+    expect(config.apifyCuPrice).toBe(0.2);
+  });
+
+  it('reads APIFY_CU_PRICE when set', async () => {
+    process.env.APIFY_CU_PRICE = '0.16';
+    const { config } = await import('../src/config.js');
+    expect(config.apifyCuPrice).toBe(0.16);
+  });
+});

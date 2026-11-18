@@ -46,6 +46,8 @@ REDIS_PASSWORD=$(openssl rand -base64 24 | tr -d '\n/+=')
 S3_ACCESS_KEY=$(openssl rand -hex 16)
 S3_SECRET_KEY=$(openssl rand -base64 32 | tr -d '\n/+=')
 ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '\n/+=')
+# Shared by the API and the runner: both encrypt/decrypt the same proxy columns.
+PROXY_ENCRYPTION_KEY=$(openssl rand -hex 32)
 
 echo "Credentials generated."
 echo ""
@@ -93,7 +95,20 @@ echo ""
 # -------------------------------------------
 cd "${INSTALL_DIR}/deploy/vps"
 
-echo "Writing configuration to ${INSTALL_DIR}/deploy/vps/.env ..."
+if [[ -f .env ]]; then
+    # Re-run on an existing install. Regenerating secrets here would lock the
+    # stack out of its own database (the postgres volume keeps the old
+    # password) and make stored proxy credentials undecryptable.
+    echo "Existing configuration found at ${INSTALL_DIR}/deploy/vps/.env - keeping it."
+    echo "The domain and admin email entered above are ignored; edit .env to change them."
+    if ! grep -q '^PROXY_ENCRYPTION_KEY=' .env; then
+        # Leading newline: a hand-edited .env may not end in one.
+        printf '\nPROXY_ENCRYPTION_KEY=%s\n' "${PROXY_ENCRYPTION_KEY}" >> .env
+        echo "Added PROXY_ENCRYPTION_KEY (the API and runner require it in production)."
+    fi
+    ADMIN_PASSWORD="(unchanged - see ${INSTALL_DIR}/deploy/vps/.env)"
+else
+    echo "Writing configuration to ${INSTALL_DIR}/deploy/vps/.env ..."
 
 cat > .env <<EOF
 # Crawlee Cloud - Production Configuration
@@ -105,6 +120,7 @@ ADMIN_EMAIL=${ADMIN_EMAIL}
 ADMIN_PASSWORD=${ADMIN_PASSWORD}
 
 API_SECRET=${API_SECRET}
+PROXY_ENCRYPTION_KEY=${PROXY_ENCRYPTION_KEY}
 
 DB_USER=${DB_USER}
 DB_PASSWORD=${DB_PASSWORD}
@@ -115,6 +131,7 @@ REDIS_PASSWORD=${REDIS_PASSWORD}
 S3_ACCESS_KEY=${S3_ACCESS_KEY}
 S3_SECRET_KEY=${S3_SECRET_KEY}
 EOF
+fi
 
 chmod 600 .env
 
@@ -124,6 +141,13 @@ echo ""
 # -------------------------------------------
 # Start services
 # -------------------------------------------
+echo "Running database migrations..."
+# Migrations do not run on API startup. `run --build` rebuilds the image
+# first (so a re-run migrates with the NEW code, not a stale image) and
+# starts postgres, a healthchecked dependency, before the one-off container.
+# stdin is detached so a piped install (`curl … | bash`) is not consumed.
+docker compose -f docker-compose.prod.yml run --rm --build api node packages/api/dist/db/migrate.js </dev/null
+
 echo "Starting Crawlee Cloud services..."
 docker compose -f docker-compose.prod.yml up -d --build
 
@@ -173,7 +197,9 @@ echo "  Stop all services:"
 echo "    cd ${INSTALL_DIR}/deploy/vps && docker compose -f docker-compose.prod.yml down"
 echo ""
 echo "  Update to latest version:"
-echo "    cd ${INSTALL_DIR} && git pull && cd deploy/vps && docker compose -f docker-compose.prod.yml up -d --build"
+echo "    cd ${INSTALL_DIR} && git pull && cd deploy/vps \\"
+echo "      && docker compose -f docker-compose.prod.yml run --rm --build api node packages/api/dist/db/migrate.js \\"
+echo "      && docker compose -f docker-compose.prod.yml up -d --build"
 echo ""
 echo "  Restart services:"
 echo "    cd ${INSTALL_DIR}/deploy/vps && docker compose -f docker-compose.prod.yml restart"

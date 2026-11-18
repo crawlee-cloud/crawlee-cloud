@@ -47,6 +47,12 @@ if [[ -z "${REDIS_URL}" ]]; then
     exit 1
 fi
 
+read -rp "Proxy encryption key (PROXY_ENCRYPTION_KEY from your API service): " PROXY_ENCRYPTION_KEY
+if [[ -z "${PROXY_ENCRYPTION_KEY}" ]]; then
+    echo "Error: PROXY_ENCRYPTION_KEY is required. It must be the same 64-hex-character value the API uses."
+    exit 1
+fi
+
 read -rp "Max concurrent Actor runs [5]: " MAX_CONCURRENT_RUNS
 MAX_CONCURRENT_RUNS="${MAX_CONCURRENT_RUNS:-5}"
 
@@ -86,6 +92,9 @@ cd "${INSTALL_DIR}"
 mkdir -p deploy/runner
 
 cat > deploy/runner/docker-compose.runner.yml <<COMPOSE
+# Pins the project name: DOCKER_NETWORK below is this project's default
+# network, which Compose names <project>_default.
+name: crawlee-runner
 services:
   runner:
     build:
@@ -97,6 +106,7 @@ services:
       - API_TOKEN=\${API_TOKEN}
       - DATABASE_URL=\${DATABASE_URL}
       - REDIS_URL=\${REDIS_URL}
+      - PROXY_ENCRYPTION_KEY=\${PROXY_ENCRYPTION_KEY}
       - DOCKER_SOCKET=/var/run/docker.sock
       - DOCKER_NETWORK=crawlee-runner_default
       - MAX_CONCURRENT_RUNS=\${MAX_CONCURRENT_RUNS:-5}
@@ -116,6 +126,7 @@ API_BASE_URL=${API_BASE_URL}
 API_TOKEN=${API_TOKEN}
 DATABASE_URL=${DATABASE_URL}
 REDIS_URL=${REDIS_URL}
+PROXY_ENCRYPTION_KEY=${PROXY_ENCRYPTION_KEY}
 MAX_CONCURRENT_RUNS=${MAX_CONCURRENT_RUNS}
 EOF
 
@@ -127,6 +138,10 @@ chmod 600 deploy/runner/.env
 echo ""
 echo "Building and starting Runner..."
 cd deploy/runner
+# Earlier versions of this script ran the stack as Compose project `runner`
+# (the directory name). Remove that runner first, or it keeps claiming runs
+# on its old image next to the new one. A no-op on a fresh install.
+docker compose -p runner -f docker-compose.runner.yml down 2>/dev/null || true
 docker compose -f docker-compose.runner.yml up -d --build
 
 echo ""
