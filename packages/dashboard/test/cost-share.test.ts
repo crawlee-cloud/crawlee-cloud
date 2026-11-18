@@ -8,7 +8,7 @@
  * there, so there is no saving to claim.
  */
 import { describe, expect, it } from 'vitest';
-import { formatCostShare, money, showsSavings } from '@/lib/cost-share';
+import { formatCostShare, isUnpricedRunner, money } from '@/lib/cost-share';
 import type { RunCost } from '@/lib/api';
 
 const base: RunCost = {
@@ -38,7 +38,7 @@ describe('money', () => {
 });
 
 describe('formatCostShare', () => {
-  it('returns null when the cost was never recorded', () => {
+  it('returns null when the cost was never recorded on a priced runner', () => {
     expect(formatCostShare({ ...base, yourCostUsd: null, savingsPct: null })).toBeNull();
   });
 
@@ -60,10 +60,12 @@ describe('formatCostShare', () => {
   });
 
   it('does not claim savings for a local-Docker run with no attributed cost', () => {
+    // The API reports a local-Docker run's cost as unknown (null), not $0.
     const out = formatCostShare({
       ...base,
-      yourCostUsd: 0,
-      savingsPct: 100,
+      yourCostUsd: null,
+      savingsPct: null,
+      yourCostPer1kItems: null,
       inputs: { ...base.inputs, runnerProvider: 'local-docker', runnerPriceHourly: null },
     });
     // 'local-docker' is the runner's DEFAULT provider, so this is also what a
@@ -100,17 +102,11 @@ describe('formatCostShare', () => {
   });
 });
 
-describe('showsSavings', () => {
-  it('shows a savings figure only when a runner price was actually recorded', () => {
-    expect(showsSavings(base)).toBe(true);
-    expect(showsSavings({ ...base, savingsPct: null })).toBe(false);
-    expect(
-      showsSavings({
-        ...base,
-        yourCostUsd: 0,
-        savingsPct: 100,
-        inputs: { ...base.inputs, runnerProvider: 'local-docker', runnerPriceHourly: null },
-      })
-    ).toBe(false);
+describe('isUnpricedRunner', () => {
+  it('treats only the default local-docker provider as unpriced', () => {
+    expect(isUnpricedRunner('local-docker')).toBe(true);
+    expect(isUnpricedRunner('digitalocean')).toBe(false);
+    // null = attribution never recorded: unknown, but not known to be self-hosted.
+    expect(isUnpricedRunner(null)).toBe(false);
   });
 });

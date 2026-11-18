@@ -666,7 +666,11 @@ export async function getRun(id: string): Promise<Run> {
 }
 
 export interface RunCost {
-  /** Actual-overlap share of droplet cost. 0 = self-hosted; null = not recorded. */
+  /**
+   * Actual-overlap share of droplet cost. null = unknown: a self-hosted
+   * runner with no price (inputs.runnerProvider 'local-docker') or a run
+   * whose attribution was never recorded.
+   */
   yourCostUsd: number | null;
   apifyCostUsd: number;
   savingsPct: number | null;
@@ -683,6 +687,12 @@ export interface RunCost {
   };
 }
 
+/** One row of the batch cost endpoint; runnerProvider explains a null cost. */
+export interface RunCostSummary {
+  yourCostUsd: number | null;
+  runnerProvider: string | null;
+}
+
 export async function getRunCost(id: string): Promise<RunCost> {
   const res = await fetchApi<{ data: RunCost }>(`/v2/actor-runs/${id}/cost`);
   return res.data;
@@ -695,16 +705,14 @@ export async function getRunCost(id: string): Promise<RunCost> {
  * mirrors PAGE_SIZE only by convention), so larger inputs are chunked here
  * rather than trusting every caller to stay under it.
  */
-export async function getRunCosts(
-  ids: string[]
-): Promise<Record<string, { yourCostUsd: number | null }>> {
+export async function getRunCosts(ids: string[]): Promise<Record<string, RunCostSummary>> {
   if (ids.length === 0) return {};
   const chunks: string[][] = [];
   for (let i = 0; i < ids.length; i += 50) chunks.push(ids.slice(i, i + 50));
   const pages = await Promise.all(
     chunks.map(async (chunk) => {
       const res = await fetchApi<{
-        data: { costs: Record<string, { yourCostUsd: number | null }> };
+        data: { costs: Record<string, RunCostSummary> };
       }>(`/v2/actor-runs/costs?ids=${chunk.map(encodeURIComponent).join(',')}`);
       return res.data.costs;
     })

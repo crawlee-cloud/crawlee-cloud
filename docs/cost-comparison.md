@@ -17,13 +17,13 @@ Summed over every run on a runner, this reconciles with what the provider billed
 
 Three cases:
 
-| Run executed on                                         | Figure shown                                      |
-| ------------------------------------------------------- | ------------------------------------------------- |
-| A runner provisioned by the autoscaler (price recorded) | The overlap share described above                 |
-| Local Docker or a runner with no recorded price         | `$0`, labelled self-hosted: no price was recorded |
-| A run from before cost stamps existed                   | "Not recorded"                                    |
+| Run executed on                                         | Figure shown                                           |
+| ------------------------------------------------------- | ------------------------------------------------------ |
+| A runner provisioned by the autoscaler (price recorded) | The overlap share described above                      |
+| Local Docker or a runner with no recorded price         | No figure, labelled self-hosted: no price was recorded |
+| A run from before cost stamps existed                   | "Not recorded"                                         |
 
-A `$0` self-hosted figure means "no runner price is known", not "this was free". The machine it ran on still costs something.
+Self-hosted means "no runner price is known", not "this was free": the machine it ran on still costs something, so neither the dashboard nor the API reports a cost or a savings percentage for it (`yourCostUsd` and `savingsPct` are `null`, and `inputs.runnerProvider` is `local-docker`).
 
 ## The Apify estimate
 

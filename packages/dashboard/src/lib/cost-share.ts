@@ -27,29 +27,26 @@ function computeUnits(cu: number): string {
 }
 
 /**
- * True when the run executed on a runner whose price is unknown.
+ * True when the run executed on a self-hosted runner whose price is unknown.
  * `local-docker` is the runner's default provider — it is what a laptop, a
  * paid VPS and a standalone runner all report unless the autoscaler stamped
- * a price — so a cost of 0 here is an absence of data, never a saving.
+ * a price. The API reports these runs' cost as null (unknown); this tells
+ * them apart from a priced runner whose attribution was never recorded.
  */
-function isUnpricedRunner(cost: RunCost): boolean {
-  return cost.inputs.runnerProvider === 'local-docker';
-}
-
-/** Whether a savings percentage is honest to show: only against a recorded runner price. */
-export function showsSavings(cost: RunCost): boolean {
-  return cost.savingsPct !== null && !isUnpricedRunner(cost);
+export function isUnpricedRunner(runnerProvider: string | null): boolean {
+  return runnerProvider === 'local-docker';
 }
 
 /**
- * Markdown summary, or null when no infrastructure cost was recorded for
- * the run (there is nothing honest to compare).
+ * Markdown summary, or null when a priced runner's cost was never recorded
+ * (there is nothing honest to compare). A self-hosted run still gets one: it
+ * says the runner price is unknown rather than claiming a figure.
  */
 export function formatCostShare(cost: RunCost): string | null {
-  if (cost.yourCostUsd === null) return null;
-
   const { inputs } = cost;
-  const selfHosted = isUnpricedRunner(cost);
+  const selfHosted = isUnpricedRunner(inputs.runnerProvider);
+  if (!selfHosted && cost.yourCostUsd === null) return null;
+
   const apify = `~${money(cost.apifyCostUsd)} on Apify (estimate)`;
   const cu = computeUnits(inputs.computeUnits);
   const items = `${cost.itemCount.toLocaleString('en-US')} ${cost.itemCount === 1 ? 'item' : 'items'}`;
@@ -57,7 +54,7 @@ export function formatCostShare(cost: RunCost): string | null {
   const lines = [
     selfHosted
       ? `**Run cost: self-hosted, runner price not recorded vs ${apify}**`
-      : `**Run cost: ${money(cost.yourCostUsd)} self-hosted vs ${apify}**`,
+      : `**Run cost: ${money(cost.yourCostUsd!)} self-hosted vs ${apify}**`,
     '',
     `- ${items}, ${duration(inputs.durationHours)}, ${cu} compute units`,
   ];

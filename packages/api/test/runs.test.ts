@@ -1251,7 +1251,10 @@ describe('Actor Runs Routes', () => {
       expect(data.inputs.runnerPriceHourly).toBeCloseTo(0.1, 6);
     });
 
-    it('returns yourCostUsd 0 for local-docker runs without querying siblings', async () => {
+    // 'local-docker' is the runner's default provider (laptops, paid VPSes,
+    // standalone runners): no price is known, so the cost is unknown, not $0,
+    // and there is no saving to claim.
+    it('returns a null cost and no savings for local-docker runs, without querying siblings', async () => {
       mockQuery.mockResolvedValueOnce({
         rows: [costRow({ runner_provider: 'local-docker', runner_price_hourly: null })],
       });
@@ -1260,8 +1263,11 @@ describe('Actor Runs Routes', () => {
 
       expect(response.statusCode).toBe(200);
       const { data } = JSON.parse(response.body);
-      expect(data.yourCostUsd).toBe(0);
+      expect(data.yourCostUsd).toBeNull();
+      expect(data.savingsPct).toBeNull();
+      expect(data.yourCostPer1kItems).toBeNull();
       expect(data.apifyCostUsd).toBeCloseTo(0.8, 6);
+      expect(data.inputs.runnerProvider).toBe('local-docker');
       // no second (sibling) query for local runs
       expect(mockQuery).toHaveBeenCalledTimes(1);
     });
@@ -1380,8 +1386,10 @@ describe('Actor Runs Routes', () => {
       const { costs } = JSON.parse(response.body).data;
       // 2h × $0.10/hr ÷ 2 runs = $0.10 — must match the single-run endpoint.
       expect(costs['run-1'].yourCostUsd).toBeCloseTo(0.1, 6);
-      expect(costs['run-2'].yourCostUsd).toBe(0); // self-hosted
-      expect(costs['run-3'].yourCostUsd).toBeNull(); // never recorded
+      expect(costs['run-1'].runnerProvider).toBe('digitalocean');
+      // Unknown either way; runnerProvider tells self-hosted from unrecorded.
+      expect(costs['run-2']).toEqual({ yourCostUsd: null, runnerProvider: 'local-docker' });
+      expect(costs['run-3']).toEqual({ yourCostUsd: null, runnerProvider: null });
       expect(costs['run-nope']).toBeUndefined(); // silently omitted
       expect(mockQuery).toHaveBeenCalledTimes(2);
     });
@@ -1400,7 +1408,7 @@ describe('Actor Runs Routes', () => {
       const response = await app.inject({ method: 'GET', url: '/v2/actor-runs/costs?ids=run-1' });
 
       expect(response.statusCode).toBe(200);
-      expect(JSON.parse(response.body).data.costs['run-1'].yourCostUsd).toBe(0);
+      expect(JSON.parse(response.body).data.costs['run-1'].yourCostUsd).toBeNull();
       expect(mockQuery).toHaveBeenCalledTimes(1);
     });
 

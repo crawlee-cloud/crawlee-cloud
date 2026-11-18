@@ -480,7 +480,10 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       const now = new Date();
-      const costs: Record<string, { yourCostUsd: number | null }> = {};
+      // runnerProvider lets a client tell a self-hosted run (unknown price)
+      // from one whose attribution was never recorded — both have a null cost.
+      const costs: Record<string, { yourCostUsd: number | null; runnerProvider: string | null }> =
+        {};
       for (const run of runsRes.rows) {
         const priceHourly =
           run.runner_price_hourly === null ? null : parseFloat(run.runner_price_hourly);
@@ -497,6 +500,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
         );
         costs[run.id] = {
           yourCostUsd: yourCostUsd === null ? null : Math.round(yourCostUsd * 1e6) / 1e6,
+          runnerProvider: run.runner_provider,
         };
       }
       return { data: { costs } };

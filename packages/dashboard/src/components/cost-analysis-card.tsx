@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { DollarSign, Info } from 'lucide-react';
 import { getRunCost, type Run, type RunCost } from '@/lib/api';
-import { formatCostShare, money, showsSavings } from '@/lib/cost-share';
+import { formatCostShare, isUnpricedRunner, money } from '@/lib/cost-share';
 import { CopyButton } from '@/components/ui/copy-button';
 
 const TERMINAL = new Set<Run['status']>(['SUCCEEDED', 'FAILED', 'TIMED-OUT', 'ABORTED']);
@@ -41,7 +41,7 @@ export function CostAnalysisCard({ runId, status }: { runId: string; status: Run
 
   if (!TERMINAL.has(status) || !cost) return null;
 
-  const selfHosted = cost.inputs.runnerProvider === 'local-docker';
+  const selfHosted = isUnpricedRunner(cost.inputs.runnerProvider);
   const recorded = cost.yourCostUsd !== null;
   const showPer1k = cost.itemCount > 0;
   const shareText = formatCostShare(cost);
@@ -85,8 +85,8 @@ export function CostAnalysisCard({ runId, status }: { runId: string; status: Run
           )}
         </div>
 
-        {/* No tile for an unpriced runner: "saved 100%" against an unknown cost is not a saving. */}
-        {showsSavings(cost) && (
+        {/* The API leaves savingsPct null whenever your cost is unknown (incl. self-hosted). */}
+        {cost.savingsPct !== null && (
           <div>
             <p className="eyebrow mb-1">You saved</p>
             <p className="text-[13px] font-medium text-ok tnum">{cost.savingsPct}%</p>
@@ -97,10 +97,10 @@ export function CostAnalysisCard({ runId, status }: { runId: string; status: Run
       <p className="mt-4 pt-4 border-t border-border flex items-start gap-1.5 text-[11px] text-muted-foreground">
         <Info className="h-3.5 w-3.5 shrink-0 mt-0.5" />
         <span>
-          {recorded && !selfHosted && cost.inputs.runnerPriceHourly !== null
-            ? `Shared a $${cost.inputs.runnerPriceHourly}/hr droplet with ${cost.inputs.overlappingRuns} other run${cost.inputs.overlappingRuns === 1 ? '' : 's'}. Idle droplet time is not attributed to runs. `
-            : recorded
-              ? 'Self-hosted runner — no runner price was recorded for it. '
+          {selfHosted
+            ? 'Self-hosted runner — no runner price was recorded for it. '
+            : recorded && cost.inputs.runnerPriceHourly !== null
+              ? `Shared a $${cost.inputs.runnerPriceHourly}/hr droplet with ${cost.inputs.overlappingRuns} other run${cost.inputs.overlappingRuns === 1 ? '' : 's'}. Idle droplet time is not attributed to runs. `
               : 'Infrastructure cost was not recorded for this run. '}
           Apify estimate at ${cost.inputs.apifyCuPrice}/CU ({cost.inputs.computeUnits.toFixed(2)}{' '}
           compute units).

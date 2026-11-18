@@ -28,16 +28,19 @@ export interface RunCostAttribution {
 }
 
 /**
- * The three cost regimes, decided in one place so the single-run and batch
- * cost endpoints cannot drift: self-hosted → 0, droplet-attributed →
- * actual-overlap share, never-recorded → null.
+ * Decided in one place so the single-run and batch cost endpoints cannot
+ * drift: droplet-attributed → actual-overlap share; anything without a
+ * recorded price → null (unknown). That includes 'local-docker', the
+ * runner's default provider — a laptop, a paid VPS and a standalone runner
+ * all report it — so its cost is unknown, never $0, and a $0 here would turn
+ * into a "100% saved" claim downstream.
  */
 export function computeYourCostUsd(
   run: RunCostAttribution,
   siblings: CostWindow[],
   now: Date
 ): number | null {
-  if (run.runnerProvider === 'local-docker') return 0;
+  if (run.runnerProvider === 'local-docker') return null;
   if (run.runnerId && run.priceHourly !== null && Number.isFinite(run.priceHourly)) {
     return computeOverlapCost(
       { startedAt: run.startedAt, finishedAt: run.finishedAt },

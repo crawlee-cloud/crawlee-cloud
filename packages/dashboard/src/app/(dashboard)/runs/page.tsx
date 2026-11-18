@@ -16,7 +16,8 @@ import { AppLink } from '@/components/app-link';
 import { StatusChip } from '@/components/ui/badge';
 import { CopyButton } from '@/components/ui/copy-button';
 import type { Actor, Run } from '@/lib/api';
-import { getActors, getRunCosts, listRuns, rerunRun } from '@/lib/api';
+import { getActors, getRunCosts, listRuns, rerunRun, type RunCostSummary } from '@/lib/api';
+import { isUnpricedRunner, money } from '@/lib/cost-share';
 import { FETCH_ALL_LIMIT, PAGE_SIZE } from '@/lib/constants';
 import { RERUNNABLE, bulkRerunTargets } from '@/lib/rerun-targets';
 import { cn } from '@/lib/utils';
@@ -67,14 +68,16 @@ const COST_TERMINAL = new Set<Run['status']>(['SUCCEEDED', 'FAILED', 'TIMED-OUT'
 // a 409 as a failed rerun, and a page component can't be unit-tested.
 
 /**
- * Compact per-row cost. undefined = not loaded (or not applicable),
- * null = not recorded — both render as a muted "—"; the detail page
- * carries the full breakdown and the "not recorded" explanation.
+ * Your-cost cell. A self-hosted runner has no price, so it is labelled
+ * rather than shown as $0; "—" covers running, not-yet-loaded and
+ * never-recorded alike — the detail page's cost card explains which.
  */
-function fmtCost(v: number | null | undefined): string | null {
-  if (v === undefined || v === null) return null;
-  if (v === 0) return '$0';
-  return v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`;
+function CostCell({ cost }: { cost: RunCostSummary | null | undefined }) {
+  if (cost?.yourCostUsd != null) return <>{money(cost.yourCostUsd)}</>;
+  if (cost && isUnpricedRunner(cost.runnerProvider)) {
+    return <span className="text-muted-foreground">self-hosted</span>;
+  }
+  return <span className="text-muted-foreground/40">—</span>;
 }
 
 export default function RunsPage() {
@@ -94,7 +97,7 @@ export default function RunsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusGroup>('all');
-  const [costs, setCosts] = useState<Record<string, number | null>>({});
+  const [costs, setCosts] = useState<Record<string, RunCostSummary | null>>({});
   // Rerun bookkeeping: in-flight ids (spinner + disabled) and ids already
   // rerun this session (the origin row STAYS terminal after a rerun —
   // without the mark, nothing on the row would show it was handled).
@@ -360,7 +363,7 @@ export default function RunsPage() {
       .then((map) => {
         setCosts((prev) => {
           const next = { ...prev };
-          for (const id of wanted) next[id] = map[id]?.yourCostUsd ?? null;
+          for (const id of wanted) next[id] = map[id] ?? null;
           return next;
         });
       })
@@ -629,12 +632,7 @@ export default function RunsPage() {
                       )}
                     </td>
                     <td className="px-5 py-3 font-mono text-[11px] tnum text-right">
-                      {/* Your-cost only; "—" covers running (no cost yet),
-                          not-yet-loaded, and never-recorded alike — the
-                          detail page's cost card explains which. */}
-                      {fmtCost(costs[run.id]) ?? (
-                        <span className="text-muted-foreground/40">—</span>
-                      )}
+                      <CostCell cost={costs[run.id]} />
                     </td>
                     <td className="px-5 py-3 font-mono text-[11px] text-muted-foreground tnum text-right">
                       {/* startedAt is stamped at claim (queue wait excluded);
