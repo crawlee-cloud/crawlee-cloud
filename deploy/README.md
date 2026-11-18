@@ -147,7 +147,7 @@ cd /opt/crawlee-cloud && git pull && cd deploy/vps \
   && docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
 ```
 
-> **Before the first update after v1.7.0:** `deploy/vps/.env` must contain `PROXY_ENCRYPTION_KEY` (exactly 64 hex characters). The API and the Runner do not start in production without it, and an `.env` written by an older installer does not have it. Check with `grep -c '^PROXY_ENCRYPTION_KEY=' /opt/crawlee-cloud/deploy/vps/.env`. If it prints `0`, add one line, `PROXY_ENCRYPTION_KEY=<value>`, using the key your install already runs with if you set one by hand, or a new one from `openssl rand -hex 32` otherwise. Re-running `deploy.sh` does this for you and keeps the rest of `.env` as it is. Never change the key once proxy passwords are stored: they are encrypted with it.
+> **Before the first update after v1.7.0:** `deploy/vps/.env` must contain `PROXY_ENCRYPTION_KEY` (exactly 64 hex characters). The API and the Runner do not start in production without it, and an `.env` written by an older installer does not have it. Check with `grep -cE '^[[:space:]]*(export[[:space:]]+)?PROXY_ENCRYPTION_KEY[[:space:]]*=' /opt/crawlee-cloud/deploy/vps/.env`. If it prints `0`, add one line, `PROXY_ENCRYPTION_KEY=<value>`, using the key your install already runs with if you set one by hand, or a new one from `openssl rand -hex 32` otherwise. Re-running `deploy.sh` does this for you and keeps the rest of `.env` as it is. Never change the key once proxy passwords are stored: they are encrypted with it.
 
 ## Connecting a Runner (required for PaaS deployments)
 
@@ -157,13 +157,13 @@ PaaS platforms (Railway, Render, DO) can't run Actors because they don't provide
 
 Before starting, grab these 5 values from your PaaS dashboard:
 
-| Value                    | Where to find it                                                                                                                 |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| **API URL**              | Your deployed API service URL (e.g. `https://crawlee-api-production.up.railway.app`)                                             |
-| **API Secret**           | The `API_SECRET` environment variable in your API service                                                                        |
-| **Database URL**         | The `DATABASE_URL` from your managed PostgreSQL addon                                                                            |
-| **Redis URL**            | The `REDIS_URL` from your managed Redis addon                                                                                    |
-| **Proxy encryption key** | The `PROXY_ENCRYPTION_KEY` environment variable in your API service. The Runner must use the same value, or it exits at startup. |
+| Value                    | Where to find it                                                                                                                                                                                                                                                                                                                              |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **API URL**              | Your deployed API service URL (e.g. `https://crawlee-api-production.up.railway.app`)                                                                                                                                                                                                                                                          |
+| **API Secret**           | The `API_SECRET` environment variable in your API service                                                                                                                                                                                                                                                                                     |
+| **Database URL**         | The `DATABASE_URL` from your managed PostgreSQL addon                                                                                                                                                                                                                                                                                         |
+| **Redis URL**            | The `REDIS_URL` from your managed Redis addon                                                                                                                                                                                                                                                                                                 |
+| **Proxy encryption key** | The `PROXY_ENCRYPTION_KEY` environment variable in your API service. The Runner must use the same value. It only checks at startup that the key is set and is 64 hex characters, so a different key is not caught there: proxy passwords fail to decrypt and runs start without their proxy (logged as `[proxy-resolver] Failed to decrypt`). |
 
 ### Quick setup (recommended)
 
