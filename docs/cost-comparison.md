@@ -23,7 +23,7 @@ Three cases:
 | Local Docker or a runner with no recorded price         | No figure, labelled self-hosted: no price was recorded |
 | A run from before cost stamps existed                   | "Not recorded"                                         |
 
-Self-hosted means "no runner price is known", not "this was free": the machine it ran on still costs something, so neither the dashboard nor the API reports a cost or a savings percentage for it (`yourCostUsd` and `savingsPct` are `null`, and `inputs.runnerProvider` is `local-docker`).
+Self-hosted means "no runner price is known", not "this was free": the machine it ran on still costs something, so neither the dashboard nor the API reports a cost or a savings percentage for it (`yourCostUsd` and `savingsPct` are `null`, and `inputs.runnerPriceHourly` is `null`). Set `RUNNER_PRICE_HOURLY` on a standalone runner to get real figures: a recorded price is used whatever `RUNNER_PROVIDER` says.
 
 ## The Apify estimate
 

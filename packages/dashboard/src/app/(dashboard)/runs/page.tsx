@@ -74,7 +74,8 @@ const COST_TERMINAL = new Set<Run['status']>(['SUCCEEDED', 'FAILED', 'TIMED-OUT'
  */
 function CostCell({ cost }: { cost: RunCostSummary | null | undefined }) {
   if (cost?.yourCostUsd != null) return <>{money(cost.yourCostUsd)}</>;
-  if (cost && isUnpricedRunner(cost.runnerProvider)) {
+  // Past the line above the cost is null, so no runner price was recorded.
+  if (cost && isUnpricedRunner(cost.runnerProvider, null)) {
     return <span className="text-muted-foreground">self-hosted</span>;
   }
   return <span className="text-muted-foreground/40">—</span>;

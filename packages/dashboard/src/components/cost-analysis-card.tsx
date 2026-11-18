@@ -41,8 +41,10 @@ export function CostAnalysisCard({ runId, status }: { runId: string; status: Run
 
   if (!TERMINAL.has(status) || !cost) return null;
 
-  const selfHosted = isUnpricedRunner(cost.inputs.runnerProvider);
-  const recorded = cost.yourCostUsd !== null;
+  const selfHosted = isUnpricedRunner(cost.inputs.runnerProvider, cost.inputs.runnerPriceHourly);
+  // An older API sends $0 for an unpriced runner; only a cost the runner's
+  // price backs counts as recorded.
+  const recorded = cost.yourCostUsd !== null && !selfHosted;
   const showPer1k = cost.itemCount > 0;
   const shareText = formatCostShare(cost);
 
@@ -85,8 +87,9 @@ export function CostAnalysisCard({ runId, status }: { runId: string; status: Run
           )}
         </div>
 
-        {/* The API leaves savingsPct null whenever your cost is unknown (incl. self-hosted). */}
-        {cost.savingsPct !== null && (
+        {/* savingsPct is null whenever your cost is unknown; !selfHosted also covers an
+            older API that still sends 100 for an unpriced runner. */}
+        {cost.savingsPct !== null && !selfHosted && (
           <div>
             <p className="eyebrow mb-1">You saved</p>
             <p className="text-[13px] font-medium text-ok tnum">{cost.savingsPct}%</p>

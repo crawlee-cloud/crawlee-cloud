@@ -27,14 +27,18 @@ function computeUnits(cu: number): string {
 }
 
 /**
- * True when the run executed on a self-hosted runner whose price is unknown.
- * `local-docker` is the runner's default provider — it is what a laptop, a
- * paid VPS and a standalone runner all report unless the autoscaler stamped
- * a price. The API reports these runs' cost as null (unknown); this tells
- * them apart from a priced runner whose attribution was never recorded.
+ * True when the run executed on a self-hosted runner whose price is unknown:
+ * the default `local-docker` provider (a laptop, a paid VPS or a standalone
+ * runner all report it) with no recorded runner price. Keyed on the price,
+ * not the label alone: a standalone runner can record RUNNER_PRICE_HOURLY
+ * under that label, and an API older than 1.7.0 sends a $0 cost (and a 100%
+ * saving) for unpriced runs, which only the missing price gives away.
  */
-export function isUnpricedRunner(runnerProvider: string | null): boolean {
-  return runnerProvider === 'local-docker';
+export function isUnpricedRunner(
+  runnerProvider: string | null,
+  runnerPriceHourly: number | null
+): boolean {
+  return runnerProvider === 'local-docker' && runnerPriceHourly === null;
 }
 
 /**
@@ -44,7 +48,7 @@ export function isUnpricedRunner(runnerProvider: string | null): boolean {
  */
 export function formatCostShare(cost: RunCost): string | null {
   const { inputs } = cost;
-  const selfHosted = isUnpricedRunner(inputs.runnerProvider);
+  const selfHosted = isUnpricedRunner(inputs.runnerProvider, inputs.runnerPriceHourly);
   if (!selfHosted && cost.yourCostUsd === null) return null;
 
   const apify = `~${money(cost.apifyCostUsd)} on Apify (estimate)`;

@@ -78,6 +78,27 @@ describe('formatCostShare', () => {
     expect(out).not.toContain('- Self-hosted:');
   });
 
+  it('reports the real figure for a local-docker runner that recorded a price', () => {
+    const out = formatCostShare({
+      ...base,
+      inputs: { ...base.inputs, runnerProvider: 'local-docker', runnerPriceHourly: 0.036 },
+    });
+    expect(out).toContain('**Run cost: $0.04 self-hosted vs ~$0.30 on Apify (estimate)**');
+    expect(out).toContain('- Self-hosted: share of a $0.036/hr runner');
+  });
+
+  // An API older than 1.7.0 still sends $0 and savingsPct 100 for these runs.
+  it('says "price not recorded" for an unpriced runner even when an older API sent $0', () => {
+    const out = formatCostShare({
+      ...base,
+      yourCostUsd: 0,
+      savingsPct: 100,
+      inputs: { ...base.inputs, runnerProvider: 'local-docker', runnerPriceHourly: null },
+    });
+    expect(out).toContain('self-hosted, runner price not recorded');
+    expect(out).not.toContain('$0.00');
+  });
+
   // A 37-second, one-item run must not read "1 items, 0.00 h, 0.00 compute units".
   it('stays readable for a short, single-item run', () => {
     const out = formatCostShare({
@@ -103,10 +124,12 @@ describe('formatCostShare', () => {
 });
 
 describe('isUnpricedRunner', () => {
-  it('treats only the default local-docker provider as unpriced', () => {
-    expect(isUnpricedRunner('local-docker')).toBe(true);
-    expect(isUnpricedRunner('digitalocean')).toBe(false);
+  it('is true only for the default local-docker provider with no recorded price', () => {
+    expect(isUnpricedRunner('local-docker', null)).toBe(true);
+    // A standalone runner can record RUNNER_PRICE_HOURLY under the default label.
+    expect(isUnpricedRunner('local-docker', 0.1)).toBe(false);
+    expect(isUnpricedRunner('digitalocean', null)).toBe(false);
     // null = attribution never recorded: unknown, but not known to be self-hosted.
-    expect(isUnpricedRunner(null)).toBe(false);
+    expect(isUnpricedRunner(null, null)).toBe(false);
   });
 });

@@ -1272,6 +1272,20 @@ describe('Actor Runs Routes', () => {
       expect(mockQuery).toHaveBeenCalledTimes(1);
     });
 
+    it('charges a priced runner that reports the default local-docker provider', async () => {
+      // RUNNER_PRICE_HOURLY set, RUNNER_PROVIDER left at its default.
+      mockQuery
+        .mockResolvedValueOnce({ rows: [costRow({ runner_provider: 'local-docker' })] })
+        .mockResolvedValueOnce({ rows: [] }); // no siblings
+
+      const response = await app.inject({ method: 'GET', url: '/v2/actor-runs/run-1/cost' });
+
+      const { data } = JSON.parse(response.body);
+      expect(data.yourCostUsd).toBeCloseTo(0.2, 6); // 2h × $0.10/hr, alone
+      expect(data.savingsPct).toBeCloseTo(75, 1);
+      expect(mockQuery).toHaveBeenCalledTimes(2); // the sibling query ran
+    });
+
     it('returns yourCostUsd null when attribution was never recorded', async () => {
       mockQuery.mockResolvedValueOnce({
         rows: [costRow({ runner_id: null, runner_price_hourly: null, runner_provider: null })],
@@ -1391,6 +1405,19 @@ describe('Actor Runs Routes', () => {
       expect(costs['run-2']).toEqual({ yourCostUsd: null, runnerProvider: 'local-docker' });
       expect(costs['run-3']).toEqual({ yourCostUsd: null, runnerProvider: null });
       expect(costs['run-nope']).toBeUndefined(); // silently omitted
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+    });
+
+    it('charges priced local-docker runs in a batch, like the single-run endpoint', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [batchRow({ runner_provider: 'local-docker' })] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      const response = await app.inject({ method: 'GET', url: '/v2/actor-runs/costs?ids=run-1' });
+
+      const { costs } = JSON.parse(response.body).data;
+      expect(costs['run-1'].yourCostUsd).toBeCloseTo(0.2, 6);
+      expect(costs['run-1'].runnerProvider).toBe('local-docker');
       expect(mockQuery).toHaveBeenCalledTimes(2);
     });
 
