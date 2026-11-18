@@ -10,7 +10,10 @@
  * a comment or a prompt that mentions PROXY_ENCRYPTION_KEY must not be enough
  * to keep a test green.
  */
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -63,6 +66,55 @@ describe('deploy/digitalocean/setup.sh', () => {
     expect(spec).toBeGreaterThan(-1);
     expect(guard).toBeLessThan(spec);
     expect(script.slice(guard, spec)).toMatch(/exit 1\n/);
+  });
+
+  describe('find_app_id, run against a stub doctl', () => {
+    const fn = script.slice(script.indexOf('find_app_id() {'));
+    const body = fn.slice(0, fn.indexOf('\n}\n') + 3);
+
+    /** Runs find_app_id with `doctl apps list` printing `out` and exiting `code`. */
+    function lookup(out: string, code = 0) {
+      const dir = mkdtempSync(join(tmpdir(), 'doctl-stub-'));
+      try {
+        writeFileSync(join(dir, 'out.json'), out);
+        const stub = join(dir, 'doctl');
+        writeFileSync(stub, `#!/bin/sh\ncat "${join(dir, 'out.json')}"\nexit ${code}\n`);
+        chmodSync(stub, 0o755);
+        return spawnSync('bash', ['-c', `set -euo pipefail\n${body}\nfind_app_id`], {
+          encoding: 'utf8',
+          env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    it('prints the id of the crawlee-cloud app', () => {
+      const r = lookup(
+        '[{"id":"a1","spec":{"name":"other"}},{"id":"a2","spec":{"name":"crawlee-cloud"}}]'
+      );
+      expect([r.status, r.stdout]).toEqual([0, 'a2']);
+    });
+
+    it('succeeds with no output when the listing has no such app', () => {
+      expect([lookup('[]').status, lookup('[]').stdout]).toEqual([0, '']);
+    });
+
+    // A failed lookup must not read as "no app": setup would then generate a
+    // key and push it to the existing app, losing every stored proxy password.
+    it.each([
+      ['doctl exits non-zero', '', 1],
+      ['doctl prints something that is not JSON', 'Error: unauthorized', 0],
+      ['doctl prints JSON that is not a list', '{"message":"rate limited"}', 0],
+    ])('fails when %s', (_, out, code) => {
+      expect(lookup(out, code).status).not.toBe(0);
+    });
+  });
+
+  it('stops on a failed app lookup and reuses that one lookup to pick update vs create', () => {
+    expect(script.match(/\$\(find_app_id\)/g)).toHaveLength(1);
+    expect(script).toMatch(/if ! EXISTING_APP_ID=\$\(find_app_id\); then\n(?:.*\n)*?\s+exit 1\n/);
+    expect(script).toContain('APP_ID="${EXISTING_APP_ID}"');
   });
 
   it('writes the app spec, which holds secrets, to an owner-only temp file removed on exit', () => {
