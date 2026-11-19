@@ -7,6 +7,10 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.api
+    # Migrate, then start — only if the migration succeeded. The schema is
+    # idempotent, so this is safe on every boot. `exec` makes node PID 1 so
+    # `docker compose stop` reaches the API's graceful shutdown.
+    command: sh -c "node packages/api/dist/db/migrate.js && exec node packages/api/dist/index.js"
     ports:
       - '3000:3000'
     environment:
@@ -51,7 +55,9 @@ services:
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/crawlee_cloud
       - REDIS_URL=redis://redis:6379
       - DOCKER_SOCKET=/var/run/docker.sock
-      - DOCKER_NETWORK=crawlee-platfrom_crawlee-network
+      # Must equal the network's explicit name below, so it does not depend on
+      # the checkout directory (the compose project name).
+      - DOCKER_NETWORK=crawlee-network
       - MAX_CONCURRENT_RUNS=10
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -79,29 +85,8 @@ services:
       - crawlee-network
     restart: unless-stopped
 
-  scheduler:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.api
-    command: ['node', 'dist/scheduler.js']
-    environment:
-      - NODE_ENV=development
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/crawlee_cloud
-      - REDIS_URL=redis://redis:6379
-      - S3_ENDPOINT=http://minio:9000
-      - S3_ACCESS_KEY=minioadmin
-      - S3_SECRET_KEY=minioadmin
-      - S3_BUCKET=crawlee-cloud
-      - S3_REGION=us-east-1
-      - S3_FORCE_PATH_STYLE=true
-      - API_SECRET=docker-compose-dev-secret-32chars-change-me
-      - CORS_ORIGINS=http://localhost:3000,http://localhost:3001
-    depends_on:
-      - api
-      - redis
-    networks:
-      - crawlee-network
-    restart: unless-stopped
+  # No scheduler service: the API process runs the cron scheduler itself
+  # (initScheduler() in packages/api/src/index.ts, leader-elected across replicas).
 
   # ===========================================
   # DATA STORES (Replaceable with cloud services)
@@ -175,6 +160,7 @@ services:
 
 networks:
   crawlee-network:
+    name: crawlee-network
     driver: bridge
 
 volumes:

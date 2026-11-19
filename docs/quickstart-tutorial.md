@@ -24,23 +24,13 @@ cd crawlee-cloud
 Start everything:
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
-Then run the database migrations (they do not run automatically on container startup):
-
-```bash
-docker compose exec api node packages/api/dist/db/migrate.js
-```
-
-This brings up the API, Runner, Dashboard, Scheduler, PostgreSQL, Redis, and MinIO, which creates the storage bucket on first start.
+The API container runs the database migrations each time it starts, so there is no separate migration step. This brings up the API (which also runs the cron scheduler), Runner, Dashboard, PostgreSQL, Redis, and MinIO, which creates the storage bucket on first start.
 
 ::: warning Dev admin credentials
 The stock `docker-compose.yml` hard-codes the admin login `admin@crawlee.cloud` / `crawlee.cloud` and does **not** read a `.env` file. `ADMIN_EMAIL` / `ADMIN_PASSWORD` in `.env` only apply to the non-Docker flow and to the production Compose file (`deploy/vps/docker-compose.prod.yml`). Note that `.env.example` does not include these keys — add them if you use those flows.
-:::
-
-::: warning Docker network name
-The stock compose file sets `DOCKER_NETWORK=crawlee-platfrom_crawlee-network` for the Runner, which only matches if your checkout directory is named `crawlee-platfrom`. If you cloned into a differently named directory, adjust that value to `<your-directory>_crawlee-network`.
 :::
 
 Wait a moment for services to initialize, then verify:
@@ -303,7 +293,7 @@ Open `http://localhost:3001` in your browser and navigate to:
 Deploy the full stack on any VPS with a single command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/crawlee-cloud/crawlee-cloud/main/deploy/vps/deploy.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/crawlee-cloud/crawlee-cloud/main/deploy/vps/deploy.sh)
 ```
 
 ### DigitalOcean (Managed Infrastructure)

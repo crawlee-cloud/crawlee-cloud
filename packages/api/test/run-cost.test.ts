@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { computeOverlapCost, type CostWindow } from '../src/lib/run-cost.js';
+import { computeOverlapCost, computeYourCostUsd, type CostWindow } from '../src/lib/run-cost.js';
 
 const T0 = new Date('2026-07-15T10:00:00Z');
 const hours = (h: number) => new Date(T0.getTime() + h * 3_600_000);
@@ -73,5 +73,38 @@ describe('computeOverlapCost', () => {
     ];
     const cost = computeOverlapCost({ startedAt: T0, finishedAt: hours(2) }, siblings, 0.1, NOW);
     expect(cost).toBeCloseTo(0.2, 10);
+  });
+});
+
+describe('computeYourCostUsd', () => {
+  const run = (o: Partial<Parameters<typeof computeYourCostUsd>[0]> = {}) => ({
+    runnerProvider: 'digitalocean',
+    runnerId: 'r1',
+    priceHourly: 0.1,
+    startedAt: T0,
+    finishedAt: hours(1),
+    ...o,
+  });
+
+  it('charges the overlap share when a price was recorded', () => {
+    expect(computeYourCostUsd(run(), [], NOW)).toBeCloseTo(0.1, 10);
+  });
+
+  // A standalone runner can set RUNNER_PRICE_HOURLY without RUNNER_PROVIDER,
+  // so it records a real price under the default 'local-docker' label.
+  it('uses a recorded price whatever the provider label', () => {
+    expect(computeYourCostUsd(run({ runnerProvider: 'local-docker' }), [], NOW)).toBeCloseTo(
+      0.1,
+      10
+    );
+  });
+
+  it('is unknown (null), never $0, when no price was recorded', () => {
+    expect(
+      computeYourCostUsd(run({ runnerProvider: 'local-docker', priceHourly: null }), [], NOW)
+    ).toBeNull();
+    expect(computeYourCostUsd(run({ priceHourly: null }), [], NOW)).toBeNull();
+    expect(computeYourCostUsd(run({ priceHourly: Number.NaN }), [], NOW)).toBeNull();
+    expect(computeYourCostUsd(run({ runnerId: null }), [], NOW)).toBeNull();
   });
 });

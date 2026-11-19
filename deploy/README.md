@@ -16,6 +16,8 @@ Choose your deployment method:
 >
 > **Render:** known gap — the blueprint's `REDIS_URL` references a `crawlee-redis` service that `render.yaml` does not define (consistent with the "not yet verified" status in the main README).
 
+> **DigitalOcean:** the deploy form asks for two secrets the API will not start without: `API_SECRET` (32 or more characters) and `PROXY_ENCRYPTION_KEY` (exactly 64 hex characters; generate one with `openssl rand -hex 32`). Keep the `PROXY_ENCRYPTION_KEY` value: the Runner in Step 2 needs the same one.
+
 **Step 2:** Connect a Runner on a $5 VPS so Actors can execute. See [Connecting a Runner](#connecting-a-runner-required-for-paas-deployments) below.
 
 > **Why two steps?** The Runner needs Docker socket access to spawn Actor containers, which PaaS platforms don't provide. A cheap VPS ($5/month) handles this perfectly.
@@ -96,7 +98,7 @@ Deploys everything (API + Dashboard + Runner + databases) on a single VPS with a
 SSH into your server and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/crawlee-cloud/crawlee-cloud/main/deploy/vps/deploy.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/crawlee-cloud/crawlee-cloud/main/deploy/vps/deploy.sh)
 ```
 
 Or clone and run manually:
@@ -138,10 +140,14 @@ docker compose -f docker-compose.prod.yml restart
 # Stop
 docker compose -f docker-compose.prod.yml down
 
-# Update
-cd /opt/crawlee-cloud && git pull
-cd deploy/vps && docker compose -f docker-compose.prod.yml up -d --build
+# Update: migrate with the new image, then restart on it. Chained with &&
+# so a failed migration does not replace the running API.
+cd /opt/crawlee-cloud && git pull && cd deploy/vps \
+  && docker compose -f docker-compose.prod.yml run --rm --build api node packages/api/dist/db/migrate.js \
+  && docker compose -f docker-compose.prod.yml up -d --build --remove-orphans
 ```
+
+> **Before the first update after v1.7.0:** `deploy/vps/.env` must contain `PROXY_ENCRYPTION_KEY` (exactly 64 hex characters). The API and the Runner do not start in production without it, and an `.env` written by an older installer does not have it. Check with `grep -cE '^[[:space:]]*(export[[:space:]]+)?PROXY_ENCRYPTION_KEY[[:space:]]*=' /opt/crawlee-cloud/deploy/vps/.env`. If it prints `0`, add one line, `PROXY_ENCRYPTION_KEY=<value>`, using the key your install already runs with if you set one by hand, or a new one from `openssl rand -hex 32` otherwise. Re-running `deploy.sh` does this for you and keeps the rest of `.env` as it is. Never change the key once proxy passwords are stored: they are encrypted with it.
 
 ## Connecting a Runner (required for PaaS deployments)
 
@@ -149,24 +155,25 @@ PaaS platforms (Railway, Render, DO) can't run Actors because they don't provide
 
 ### What you need from your PaaS deployment
 
-Before starting, grab these 4 values from your PaaS dashboard:
+Before starting, grab these 5 values from your PaaS dashboard:
 
-| Value            | Where to find it                                                                     |
-| ---------------- | ------------------------------------------------------------------------------------ |
-| **API URL**      | Your deployed API service URL (e.g. `https://crawlee-api-production.up.railway.app`) |
-| **API Secret**   | The `API_SECRET` environment variable in your API service                            |
-| **Database URL** | The `DATABASE_URL` from your managed PostgreSQL addon                                |
-| **Redis URL**    | The `REDIS_URL` from your managed Redis addon                                        |
+| Value                    | Where to find it                                                                                                                                                                                                                                                                                                                              |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **API URL**              | Your deployed API service URL (e.g. `https://crawlee-api-production.up.railway.app`)                                                                                                                                                                                                                                                          |
+| **API Secret**           | The `API_SECRET` environment variable in your API service                                                                                                                                                                                                                                                                                     |
+| **Database URL**         | The `DATABASE_URL` from your managed PostgreSQL addon                                                                                                                                                                                                                                                                                         |
+| **Redis URL**            | The `REDIS_URL` from your managed Redis addon                                                                                                                                                                                                                                                                                                 |
+| **Proxy encryption key** | The `PROXY_ENCRYPTION_KEY` environment variable in your API service. The Runner must use the same value. It only checks at startup that the key is set and is 64 hex characters, so a different key is not caught there: proxy passwords fail to decrypt and runs start without their proxy (logged as `[proxy-resolver] Failed to decrypt`). |
 
 ### Quick setup (recommended)
 
 SSH into your VPS and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/crawlee-cloud/crawlee-cloud/main/deploy/runner/deploy-runner.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/crawlee-cloud/crawlee-cloud/main/deploy/runner/deploy-runner.sh)
 ```
 
-The script will prompt for the 4 values above, install Docker if needed, and start the Runner.
+The script will prompt for the 5 values above, install Docker if needed, and start the Runner.
 
 ### Manual setup
 

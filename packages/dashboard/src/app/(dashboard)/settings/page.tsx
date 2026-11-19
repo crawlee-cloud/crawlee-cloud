@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import {
   AlertCircle,
+  Bot,
   CheckCircle2,
   Copy,
   Eye,
@@ -31,12 +32,31 @@ import {
   type SystemInfo,
   type User,
 } from '@/lib/api';
+import { buildMcpConfig, resolveApiBase } from '@/lib/mcp-config';
 import { cn } from '@/lib/utils';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
+// Same fallback as the API client (lib/api.ts), so the URL shown here is
+// the one the dashboard itself calls.
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
+
+const noSubscribe = () => () => {};
+
+/**
+ * document.baseURI after hydration, undefined during the server render and
+ * the hydration pass. Reading it during render directly would make the two
+ * disagree (a hydration mismatch) whenever API_BASE is relative.
+ */
+function useDocumentBase(): string | undefined {
+  return useSyncExternalStore(
+    noSubscribe,
+    () => document.baseURI,
+    () => undefined
+  );
+}
 
 export default function SettingsPage() {
   const confirm = useConfirm();
+  const apiBase = resolveApiBase(API_BASE, useDocumentBase());
   const toast = useToast();
 
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
@@ -170,6 +190,8 @@ export default function SettingsPage() {
     }
   }
 
+  const mcpConfig = buildMcpConfig({ apiBaseUrl: apiBase });
+
   return (
     <div className="space-y-8 max-w-4xl">
       <header className="pb-4 border-b border-border">
@@ -232,14 +254,14 @@ export default function SettingsPage() {
           <Field label="API base URL">
             <div className="flex gap-2">
               <input
-                value={API_BASE}
+                value={apiBase}
                 readOnly
                 onClick={(e) => e.currentTarget.select()}
                 className="flex-1 h-9 px-3 rounded-sm border border-border bg-input font-mono text-[12px] text-foreground"
               />
               <button
                 type="button"
-                onClick={() => void copy(API_BASE, 'Base URL')}
+                onClick={() => void copy(apiBase, 'Base URL')}
                 title="Copy"
                 className="h-9 w-9 grid place-items-center border border-border rounded-sm text-muted-foreground hover:text-foreground hover:border-signal/40"
               >
@@ -402,6 +424,47 @@ export default function SettingsPage() {
                   ))}
               </ul>
             )}
+          </div>
+        </div>
+      </section>
+
+      {/* MCP */}
+      <section className="panel">
+        <header className="px-5 py-4 border-b border-border flex items-center gap-3">
+          <Bot className="h-4 w-4 text-signal" />
+          <div>
+            <p className="eyebrow">AGENTS · MCP</p>
+            <h2 className="text-[15px] mt-1">Connect an AI agent (MCP)</h2>
+          </div>
+        </header>
+
+        <div className="p-5 space-y-3">
+          <p className="text-[12px] text-muted-foreground">
+            Paste into your MCP client&apos;s config and replace the token with an API key. Needs
+            Node.js 22 on the agent&apos;s machine.
+            {user?.username &&
+              ` To expose an actor as its own tool, append ${user.username}/actor-name to the --tools list.`}{' '}
+            <a
+              href="https://crawlee.cloud/docs/mcp"
+              target="_blank"
+              rel="noreferrer"
+              className="underline hover:text-foreground"
+            >
+              MCP guide
+            </a>
+          </p>
+          <div className="relative">
+            <pre className="p-3 pr-12 rounded-sm border border-border bg-input font-mono text-[12px] text-foreground overflow-x-auto">
+              {mcpConfig}
+            </pre>
+            <button
+              type="button"
+              onClick={() => void copy(mcpConfig, 'MCP config')}
+              title="Copy"
+              className="absolute top-2 right-2 h-8 w-8 grid place-items-center border border-border rounded-sm text-muted-foreground hover:text-foreground hover:border-signal/40"
+            >
+              <Copy className="h-3.5 w-3.5" />
+            </button>
           </div>
         </div>
       </section>

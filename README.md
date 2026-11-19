@@ -6,12 +6,13 @@
     <img src="./logo-dark.svg" width="450" alt="Crawlee Cloud Logo" />
   </picture>
 
-**Self-hosted, open-source platform for running Apify Actors on your own infrastructure.**
+**Run your Apify Actors on your own servers. Point the SDK at your API; keep your code.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![npm](https://img.shields.io/npm/v/%40crawlee-cloud%2Fcli?logo=npm&label=%40crawlee-cloud%2Fcli)](https://www.npmjs.com/package/@crawlee-cloud/cli)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-20+-green)](https://nodejs.org/)
+[![apify-client compatibility (nightly)](https://github.com/crawlee-cloud/crawlee-cloud/actions/workflows/compat-nightly.yml/badge.svg)](https://github.com/crawlee-cloud/crawlee-cloud/actions/workflows/compat-nightly.yml)
 
 [Dashboard](#dashboard) · [Quick Start](#quick-start) · [Documentation](#documentation) · [Community](#community--support) · [Contributing](#contributing)
 
@@ -79,6 +80,21 @@ Love the Crawlee/Apify ecosystem but want the freedom to run things your way? Cr
 
 ---
 
+## When not to use Crawlee Cloud
+
+- **You want zero ops.** You run Postgres, Redis and S3-compatible storage, and you are on call. Apify Cloud is the right choice.
+- **You rely on public Apify Store Actors.** There is no store; `GET /v2/store` searches your own Actors.
+- **You need a built-in proxy service.** Apify Proxy works by passthrough with your own Apify proxy password, and any other provider works too, but none is included.
+- **You need server-side builds or build pinning.** Builds come from `crc push`; the `build` run option is accepted and ignored.
+- **You call `run-sync` for the OUTPUT record.** It returns the run object today.
+- **You use Actor tasks or `metamorph`.** Neither is implemented yet ([#148](https://github.com/crawlee-cloud/crawlee-cloud/issues/148), [#150](https://github.com/crawlee-cloud/crawlee-cloud/issues/150)).
+- **You would host untrusted tenants.** Registration is disabled and the instance is built for one team.
+- **You run one scraper on one box.** Cron and Docker are enough.
+
+Known gaps are tracked in the [compatibility reference](docs/apify-compatibility.md) and in [open issues](https://github.com/crawlee-cloud/crawlee-cloud/issues).
+
+---
+
 ## How It Works
 
 ```bash
@@ -104,43 +120,42 @@ await Actor.exit();
 
 ## Quick Start
 
-### Prerequisites
+You need Docker with Docker Compose.
 
-- Node.js 20+
-- Docker & Docker Compose
-- PostgreSQL, Redis, and S3-compatible storage (or use our Docker setup)
+```bash
+git clone https://github.com/crawlee-cloud/crawlee-cloud.git
+cd crawlee-cloud
+docker compose up -d --build
+```
 
-### 1. Clone & Install
+That starts the API, Runner, Dashboard, PostgreSQL, Redis and MinIO, and runs the database migrations.
+
+- **Dashboard:** `http://localhost:3001` (log in with `admin@crawlee.cloud` / `crawlee.cloud`)
+- **API:** `http://localhost:3000` (`curl http://localhost:3000/health`)
+
+These are development defaults for trying it out on your machine. For a real deployment, see [Deploy](#deploy). To push and run your first Actor, follow the [quickstart tutorial](docs/quickstart-tutorial.md).
+
+### Develop from source
+
+Prerequisites: Node.js 20+, Docker and Docker Compose.
 
 ```bash
 git clone https://github.com/crawlee-cloud/crawlee-cloud.git
 cd crawlee-cloud
 npm install
-```
 
-### 2. Start Infrastructure
-
-```bash
 # Starts PostgreSQL, Redis, and MinIO
 npm run docker:dev
-```
 
-### 3. Configure Environment
-
-```bash
 cp .env.example .env
 # Edit .env with your settings
-```
 
-### 4. Build & Run
-
-```bash
 npm run build
 npm run db:migrate
 npm run dev
 ```
 
-The API server starts at `http://localhost:3000`.
+The API server starts at `http://localhost:3000`. This flow starts only the API; use the Compose stack above for the Runner and Dashboard.
 
 ---
 
@@ -148,12 +163,12 @@ The API server starts at `http://localhost:3000`.
 
 Deploy your own instance in minutes:
 
-| Method                                                                                                                                                                               | Status         | Description                                                            |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------- | ---------------------------------------------------------------------- |
-| [![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/crawlee-cloud/crawlee-cloud/tree/main&refcode=crawlee) | ✅ Supported   | Automated full stack — App Platform, managed PG/Redis, Runner Droplet  |
-| [VPS Deploy Script](deploy/vps/)                                                                                                                                                     | ✅ Supported   | Full stack on any Ubuntu VPS with auto-HTTPS via Caddy                 |
-| Railway                                                                                                                                                                              | 🚧 Coming soon | One-click PaaS deploy (template scaffolding present, not yet verified) |
-| Render                                                                                                                                                                               | 🚧 Coming soon | One-click PaaS deploy (blueprint present, not yet verified)            |
+| Method                                                                                                                                                                               | Status         | Description                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/crawlee-cloud/crawlee-cloud/tree/main&refcode=crawlee) | ✅ Supported   | Automated full stack — App Platform, managed PG/Redis, Runner Droplet. Set `API_SECRET` (32+ characters) and `PROXY_ENCRYPTION_KEY` (`openssl rand -hex 32`) in the deploy form. |
+| [VPS Deploy Script](deploy/vps/)                                                                                                                                                     | ✅ Supported   | Full stack on any Ubuntu VPS with auto-HTTPS via Caddy                                                                                                                           |
+| Railway                                                                                                                                                                              | 🚧 Coming soon | One-click PaaS deploy (template scaffolding present, not yet verified)                                                                                                           |
+| Render                                                                                                                                                                               | 🚧 Coming soon | One-click PaaS deploy (blueprint present, not yet verified)                                                                                                                      |
 
 See [deploy/](deploy/) for detailed instructions.
 
@@ -193,15 +208,17 @@ See [deploy/](deploy/) for detailed instructions.
 
 ## Documentation
 
-| Guide                                                                 | Description                                  |
-| --------------------------------------------------------------------- | -------------------------------------------- |
-| [API Reference](https://crawlee.cloud/docs/api)                       | REST API endpoints and usage                 |
-| [CLI Guide](https://crawlee.cloud/docs/cli)                           | Command-line interface                       |
-| [Dashboard](https://crawlee.cloud/docs/dashboard)                     | Web interface overview                       |
-| [Deployment](https://crawlee.cloud/docs/deployment)                   | Production deployment guide                  |
-| [Runner](https://crawlee.cloud/docs/runner)                           | Actor execution engine                       |
-| [SDK Compatibility](https://crawlee.cloud/docs/apify-sdk-environment) | Apify SDK integration                        |
-| [MCP (AI agents)](docs/mcp.md)                                        | Connect Claude, Cursor and other MCP clients |
+| Guide                                                                 | Description                                      |
+| --------------------------------------------------------------------- | ------------------------------------------------ |
+| [API Reference](https://crawlee.cloud/docs/api)                       | REST API endpoints and usage                     |
+| [CLI Guide](https://crawlee.cloud/docs/cli)                           | Command-line interface                           |
+| [Dashboard](https://crawlee.cloud/docs/dashboard)                     | Web interface overview                           |
+| [Deployment](https://crawlee.cloud/docs/deployment)                   | Production deployment guide                      |
+| [Runner](https://crawlee.cloud/docs/runner)                           | Actor execution engine                           |
+| [SDK Compatibility](https://crawlee.cloud/docs/apify-sdk-environment) | Apify SDK integration                            |
+| [MCP (AI agents)](docs/mcp.md)                                        | Connect Claude, Cursor and other MCP clients     |
+| [Cost comparison](docs/cost-comparison.md)                            | How run cost and the Apify estimate are computed |
+| [README badge](docs/badge.md)                                         | "Runs on Crawlee Cloud" badge for your Actor     |
 
 ---
 

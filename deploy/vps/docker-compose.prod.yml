@@ -5,6 +5,10 @@ services:
 
   caddy:
     image: caddy:2-alpine
+    # The Caddyfile reads {$DOMAIN} from Caddy's own environment; .env alone
+    # only interpolates this file, so without this the site address is empty.
+    environment:
+      - DOMAIN=${DOMAIN}
     ports:
       - '80:80'
       - '443:443'
@@ -40,6 +44,7 @@ services:
       - S3_REGION=us-east-1
       - S3_FORCE_PATH_STYLE=true
       - API_SECRET=${API_SECRET}
+      - PROXY_ENCRYPTION_KEY=${PROXY_ENCRYPTION_KEY}
       - CORS_ORIGINS=https://${DOMAIN},https://dashboard.${DOMAIN}
       - RATE_LIMIT_MAX=100
       - LOG_LEVEL=info
@@ -67,7 +72,9 @@ services:
       - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
       - DOCKER_SOCKET=/var/run/docker.sock
-      - DOCKER_NETWORK=crawlee-prod_crawlee-network
+      # Must equal the network's explicit name below, not a compose-project-prefixed one.
+      - DOCKER_NETWORK=crawlee-prod-network
+      - PROXY_ENCRYPTION_KEY=${PROXY_ENCRYPTION_KEY}
       - MAX_CONCURRENT_RUNS=${MAX_CONCURRENT_RUNS:-5}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -83,39 +90,21 @@ services:
     build:
       context: ../../
       dockerfile: docker/Dockerfile.dashboard
+      # Next.js inlines NEXT_PUBLIC_* into the browser bundle during the build,
+      # so the API URL must be a build arg; a runtime env var comes too late.
+      args:
+        - NEXT_PUBLIC_API_URL=https://${DOMAIN}
     environment:
       - NODE_ENV=production
       - PORT=3001
-      - NEXT_PUBLIC_API_URL=https://${DOMAIN}
     depends_on:
       - api
     networks:
       - crawlee-network
     restart: unless-stopped
 
-  scheduler:
-    build:
-      context: ../../
-      dockerfile: docker/Dockerfile.api
-    command: ['node', 'packages/api/dist/scheduler.js']
-    environment:
-      - NODE_ENV=production
-      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
-      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379
-      - S3_ENDPOINT=http://minio:9000
-      - S3_ACCESS_KEY=${S3_ACCESS_KEY}
-      - S3_SECRET_KEY=${S3_SECRET_KEY}
-      - S3_BUCKET=crawlee-cloud
-      - S3_REGION=us-east-1
-      - S3_FORCE_PATH_STYLE=true
-      - API_SECRET=${API_SECRET}
-      - CORS_ORIGINS=https://${DOMAIN},https://dashboard.${DOMAIN}
-    depends_on:
-      - api
-      - redis
-    networks:
-      - crawlee-network
-    restart: unless-stopped
+  # No scheduler service: the API process runs the cron scheduler itself
+  # (initScheduler() in packages/api/src/index.ts, leader-elected across replicas).
 
   # ===========================================
   # DATA STORES
@@ -179,7 +168,10 @@ services:
     restart: unless-stopped
 
 networks:
+  # Explicitly named, and different from the dev stack's `crawlee-network`, so
+  # the two can share a host without joining each other's network.
   crawlee-network:
+    name: crawlee-prod-network
     driver: bridge
 
 volumes:

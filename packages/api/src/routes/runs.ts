@@ -16,7 +16,7 @@ import {
   type ListRunsQuery,
 } from '../schemas/runs.js';
 import { config } from '../config.js';
-import { computeYourCostUsd, type CostWindow } from '../lib/run-cost.js';
+import { computeYourCostUsd, hasRecordedPrice, type CostWindow } from '../lib/run-cost.js';
 import {
   waitForTerminal,
   parseWaitForFinish,
@@ -343,12 +343,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       run.runner_price_hourly === null ? null : parseFloat(run.runner_price_hourly);
 
     let siblings: CostWindow[] = [];
-    if (
-      run.runner_provider !== 'local-docker' &&
-      run.runner_id &&
-      priceHourly !== null &&
-      Number.isFinite(priceHourly)
-    ) {
+    if (hasRecordedPrice({ runnerId: run.runner_id, priceHourly })) {
       // Siblings across ALL users — droplets are platform-wide. Only
       // window timestamps leave the query; no cross-user data exposure.
       const siblingRes = await query<CostWindow & Record<string, unknown>>(
@@ -449,14 +444,14 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
         [ids, request.user!.id]
       );
 
-      // One set-based sibling query for every droplet-attributed run in the
+      // One set-based sibling query for every run with a recorded price in the
       // batch — same overlap-window predicate as the single-run endpoint,
-      // keyed back to its target run. Self-hosted / unrecorded runs skip it.
-      const attributed = runsRes.rows.filter(
-        (r) =>
-          r.runner_provider !== 'local-docker' &&
-          r.runner_id !== null &&
-          r.runner_price_hourly !== null
+      // keyed back to its target run. Runs without a recorded price skip it.
+      const attributed = runsRes.rows.filter((r) =>
+        hasRecordedPrice({
+          runnerId: r.runner_id,
+          priceHourly: r.runner_price_hourly === null ? null : parseFloat(r.runner_price_hourly),
+        })
       );
       const siblingsByRun = new Map<string, CostWindow[]>();
       if (attributed.length > 0) {
@@ -480,7 +475,10 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
       }
 
       const now = new Date();
-      const costs: Record<string, { yourCostUsd: number | null }> = {};
+      // runnerProvider lets a client tell a self-hosted run (unknown price)
+      // from one whose attribution was never recorded — both have a null cost.
+      const costs: Record<string, { yourCostUsd: number | null; runnerProvider: string | null }> =
+        {};
       for (const run of runsRes.rows) {
         const priceHourly =
           run.runner_price_hourly === null ? null : parseFloat(run.runner_price_hourly);
@@ -497,6 +495,7 @@ export const runsRoutes: FastifyPluginAsync = async (fastify) => {
         );
         costs[run.id] = {
           yourCostUsd: yourCostUsd === null ? null : Math.round(yourCostUsd * 1e6) / 1e6,
+          runnerProvider: run.runner_provider,
         };
       }
       return { data: { costs } };

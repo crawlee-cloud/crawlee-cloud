@@ -27,18 +27,27 @@ export interface RunCostAttribution {
   finishedAt: Date;
 }
 
+/** Whether a run carries what an overlap cost needs: a runner and a usable recorded price. */
+export function hasRecordedPrice<T extends Pick<RunCostAttribution, 'runnerId' | 'priceHourly'>>(
+  run: T
+): run is T & { priceHourly: number } {
+  return Boolean(run.runnerId) && run.priceHourly !== null && Number.isFinite(run.priceHourly);
+}
+
 /**
- * The three cost regimes, decided in one place so the single-run and batch
- * cost endpoints cannot drift: self-hosted → 0, droplet-attributed →
- * actual-overlap share, never-recorded → null.
+ * Decided in one place so the single-run and batch cost endpoints cannot
+ * drift: a recorded runner price → actual-overlap share; no recorded price →
+ * null (unknown), never $0, which would turn into a "100% saved" claim
+ * downstream. The provider label does not matter: 'local-docker' is the
+ * runner's default, so it covers laptops and paid VPSes alike, and a
+ * standalone runner can record RUNNER_PRICE_HOURLY under that label.
  */
 export function computeYourCostUsd(
   run: RunCostAttribution,
   siblings: CostWindow[],
   now: Date
 ): number | null {
-  if (run.runnerProvider === 'local-docker') return 0;
-  if (run.runnerId && run.priceHourly !== null && Number.isFinite(run.priceHourly)) {
+  if (hasRecordedPrice(run)) {
     return computeOverlapCost(
       { startedAt: run.startedAt, finishedAt: run.finishedAt },
       siblings,

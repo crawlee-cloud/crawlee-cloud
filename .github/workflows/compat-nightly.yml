@@ -1,0 +1,97 @@
+name: Apify client compatibility (nightly)
+
+# Runs the integration suite against the NEWEST published `apify-client`,
+# not the version pinned in package-lock.json.
+#
+# Why: Apify's own client is expected to work against this API unmodified,
+# and new client releases can change how it calls the API (2.23.4 moved every
+# actor call from /v2/acts to /v2/actors, #109). Dependabot bump PRs surface
+# that eventually; this gives a daily signal in between. A red run means a
+# new apify-client release does something the API does not handle yet, not
+# that main is broken.
+
+on:
+  schedule:
+    # 04:17 UTC daily. Off the hour to avoid the scheduler's busiest minute.
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compat-nightly
+  cancel-in-progress: true
+
+jobs:
+  apify-client-latest:
+    # Scheduled workflows also run on forks; only the canonical repo needs this.
+    if: github.repository == 'crawlee-cloud/crawlee-cloud'
+    runs-on: ubuntu-latest
+    # Keep the services, env and setup steps identical to the
+    # `integration-tests` job in ci.yml — the only difference is the client
+    # version, so a failure here is attributable to the client.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: crawlee_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      minio:
+        image: bitnamilegacy/minio:2025.7.23-debian-12-r5
+        ports:
+          - 9000:9000
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+          MINIO_DEFAULT_BUCKETS: crawlee-test
+        options: >-
+          --health-cmd "curl -f http://localhost:9000/minio/health/live || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Install the newest apify-client
+        run: npm install --no-save apify-client@latest --workspace=@crawlee-cloud/api
+      - name: Print the version under test
+        # Not `npm ls`: with --no-save the manifest still says ^2.x, so a new
+        # major would be reported as invalid and fail here, before any test ran.
+        run: node -p "'apify-client ' + require('apify-client/package.json').version"
+      - run: npm run build
+      - name: Run integration tests
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/crawlee_test
+          REDIS_URL: redis://localhost:6379
+          S3_ENDPOINT: http://localhost:9000
+          S3_ACCESS_KEY: minioadmin
+          S3_SECRET_KEY: minioadmin
+          S3_BUCKET: crawlee-test
+          S3_REGION: us-east-1
+          S3_FORCE_PATH_STYLE: 'true'
+          API_SECRET: integration-test-secret-at-least-32-characters
+          CORS_ORIGINS: http://localhost:3000
+          NODE_ENV: test
+        run: npx vitest run --config vitest.integration.config.ts

@@ -55,6 +55,55 @@ ADMIN_EMAIL="${ADMIN_EMAIL:-admin@crawlee.cloud}"
 ADMIN_PASSWORD=$(openssl rand -base64 16 | tr -d '\n/+=')
 API_SECRET=$(openssl rand -hex 32)
 
+# ID of the App Platform app named crawlee-cloud, or empty if there is none.
+# Fails (non-zero) when the listing itself fails or is not a JSON list: an
+# error must never read as "no app", or setup would generate a key and push
+# it to the existing app.
+find_app_id() {
+    local apps
+    apps=$(doctl apps list -o json 2>/dev/null) || return 1
+    printf '%s' "${apps}" | node -e "
+  const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+  if (!Array.isArray(d)) process.exit(1);
+  const found=d.find(x=>x.spec?.name==='crawlee-cloud');
+  if(found) process.stdout.write(found.id);
+" 2>/dev/null
+}
+
+# PROXY_ENCRYPTION_KEY is shared by the API and the runner: both encrypt and
+# decrypt the same proxy columns. A fresh install gets a generated key. An
+# existing app must keep the key it already has — a new one makes every
+# stored proxy credential undecryptable — so on a re-run it has to be
+# supplied (export PROXY_ENCRYPTION_KEY=<the app's current value>).
+if [[ -n "${PROXY_ENCRYPTION_KEY:-}" ]]; then
+    PROXY_KEY_SUPPLIED=1
+else
+    PROXY_KEY_SUPPLIED=0
+    PROXY_ENCRYPTION_KEY=$(openssl rand -hex 32)
+fi
+
+# Looked up once: the same answer decides the key guard below and, later,
+# whether the app is updated or created.
+if ! EXISTING_APP_ID=$(find_app_id); then
+    echo "Error: could not list App Platform apps (doctl apps list failed or returned"
+    echo "unexpected output). Stopping rather than risk replacing an existing app's"
+    echo "PROXY_ENCRYPTION_KEY. Check 'doctl apps list' works, then re-run."
+    exit 1
+fi
+if [[ -n "${EXISTING_APP_ID}" && "${PROXY_KEY_SUPPLIED}" != 1 ]]; then
+    echo "Error: an App Platform app named crawlee-cloud already exists (${EXISTING_APP_ID})."
+    echo "Re-running would replace its PROXY_ENCRYPTION_KEY with a new one and make"
+    echo "stored proxy credentials undecryptable. Copy the current value from the"
+    echo "app's environment variables and re-run with it exported:"
+    echo "  export PROXY_ENCRYPTION_KEY=<current value>"
+    exit 1
+fi
+
+# The app spec holds secrets in plain text: keep it owner-only (mktemp
+# creates the file with mode 0600) and remove it however the script exits.
+SPEC_FILE=$(mktemp)
+trap 'rm -f "${SPEC_FILE}"' EXIT
+
 # Find SSH key
 echo ""
 echo "Available SSH keys:"
@@ -134,7 +183,7 @@ echo ""
 echo "[3/5] Deploying API + Dashboard on App Platform..."
 
 # Generate the app spec with real values
-cat > /tmp/crawlee-app-spec.yaml <<SPEC
+cat > "${SPEC_FILE}" <<SPEC
 name: crawlee-cloud
 region: ${APP_REGION}
 
@@ -181,6 +230,9 @@ services:
       - key: API_SECRET
         type: SECRET
         value: "${API_SECRET}"
+      - key: PROXY_ENCRYPTION_KEY
+        type: SECRET
+        value: "${PROXY_ENCRYPTION_KEY}"
       - key: ADMIN_EMAIL
         value: "${ADMIN_EMAIL}"
       - key: ADMIN_PASSWORD
@@ -217,19 +269,16 @@ services:
         value: /dashboard
 SPEC
 
-# Check if app already exists
-APP_ID=$(doctl apps list -o json 2>/dev/null | node -e "
-  const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
-  const found=d.find(x=>x.spec?.name==='crawlee-cloud');
-  if(found) process.stdout.write(found.id);
-" 2>/dev/null || true)
+# Update the app found at the start (the key guard already ran against it),
+# or create one.
+APP_ID="${EXISTING_APP_ID}"
 
 if [[ -n "${APP_ID}" ]]; then
     echo "  App already exists (${APP_ID}). Updating..."
-    doctl apps update "${APP_ID}" --spec /tmp/crawlee-app-spec.yaml >/dev/null 2>&1
+    doctl apps update "${APP_ID}" --spec "${SPEC_FILE}" >/dev/null 2>&1
 else
     echo "  Creating app..."
-    APP_ID=$(doctl apps create --spec /tmp/crawlee-app-spec.yaml --format ID --no-header 2>/dev/null)
+    APP_ID=$(doctl apps create --spec "${SPEC_FILE}" --format ID --no-header 2>/dev/null)
 fi
 
 echo "  App ID: ${APP_ID}"
@@ -335,6 +384,7 @@ DATABASE_URL=${PG_URI}
 REDIS_URL=${REDIS_URI}
 API_BASE_URL=${APP_URL}
 DOCKER_NETWORK=bridge
+PROXY_ENCRYPTION_KEY=${PROXY_ENCRYPTION_KEY}
 MAX_CONCURRENT_RUNS=${MAX_RUNS}
 DEFAULT_MEMORY_MB=1024
 DEFAULT_TIMEOUT_SECS=3600
